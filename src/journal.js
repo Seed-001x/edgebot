@@ -60,7 +60,7 @@ export class Journal {
     return rec;
   }
 
-  /** Returns Set of setup names the user has marked as bad on TAKEN trades (3+ times). */
+  /** Returns Set of setup names the user has marked as bad on TAKEN trades (10+ times). Much stricter — only the worst setups. */
   blacklistedSetups() {
     const now = this.now();
     if (this._blacklistCache && now - this._blacklistCache.ts < 60000) {
@@ -81,11 +81,20 @@ export class Journal {
     }
     const setups = new Set(
       Object.entries(badBySetup)
-        .filter(([_, n]) => n >= 3)
+        .filter(([_, n]) => n >= 10)
         .map(([k, _]) => k)
     );
     this._blacklistCache = { ts: now, setups };
     return setups;
+  }
+
+  /** Returns Set of specific mints the user has marked as bad. Per-token blocking. */
+  blacklistedMints() {
+    const mints = new Set();
+    for (const fb of this.feedback) {
+      if (!fb.good && fb.mint) mints.add(fb.mint);
+    }
+    return mints;
   }
   contestedGates() {
     const now = this.now();

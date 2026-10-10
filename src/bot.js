@@ -144,11 +144,17 @@ export class Bot {
   async onSignal(v, sig) {
     this.stats.signals++;
     const n = this.now();
-    // User blacklist: if they've marked 3+ taken trades as bad for this setup, skip it
+    // User blacklist (per-token): if they've marked this specific mint as bad, skip it
+    const blacklistedMints = this.journal.blacklistedMints();
+    if (blacklistedMints.has(v.address)) {
+      console.log(`[learn] skip: user blacklisted token ${v.symbol} — skipping`);
+      return this.skip(v, sig, [`user-blacklist: token "${v.symbol}" marked bad`]);
+    }
+    // User blacklist (setup): only the worst setups (10+ bad marks) get blocked
     const blacklisted = this.journal.blacklistedSetups();
     if (blacklisted.has(sig.setup)) {
       console.log(`[learn] skip: user blacklisted setup "${sig.setup}" — skipping ${v.symbol}`);
-      return this.skip(v, sig, [`user-blacklist: setup "${sig.setup}" marked bad ${3}+ times`]);
+      return this.skip(v, sig, [`user-blacklist: setup "${sig.setup}" marked bad ${10}+ times`]);
     }
     const [solUsd, walletSol] = await Promise.all([this.d.fetchSolUsd(), this.exec.solBalance()]);
     const open = this.positions.reduce((a, p) => a + p.entrySol * p.remainingFrac, 0);
