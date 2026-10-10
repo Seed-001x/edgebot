@@ -73,7 +73,11 @@ export function startServer(bot, port) {
       });
     }
     if (req.method !== 'GET') return json(res, 405, { error: 'read-only' });
-    if (u.pathname === '/health') return json(res, 200, { ok: true, mode: bot.cfg.realMode ? 'REAL' : 'SHADOW', uptimeSec: Math.round(process.uptime()) });
+    if (u.pathname === '/health') {
+      const h = { ok: true, mode: bot.cfg.realMode ? 'REAL' : 'SHADOW', uptimeSec: Math.round(process.uptime()) };
+      if (bot.lastCallout) h.lastCallout = bot.lastCallout;
+      return json(res, 200, h);
+    }
     if (u.pathname === '/state') return json(res, 200, bot.state());
     if (u.pathname === '/pumplists') return json(res, 200, listState());
     if (u.pathname === '/report') return json(res, 200, bot.journal.report());

@@ -180,7 +180,13 @@ export class Bot {
     this.stats.entries++;
     // Fire a pump.fun callout for this entry (non-blocking; rewards accrue to the user).
     // The thesis is generated from the signal that triggered the entry.
-    postCallout(v, sig).catch(e => console.log('[callout] failed:', e.message));
+    postCallout(v, sig).then(r => {
+      console.log('[callout] posted for', v.symbol);
+      this.lastCallout = { ok: true, symbol: v.symbol, ts: Date.now() };
+    }).catch(e => {
+      console.log('[callout] failed:', e.message);
+      this.lastCallout = { ok: false, error: e.message, symbol: v.symbol, ts: Date.now() };
+    });
     this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'taken', reasons: [], price: v.price, mc: v.mc, metrics: { ...sig.metrics, roundTrip: +rt.ratio.toFixed(3), sizeSol: size }, warnings: g.warnings });
     this.journal.trade({ type: 'open', id: pos.id, mint: pos.mint, symbol: pos.symbol, setup: pos.setup, entrySol: pos.entrySol, sig: fill.sig, simulated: fill.simulated, ts: n });
   }
