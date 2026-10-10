@@ -29,7 +29,7 @@ async function auth() {
   const { kp, bs58 } = await keypair();
   const { default: nacl } = await import('tweetnacl');
   const address = kp.publicKey.toBase58();
-  const ts = Date.now();
+  const ts = Math.floor(Date.now() / 1000);
   const msgBytes = new TextEncoder().encode(`Sign in to pump.fun: ${ts}`);
   const sigBytes = nacl.sign.detached(msgBytes, kp.secretKey);
   const sigB58 = bs58.encode(Buffer.from(sigBytes));
