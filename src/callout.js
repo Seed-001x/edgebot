@@ -27,22 +27,11 @@ async function keypair() {
 async function auth() {
   if (jwt && Date.now() - jwtTs < JWT_TTL_MS) return jwt;
   const { kp, bs58 } = await keypair();
-  const [{ default: nacl }] = await Promise.all([import('tweetnacl')]).catch(() => [{ default: null }]);
-  // web3.js bundles tweetnacl; fall back to dynamic import
-  let naclMod = nacl;
-  if (!naclMod) {
-    try { naclMod = (await import('@solana/web3.js')).nacl; } catch {}
-  }
+  const { default: nacl } = await import('tweetnacl');
   const address = kp.publicKey.toBase58();
   const ts = Date.now();
   const msgBytes = new TextEncoder().encode(`Sign in to pump.fun: ${ts}`);
-  let sigBytes;
-  if (naclMod && naclMod.sign && naclMod.sign.detached) {
-    sigBytes = naclMod.sign.detached(msgBytes, kp.secretKey);
-  } else {
-    // fallback: web3.js Keypair has no message-sign; use secretKey directly via noble if available
-    throw new Error('no ed25519 signer available');
-  }
+  const sigBytes = nacl.sign.detached(msgBytes, kp.secretKey);
   const sigB58 = bs58.encode(Buffer.from(sigBytes));
   const res = await fetch(`${API}/auth/login`, {
     method: 'POST',
