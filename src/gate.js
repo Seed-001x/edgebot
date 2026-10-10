@@ -44,6 +44,33 @@ export function cloneHolderCheck(topHolders, skip, minCluster = 6) {
   return { pass: worst < minCluster, reason: worst >= minCluster ? `${worst} wallets hold the exact same balance (one funder)` : 'balances distinct' };
 }
 
+// 1b. Near-identical balances in tiers (farm wallets): scripted buys with slightly different amounts after fees/rounding.
+//     Exact-match (above) misses these. Sort holder balances and group those within `tol` (relative) of the tier's largest;
+//     fail on many wallets in tiers of >= minCluster, or a large share of supply sitting in such tiers.
+export function farmTiersCheck(topHolders, skip, { tol = 0.005, minCluster = 3, maxWallets = 8, maxSupplyPct = 10 } = {}) {
+  const hs = (topHolders || []).filter(h => h && !skip.has(h.owner) && !skip.has(h.address) && num(h.amount) > 0)
+    .map(h => ({ amt: num(h.amount), pct: num(h.pct) })).sort((a, b) => b.amt - a.amt);
+  const clusters = [];
+  let cur = [];
+  for (const h of hs) {
+    if (cur.length && (cur[0].amt - h.amt) / cur[0].amt <= tol) cur.push(h);
+    else { if (cur.length >= minCluster) clusters.push(cur); cur = [h]; }
+  }
+  if (cur.length >= minCluster) clusters.push(cur);
+  const wallets = clusters.reduce((a, c) => a + c.length, 0);
+  const pct = clusters.reduce((a, c) => a + c.reduce((x, h) => x + h.pct, 0), 0);
+  const bad = wallets >= maxWallets || pct >= maxSupplyPct;
+  return { pass: !bad, reason: bad ? `${wallets} wallets in ${clusters.length} near-identical-balance tiers hold ${pct.toFixed(1)}% of supply (farm wallets)` : 'no farm tiers', wallets, tiers: clusters.length, pct };
+}
+
+// 1c. Dust volume: huge transaction count but tiny average trade = scripted spam / wash, not people.
+export function dustVolumeCheck(view, { minTx = 300, maxAvgUsd = 1.5 } = {}) {
+  const tx = (view.buysH1 || 0) + (view.sellsH1 || 0);
+  if (!(maxAvgUsd > 0) || tx < minTx) return { pass: true, reason: 'enough real size or too few trades to judge' };
+  const avg = (view.volH1 || 0) / tx;
+  return { pass: avg >= maxAvgUsd, reason: avg >= maxAvgUsd ? 'avg trade size ok' : `${tx} trades in 1h averaging $${avg.toFixed(2)} (scripted dust, not buyers)`, avgUsd: avg };
+}
+
 // 2. Pool depth vs market cap.
 export function exitDepthCheck(liqUsd, mc, minRatio) {
   if (!(mc > 0)) return { pass: false, reason: 'no market cap' };
@@ -109,6 +136,7 @@ export function runGates({ view, rug, others = [], cfg, now = Date.now() }) {
 
   checks.clone = cloneCheck(view, others, cfg);
   checks.vertical = verticalLaunchCheck(ageMin, view.chgH1 ?? view.chgM5 ?? 0);
+  checks.dust = dustVolumeCheck(view, { minTx: cfg.dustMinTx, maxAvgUsd: cfg.dustMaxAvgUsd });
 
   if (!rug) {
     if (ageH < cfg.requireReportBelowAgeH) checks.report = { pass: false, reason: 'no RugCheck report for a young coin' };
@@ -128,6 +156,7 @@ export function runGates({ view, rug, others = [], cfg, now = Date.now() }) {
     if (freezeAuth) checks.freezeAuthority = { pass: false, reason: 'freeze authority is open (dev can freeze your tokens)' };
 
     checks.clones = cloneHolderCheck(rug.topHolders, skip);
+    checks.farm = farmTiersCheck(rug.topHolders, skip, { tol: cfg.farmTolPct, minCluster: cfg.farmMinCluster, maxWallets: cfg.farmMaxWallets, maxSupplyPct: cfg.farmMaxSupplyPct });
     checks.creator = creatorDumpCheck({ creatorUi: num(rug.creatorBalance) / 10 ** dec, poolBaseUi: lp.base, poolQuoteUi: lp.quote, supplyUi });
     checks.insiders = insiderCheck(rug.insiderNetworks, supplyRaw);
     checks.concentration = concentrationCheck(rug.topHolders, skip);

@@ -62,6 +62,16 @@ export function loadConfig(env = process.env) {
     requireReportBelowAgeH: num(env, 'REQUIRE_REPORT_BELOW_AGE_H', 6), // young coins with no RugCheck report are blocked
     minHolders: num(env, 'MIN_HOLDERS', 100),
     cloneMinVolMultiple: num(env, 'CLONE_MIN_VOL_MULTIPLE', 2),
+    // farm-wallet tiers: balances within FARM_TOL_PCT of each other, in groups of >= FARM_MIN_CLUSTER
+    farmTolPct: num(env, 'FARM_TOL_PCT', 0.005),
+    farmMinCluster: num(env, 'FARM_MIN_CLUSTER', 3),
+    farmMaxWallets: num(env, 'FARM_MAX_WALLETS', 8),
+    farmMaxSupplyPct: num(env, 'FARM_MAX_SUPPLY_PCT', 10),
+    // dust volume: >= DUST_MIN_TX trades in 1h averaging < DUST_MAX_AVG_USD. Set DUST_MAX_AVG_USD=0 to disable.
+    dustMinTx: num(env, 'DUST_MIN_TX', 300),
+    dustMaxAvgUsd: num(env, 'DUST_MAX_AVG_USD', 1.5),
+    // setup blacklist: 0 = off (per-token blocking only). Set to N to block setups with N+ bad marks.
+    setupBlacklistMin: num(env, 'SETUP_BLACKLIST_MIN', 0),
 
     // ---- exits (judged on REALIZABLE value = Jupiter sell quote, not screen price) ----
     stopLoss: num(env, 'STOP_LOSS', 0.30),

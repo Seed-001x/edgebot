@@ -60,8 +60,8 @@ export class Journal {
     return rec;
   }
 
-  /** Returns Set of setup names the user has marked as bad on TAKEN trades (10+ times). Much stricter — only the worst setups. */
-  blacklistedSetups() {
+  /** Returns Set of setup names the user has marked as bad on TAKEN trades (minBad+ times). 0 disables. */
+  blacklistedSetups(minBad = 10) {
     const now = this.now();
     if (this._blacklistCache && now - this._blacklistCache.ts < 60000) {
       return this._blacklistCache.setups;
@@ -81,7 +81,7 @@ export class Journal {
     }
     const setups = new Set(
       Object.entries(badBySetup)
-        .filter(([_, n]) => n >= 10)
+        .filter(([_, n]) => n >= minBad)
         .map(([k, _]) => k)
     );
     this._blacklistCache = { ts: now, setups };

@@ -150,8 +150,8 @@ export class Bot {
       console.log(`[learn] skip: user blacklisted token ${v.symbol} — skipping`);
       return this.skip(v, sig, [`user-blacklist: token "${v.symbol}" marked bad`]);
     }
-    // User blacklist (setup): only the worst setups (10+ bad marks) get blocked
-    const blacklisted = this.journal.blacklistedSetups();
+    // User blacklist (setup): configurable via SETUP_BLACKLIST_MIN (0 = off, per-token only)
+    const blacklisted = this.cfg.setupBlacklistMin > 0 ? this.journal.blacklistedSetups(this.cfg.setupBlacklistMin) : new Set();
     if (blacklisted.has(sig.setup)) {
       console.log(`[learn] skip: user blacklisted setup "${sig.setup}" — skipping ${v.symbol}`);
       return this.skip(v, sig, [`user-blacklist: setup "${sig.setup}" marked bad ${10}+ times`]);
