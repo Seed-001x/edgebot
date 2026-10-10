@@ -59,28 +59,47 @@ async function auth() {
   return jwt;
 }
 
-// Generate a punchy thesis from the entry signal.
-// v: { symbol, mc, price }, sig: { setup, metrics }
-export function thesis(v, sig) {
-  const mc = v.mc ? (v.mc >= 1e6 ? `$${(v.mc / 1e6).toFixed(1)}M` : `$${Math.round(v.mc / 1e3)}K`) : '';
-  const parts = [];
-  const setup = (sig.setup || '').toLowerCase();
+// Generate a human-sounding thesis via OpenAI, fallback to template.
+async function aiThesis(v, sig) {
+  const key = process.env.OPENAI_API_KEY;
+  if (!key) return templateThesis(v, sig);
+  const mc = v.mc ? (v.mc >= 1e6 ? `$${(v.mc / 1e6).toFixed(1)}M` : `$${Math.round(v.mc / 1e3)}K`) : 'unknown MC';
   const m = sig.metrics || {};
-  if (setup.includes('volume') || m.volSpike) parts.push('volume building fast');
-  if (setup.includes('trend')) parts.push('trending hard');
-  if (setup.includes('mover')) parts.push('moving up the movers board');
-  if (setup.includes('new')) parts.push('fresh launch with early traction');
-  if (m.holders && m.holders > 300) parts.push(`${m.holders} holders and climbing`);
-  const why = parts.length ? parts.join(', ') : 'strong early signals';
-  const sym = v.symbol || 'this one';
-  return `In on ${sym} ${mc} — ${why}. Thesis playing out, watching closely.`.slice(0, 280);
+  const prompt = `Write a short pump.fun callout (max 200 chars) for $${v.symbol || '???'} at ${mc} MC. Setup: ${sig.setup || 'momentum'}. Holders: ${m.holders || '?'}. Vol1h: $${m.volH1 || '?'}. Sound like a real degen trader — casual, confident, no corporate speak, no emojis. Just the play.`;
+  try {
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 80,
+        temperature: 0.9,
+      }),
+    });
+    if (!res.ok) throw new Error(`OpenAI ${res.status}`);
+    const data = await res.json();
+    const txt = data.choices?.[0]?.message?.content?.trim();
+    if (txt) return txt.slice(0, 280);
+  } catch (e) {
+    console.log('[callout] AI thesis failed, using template:', e.message);
+  }
+  return templateThesis(v, sig);
 }
+
+function templateThesis(v, sig) {
+  const mc = v.mc ? (v.mc >= 1e6 ? `$${(v.mc / 1e6).toFixed(1)}M` : `$${Math.round(v.mc / 1e3)}K`) : '';
+  const sym = v.symbol || 'this one';
+  return `Aped ${sym} ${mc} — volume's picking up and holders climbing. Watching this one close.`.slice(0, 280);
+}
+
+export function thesis(v, sig) { return templateThesis(v, sig); }
 
 export async function postCallout(v, sig) {
   const token = await auth();
   const body = {
     coinMint: v.address,
-    thesis: thesis(v, sig),
+    thesis: await aiThesis(v, sig),
     marketCap: Math.round(v.mc || 0),
   };
   const res = await fetch(`${API}/callout/create`, {
