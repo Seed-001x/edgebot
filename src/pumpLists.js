@@ -59,20 +59,37 @@ export function normalizeRows(json, source) {
   return out;
 }
 
-export async function fetchPumpList(name, url, { fetchImpl = fetch, env = process.env, timeoutMs = 6000 } = {}) {
+export async function fetchPumpList(name, url, { fetchImpl = fetch, env = process.env, timeoutMs = 8000 } = {}) {
   const origin = env.PUMP_ORIGIN || 'https://pump.fun';
-  const headers = { accept: 'application/json', origin, referer: origin + '/', 'user-agent': 'Mozilla/5.0' };
+  const headers = { accept: 'application/json', origin, referer: origin + '/', 'user-agent': env.PUMP_UA || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36' };
   if (env.PUMP_JWT) headers.authorization = `Bearer ${env.PUMP_JWT}`;
-  const st = state[name] = { ok: false, n: 0, status: null, ts: Date.now(), err: null };
+  // Optional relay (see relay/worker.js): same request, sent from a different network.
+  let target = url;
+  if (env.PUMP_RELAY) {
+    target = `${env.PUMP_RELAY}${env.PUMP_RELAY.includes('?') ? '&' : '?'}url=${encodeURIComponent(url)}`;
+    if (env.PUMP_RELAY_KEY) headers['x-relay-key'] = env.PUMP_RELAY_KEY;
+  }
+  const st = state[name] = { ok: false, n: 0, status: null, ts: Date.now(), err: null, via: env.PUMP_RELAY ? 'relay' : 'direct', server: null, cfRay: null, cfMitigated: null, contentType: null, bodyHead: null };
   try {
-    const r = await fetchImpl(url, { headers, signal: AbortSignal.timeout(timeoutMs) });
+    const r = await fetchImpl(target, { headers, signal: AbortSignal.timeout(timeoutMs) });
     st.status = r.status;
-    if (!r.ok) { st.err = r.status === 401 || r.status === 403 ? 'auth: set/refresh PUMP_JWT' : `http ${r.status}`; return []; }
-    const rows = normalizeRows(await r.json(), 'pump-' + name);
+    const h = (k) => (r.headers && r.headers.get ? r.headers.get(k) : null);
+    st.server = h('server'); st.cfRay = h('cf-ray'); st.cfMitigated = h('cf-mitigated'); st.contentType = h('content-type');
+    if (!r.ok) {
+      try { st.bodyHead = (await r.text()).replace(/\s+/g, ' ').slice(0, 200); } catch { /* ignore */ }
+      st.err = st.cfMitigated ? 'blocked by Cloudflare challenge (IP/bot check)'
+        : r.status === 401 ? 'auth: set/refresh PUMP_JWT'
+        : r.status === 403 ? 'forbidden: IP/bot block or missing auth (see bodyHead)'
+        : r.status === 429 ? 'rate limited' : `http ${r.status}`;
+      return [];
+    }
+    let j;
+    try { j = await r.json(); } catch { st.err = 'non-JSON response (HTML challenge page?)'; return []; }
+    const rows = normalizeRows(j, 'pump-' + name);
     st.ok = rows.length > 0; st.n = rows.length;
-    if (!rows.length) st.err = 'parsed 0 coins (unexpected shape)';
+    if (!rows.length) st.err = 'parsed 0 coins (unexpected shape): ' + JSON.stringify(j).slice(0, 160);
     return rows;
-  } catch (e) { st.err = String(e && e.message || e); return []; }
+  } catch (e) { st.err = String(e && (e.cause && e.cause.code || e.message) || e); return []; }
 }
 
 /** All configured lists in parallel -> { trending: rows, movers: rows, ... } */
