@@ -42,7 +42,10 @@ async function auth() {
     },
     body: JSON.stringify({ address, signature: sigB58, timestamp: ts }),
   });
-  if (!res.ok) throw new Error(`auth/login failed: ${res.status}`);
+  if (!res.ok) {
+    const txt = await res.text().catch(() => '');
+    throw new Error(`auth/login failed: ${res.status} ${txt.slice(0, 300)}`);
+  }
   const setCookie = res.headers.get('set-cookie') || '';
   const m = setCookie.match(/auth_token=([^;]+)/);
   if (m) { jwt = m[1]; }
