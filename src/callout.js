@@ -90,7 +90,19 @@ async function aiThesis(v, sig) {
 function templateThesis(v, sig) {
   const mc = v.mc ? (v.mc >= 1e6 ? `$${(v.mc / 1e6).toFixed(1)}M` : `$${Math.round(v.mc / 1e3)}K`) : '';
   const sym = v.symbol || 'this one';
-  return `Aped ${sym} ${mc} — volume's picking up and holders climbing. Watching this one close.`.slice(0, 280);
+  const m = sig.metrics || {};
+  const templates = [
+    `Aped ${sym} ${mc} — volume's picking up, holders climbing. Watching close.`,
+    `In on ${sym} ${mc}. Early volume building, looks like it's got legs.`,
+    `${sym} ${mc} caught my eye — buyers stepping in. Let's see where this goes.`,
+    `Grabbed ${sym} ${mc}. Chart's waking up, volume coming in.`,
+    `${sym} ${mc} — fresh momentum, holders ticking up. Riding this one.`,
+    `Aped ${sym} at ${mc}. Volume profile looks strong, not sleeping on this.`,
+  ];
+  // Pick based on symbol hash for variety (not random, so it's stable per coin)
+  let h = 0;
+  for (let i = 0; i < sym.length; i++) h = (h * 31 + sym.charCodeAt(i)) % templates.length;
+  return templates[h].slice(0, 280);
 }
 
 export function thesis(v, sig) { return templateThesis(v, sig); }

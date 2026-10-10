@@ -23,6 +23,7 @@ const every = (sec, fn) => { fn(); return setInterval(fn, sec * 1000); };
 every(cfg.discoverEverySec, () => bot.discoverTick());
 every(cfg.pollEverySec, () => bot.pollTick());
 every(cfg.positionEverySec, () => bot.positionTick());
+every(60, () => bot.reconcilePositions());
 
 process.on('unhandledRejection', (e) => console.error('[edgebot] unhandledRejection', e && e.message));
 process.on('SIGTERM', () => { console.log('[edgebot] SIGTERM — positions are persisted; exiting'); process.exit(0); });

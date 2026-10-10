@@ -80,6 +80,13 @@ export function startServer(bot, port) {
       });
       return;
     }
+    if (req.method === 'DELETE' && u.pathname.startsWith('/positions/')) {
+      const id = decodeURIComponent(u.pathname.slice(11));
+      const n = bot.positions.length;
+      bot.positions = bot.positions.filter(x => x.id !== id && x.mint !== id);
+      bot.savePositions();
+      return json(res, 200, { ok: true, removed: n - bot.positions.length });
+    }
     if (req.method === 'POST' && u.pathname === '/positions/clear') {
       const n = bot.positions.length;
       bot.positions = [];

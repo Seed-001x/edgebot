@@ -83,6 +83,22 @@ export class Bot {
     return { solBalance: sol, openPositions: this.positions.length };
   }
 
+  // Periodic reconcile: drop positions whose tokens left the wallet (manual sells)
+  async reconcilePositions() {
+    if (!this.cfg.realMode || !this.positions.length) return;
+    for (const p of [...this.positions]) {
+      try {
+        const bal = await this.exec.tokenBalance(p.mint);
+        if (bal === 0n) {
+          this.positions = this.positions.filter(x => x.id !== p.id);
+          this.journal.trade({ type: 'close', id: p.id, mint: p.mint, symbol: p.symbol, reason: 'reconcile: sold outside bot', pnlSol: 0, ts: this.now() });
+          console.log(`[reconcile] dropped ${p.symbol} (not in wallet)`);
+        } else if (bal != null) p.tokensRaw = bal.toString();
+      } catch (e) { /* RPC flaky — skip, don't drop on error */ }
+    }
+    this.savePositions();
+  }
+
   // ------------------------------------------------------------ discovery
   async discoverTick() {
     if (this.busy.discover) return;
