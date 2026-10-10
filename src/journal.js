@@ -60,7 +60,33 @@ export class Journal {
     return rec;
   }
 
-  /** Returns Set of gate names the user has contested (marked 3+ as good, good > bad). Cached for performance. */
+  /** Returns Set of setup names the user has marked as bad on TAKEN trades (3+ times). */
+  blacklistedSetups() {
+    const now = this.now();
+    if (this._blacklistCache && now - this._blacklistCache.ts < 60000) {
+      return this._blacklistCache.setups;
+    }
+    // Find feedback on taken trades (good=false)
+    // We need to match feedback to trades by mint
+    const badBySetup = {};
+    for (const fb of this.feedback) {
+      if (fb.good) continue; // only bad feedback
+      // Find the trade or signal for this mint to get setup
+      const trade = this.trades.find(t => t.mint === fb.mint);
+      const sig = trade ? null : [...this.signals].reverse().find(s => s.mint === fb.mint && s.decision === 'taken');
+      const setup = trade?.setup || sig?.setup;
+      if (!setup) continue;
+      if (!badBySetup[setup]) badBySetup[setup] = 0;
+      badBySetup[setup]++;
+    }
+    const setups = new Set(
+      Object.entries(badBySetup)
+        .filter(([_, n]) => n >= 3)
+        .map(([k, _]) => k)
+    );
+    this._blacklistCache = { ts: now, setups };
+    return setups;
+  }
   contestedGates() {
     const now = this.now();
     // Cache for 60s to avoid recomputing on every signal
