@@ -35,7 +35,11 @@ async function auth() {
   const sigB58 = bs58.encode(Buffer.from(sigBytes));
   const res = await fetch(`${API}/auth/login`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'Origin': 'https://pump.fun',
+      'Referer': 'https://pump.fun/',
+    },
     body: JSON.stringify({ address, signature: sigB58, timestamp: ts }),
   });
   if (!res.ok) throw new Error(`auth/login failed: ${res.status}`);
@@ -78,7 +82,12 @@ export async function postCallout(v, sig) {
   };
   const res = await fetch(`${API}/callout/create`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Cookie': `auth_token=${token}` },
+    headers: {
+      'Content-Type': 'application/json',
+      'Origin': 'https://pump.fun',
+      'Referer': 'https://pump.fun/',
+      'Cookie': `auth_token=${token}`,
+    },
     body: JSON.stringify(body),
   });
   if (res.status === 409) { console.log(`[callout] already called out ${v.symbol}, skipping`); return { skipped: 'duplicate' }; }
