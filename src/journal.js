@@ -141,9 +141,35 @@ export class Journal {
       totalPnlSol: round(pnl.reduce((a, b) => a + b, 0), 5), avgPnlSol: round(mean(pnl), 5),
       byExitReason: Object.fromEntries(Object.entries(closed.reduce((m, t) => { const k = String(t.reason || '').split(' (')[0].split(' ')[0] || 'unknown'; (m[k] ||= []).push(t.pnlSol); return m; }, {})).map(([k, v]) => [k, { n: v.length, pnlSol: round(v.reduce((a, b) => a + b, 0), 5) }])),
     };
+    // Human feedback aggregated by skip reason: shows which gates the user disagrees with
+    const fbByReason = {};
+    for (const fb of this.feedback) {
+      // Find the signal to get its skip reasons
+      let reasons = ['unknown'];
+      if (fb.signalId) {
+        const s = this.byId.get(fb.signalId);
+        if (s && s.reasons) reasons = s.reasons;
+      } else {
+        // Fallback: find most recent signal for this mint
+        const sig = [...this.signals].reverse().find(s => s.mint === fb.mint);
+        if (sig && sig.reasons) reasons = sig.reasons;
+      }
+      const r = String(reasons[0] || 'unknown').split(':')[0];
+      if (!fbByReason[r]) fbByReason[r] = { good: 0, bad: 0, total: 0 };
+      if (fb.good) fbByReason[r].good++;
+      else fbByReason[r].bad++;
+      fbByReason[r].total++;
+    }
+    // Flag reasons where user consistently disagrees (good > bad and total >= 3)
+    const contested = Object.fromEntries(
+      Object.entries(fbByReason)
+        .filter(([_, v]) => v.total >= 3 && v.good > v.bad)
+        .map(([k, v]) => [k, { ...v, contested: true, recommendation: `User marked ${v.good}/${v.total} as good — consider loosening this gate` }])
+    );
     return {
       note: 'avgR* are mean returns of price vs. price at signal time. Skipped-signal returns that are strongly negative mean the gate is saving you; strongly positive means it is costing you.',
       signals: this.signals.length, bySetup, bySkipReason, trades: tradeStats,
+      feedback: { byReason: fbByReason, contested, total: this.feedback.length },
     };
   }
 }
