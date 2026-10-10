@@ -2,7 +2,22 @@
 // Control is deliberately out-of-band: create a file named HALT in DATA_DIR to stop new entries.
 
 import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
 import { listState } from './pumpLists.js';
+
+// Browser-scraped "real" pump.fun lists (from hourly browser task, not the API relay).
+// Stored in DATA_DIR so it persists across deploys.
+const DATA_DIR = process.env.DATA_DIR || './data';
+const REAL_LISTS_FILE = path.join(DATA_DIR, 'reallists.json');
+let realLists = { trending: [], movers: [], ts: 0 };
+try {
+  const raw = fs.readFileSync(REAL_LISTS_FILE, 'utf8');
+  realLists = JSON.parse(raw);
+} catch {}
+function saveRealLists() {
+  try { fs.writeFileSync(REAL_LISTS_FILE, JSON.stringify(realLists)); } catch {}
+}
 
 export function startServer(bot, port) {
   const json = (res, code, body) => { res.writeHead(code, { 'content-type': 'application/json', 'access-control-allow-origin': '*' }); res.end(JSON.stringify(body, null, 2)); };
@@ -33,6 +48,29 @@ export function startServer(bot, port) {
         }
       });
       return;
+    }
+    // POST /reallists — browser task pushes scraped pump.fun lists (trending/movers top 40)
+    if (req.method === 'POST' && u.pathname === '/reallists') {
+      let body = '';
+      req.on('data', c => { body += c; if (body.length > 500000) req.destroy(); });
+      req.on('end', () => {
+        try {
+          const { trending, movers } = JSON.parse(body);
+          if (!Array.isArray(trending) || !Array.isArray(movers)) return json(res, 400, { error: 'trending and movers arrays required' });
+          realLists = { trending: trending.slice(0, 40), movers: movers.slice(0, 40), ts: Date.now() };
+          saveRealLists();
+          return json(res, 200, { ok: true, trending: realLists.trending.length, movers: realLists.movers.length, ts: realLists.ts });
+        } catch (e) {
+          return json(res, 400, { error: 'invalid JSON' });
+        }
+      });
+      return;
+    }
+    if (req.method === 'GET' && u.pathname === '/reallists') {
+      return json(res, 200, {
+        trending: { n: realLists.trending.length, rows: realLists.trending, ts: realLists.ts },
+        movers: { n: realLists.movers.length, rows: realLists.movers, ts: realLists.ts },
+      });
     }
     if (req.method !== 'GET') return json(res, 405, { error: 'read-only' });
     if (u.pathname === '/health') return json(res, 200, { ok: true, mode: bot.cfg.realMode ? 'REAL' : 'SHADOW', uptimeSec: Math.round(process.uptime()) });
