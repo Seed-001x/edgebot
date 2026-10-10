@@ -36,7 +36,7 @@ export class Bot {
     this.busy = { discover: false, poll: false, pos: false };
     this.stats = { discoverTicks: 0, pollTicks: 0, positionTicks: 0, signals: 0, entries: 0, exits: 0, errors: 0, lastError: null, sourceCounts: {}, lastDiscoverTs: 0, lastPollTs: 0 };
     this.entryTimes = []; // timestamps of entries (for pace keeper)
-    this.PACE_TARGET = 24; // target trades per hour (2 per 5 min)
+    this.PACE_TARGET = 120; // target trades per hour (2 per min)
   }
 
   // Pace keeper: returns a relaxed cfg if we're behind the hourly target.
