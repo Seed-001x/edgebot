@@ -35,6 +35,28 @@ export class Bot {
     this.positions = this.loadPositions();
     this.busy = { discover: false, poll: false, pos: false };
     this.stats = { discoverTicks: 0, pollTicks: 0, positionTicks: 0, signals: 0, entries: 0, exits: 0, errors: 0, lastError: null, sourceCounts: {}, lastDiscoverTs: 0, lastPollTs: 0 };
+    this.entryTimes = []; // timestamps of entries (for pace keeper)
+    this.PACE_TARGET = 10; // target trades per hour
+  }
+
+  // Pace keeper: returns a relaxed cfg if we're behind the hourly target.
+  // Never overrides user blacklists, RugCheck safety, or risk limits.
+  paceCfg(n) {
+    const hourAgo = n - 3600000;
+    this.entryTimes = this.entryTimes.filter(t => t > hourAgo);
+    const pace = this.entryTimes.length;
+    if (pace >= this.PACE_TARGET) return { cfg: this.cfg, boosted: false, pace };
+    // Behind target — loosen non-safety gates
+    const relaxed = { ...this.cfg };
+    // Relax volume/liquidity/holder thresholds by 40%
+    if (relaxed.minVolH1) relaxed.minVolH1 *= 0.6;
+    if (relaxed.minLiqUsd) relaxed.minLiqUsd *= 0.6;
+    if (relaxed.minHolders) relaxed.minHolders = Math.max(50, Math.floor(relaxed.minHolders * 0.6));
+    // Widen MC range
+    if (relaxed.maxMc) relaxed.maxMc *= 1.5;
+    if (relaxed.minMc) relaxed.minMc *= 0.7;
+    console.log(`[pace] behind target (${pace}/${this.PACE_TARGET}/hr) — loosening gates`);
+    return { cfg: relaxed, boosted: true, pace };
   }
 
   // ------------------------------------------------------------ persistence
@@ -92,13 +114,15 @@ export class Bot {
       if (!mints.length) return;
       const views = await this.d.fetchViews(mints);
       const n = this.now();
+      // Pace keeper: get relaxed cfg once per tick if behind target
+      const { cfg: tickCfg } = this.paceCfg(n);
       const candidates = [];
       for (const [mint, v] of views) {
         this.latest.set(mint, v);
         this.history.record(v, n);
         this.journal.observe(v);
         if (this.positions.some(p => p.mint === mint)) continue;
-        const sig = detect(v, this.history.get(mint), this.cfg, n);
+        const sig = detect(v, this.history.get(mint), tickCfg, n);
         if (!sig) continue;
         const last = this.lastSignal.get(mint) || 0;
         if (n - last < this.cfg.signalCooldownMin * 60000) continue;
@@ -141,7 +165,9 @@ export class Bot {
       this.d.searchByName(v.symbol).catch(() => []),
     ]);
     const others = [...byName, ...bySym];
-    const g = runGates({ view: v, rug, others, cfg: this.cfg, now: n });
+    // Pace keeper: if behind the hourly target, use relaxed gate thresholds
+    const { cfg: gateCfg, boosted, pace } = this.paceCfg(n);
+    const g = runGates({ view: v, rug, others, cfg: gateCfg, now: n });
     if (!g.pass) {
       // User override: if ALL failing gates are contested by the user (they marked
       // 3+ similar skips as "good"), don't skip — let it through with a warning.
@@ -178,6 +204,7 @@ export class Bot {
     this.positions.push(pos); this.savePositions();
     this.risk.recordEntry(v.address);
     this.stats.entries++;
+    this.entryTimes.push(n);
     // Fire a pump.fun callout for this entry (non-blocking; rewards accrue to the user).
     // The thesis is generated from the signal that triggered the entry.
     postCallout(v, sig).then(r => {
