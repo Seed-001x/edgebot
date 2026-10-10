@@ -51,6 +51,15 @@ export class Journal {
 
   append(file, obj) { try { fs.appendFileSync(file, JSON.stringify(obj) + '\n'); } catch { /* disk full etc. — never crash the bot */ } }
 
+  /** Wipe all human feedback. Returns count cleared. */
+  clearFeedback() {
+    const n = this.feedback.length;
+    this.feedback = [];
+    try { require('fs').writeFileSync(this.f.fb, ''); } catch {}
+    this._blacklistCache = null;
+    return n;
+  }
+
   /** Human feedback: user marks a skipped signal as good (shouldn't have been skipped) or bad (correctly skipped). */
   recordFeedback({ mint, symbol, good, signalId = null }) {
     const rec = { ts: this.now(), mint, symbol, good: !!good, signalId };

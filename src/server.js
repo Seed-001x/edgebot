@@ -49,6 +49,20 @@ export function startServer(bot, port) {
       });
       return;
     }
+    // POST /feedback/clear — wipe all human feedback (fresh start)
+    if (req.method === 'POST' && u.pathname === '/feedback/clear') {
+      let body = '';
+      req.on('data', c => { body += c; if (body.length > 1000) req.destroy(); });
+      req.on('end', () => {
+        try {
+          const n = bot.journal.clearFeedback();
+          return json(res, 200, { ok: true, cleared: n });
+        } catch (e) {
+          return json(res, 500, { error: e.message });
+        }
+      });
+      return;
+    }
     // POST /reallists — browser task pushes scraped pump.fun lists (trending/movers top 40)
     if (req.method === 'POST' && u.pathname === '/reallists') {
       let body = '';
