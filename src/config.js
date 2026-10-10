@@ -39,7 +39,7 @@ export function loadConfig(env = process.env) {
 
     // ---- eligibility ----
     minMc: num(env, 'MIN_MC', 10000),
-    maxMc: num(env, 'MAX_MC', 5_000_000),
+    maxMc: num(env, 'MAX_MC', 2_000_000),
     minLiqUsd: num(env, 'MIN_LIQ_USD', 15000),
     minLiqToMc: num(env, 'MIN_LIQ_TO_MC', 0.03),
 
