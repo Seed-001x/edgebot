@@ -110,17 +110,26 @@ async function dsBoosts() {
  * so you can see immediately if one returns nothing.
  */
 export async function discover(cfg) {
-  const [jupTrend, jupTraded, movers, boosts] = await Promise.all([
+  // Import pump.fun lists (the exact lists the user sees on pump.fun)
+  const { fetchPumpLists } = await import('./pumpLists.js');
+  const [jupTrend, jupTraded, movers, boosts, pumpLists] = await Promise.all([
     jupList(cfg, 'toptrending/1h?limit=150'),
     jupList(cfg, 'toptraded/1h?limit=150'),
     pumpMovers(80),
     dsBoosts(),
+    fetchPumpLists().catch(() => ({})),
   ]);
-  // Note: GeckoTerminal sources (pumpswap-vol, new-pools) removed 2026-10-10 — API fails silently from Render.
-  // Quotas redistributed to working Jupiter/DexScreener sources.
+  // Extract mints from pump.fun lists
+  const pfTrending = (pumpLists.trending || []).map(c => c.address);
+  const pfMovers = (pumpLists.movers || []).map(c => c.address);
+  const pfGraduated = (pumpLists.graduated || []).map(c => c.address);
+  const pfNew = (pumpLists.new || []).map(c => c.address);
+  // Note: GeckoTerminal sources removed 2026-10-10 — API fails silently from Render.
   const plan = [
-    ['jup-trending', jupTrend, 150], ['jup-traded', jupTraded, 100], ['pump-movers', movers, 100],
-    ['boosts', boosts, 30],
+    ['pump-trending', pfTrending, 60], ['pump-movers', pfMovers, 60],
+    ['pump-graduated', pfGraduated, 40], ['pump-new', pfNew, 40],
+    ['jup-trending', jupTrend, 80], ['jup-traded', jupTraded, 60], ['pump-movers-api', movers, 40],
+    ['boosts', boosts, 20],
   ];
   const out = new Map();
   const counts = {};
