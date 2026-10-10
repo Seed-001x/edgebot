@@ -27,7 +27,7 @@ export function evaluateExit(pos, mark, cfg, now) {
   if (peakRatio >= 1 + cfg.trailArm && ratio <= peakRatio * (1 - cfg.trailPct)) return out(1, `trailing stop (${(cfg.trailPct * 100).toFixed(0)}% off peak ${(peakRatio).toFixed(2)}x)`);
 
   // 5. momentum failure: underwater, a few minutes in, sellers dominating
-  if (heldMin >= 3 && ratio < 1 && mark.buysM5 != null && mark.sellsM5 > Math.max(1, mark.buysM5) * cfg.momentumFailSellRatio) return out(1, 'momentum failure (sell-side flow)');
+  if (heldMin >= 5 && ratio < 1 && mark.buysM5 != null && mark.sellsM5 > Math.max(1, mark.buysM5) * cfg.momentumFailSellRatio) return out(1, 'momentum failure (sell-side flow)');
 
   // 6. time stop: didn't work fast enough
   if (heldMin >= cfg.timeStopMin && ratio < 1 + cfg.timeStopMinGain) return out(1, `time stop (${Math.round(heldMin)}m, ${((ratio - 1) * 100).toFixed(0)}%)`);
