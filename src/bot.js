@@ -45,17 +45,13 @@ export class Bot {
     const hourAgo = n - 3600000;
     this.entryTimes = this.entryTimes.filter(t => t > hourAgo);
     const pace = this.entryTimes.length;
-    if (pace >= this.PACE_TARGET) return { cfg: this.cfg, boosted: false, pace };
-    // Behind target — loosen non-safety gates
+    // Gates stay loosened permanently per user (2026-10-10) — bot's been entering good ones
     const relaxed = { ...this.cfg };
-    // Relax volume/liquidity/holder thresholds by 40%
     if (relaxed.minVolH1) relaxed.minVolH1 *= 0.6;
     if (relaxed.minLiqUsd) relaxed.minLiqUsd *= 0.6;
     if (relaxed.minHolders) relaxed.minHolders = Math.max(50, Math.floor(relaxed.minHolders * 0.6));
-    // Widen MC range
     if (relaxed.maxMc) relaxed.maxMc *= 1.5;
     if (relaxed.minMc) relaxed.minMc *= 0.7;
-    console.log(`[pace] behind target (${pace}/${this.PACE_TARGET}/hr) — loosening gates`);
     return { cfg: relaxed, boosted: true, pace };
   }
 
