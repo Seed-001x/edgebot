@@ -8,6 +8,16 @@ export function startServer(bot, port) {
   const json = (res, code, body) => { res.writeHead(code, { 'content-type': 'application/json', 'access-control-allow-origin': '*' }); res.end(JSON.stringify(body, null, 2)); };
   const srv = http.createServer((req, res) => {
     const u = new URL(req.url, 'http://x');
+    // CORS preflight
+    if (req.method === 'OPTIONS') {
+      res.writeHead(200, {
+        'access-control-allow-origin': '*',
+        'access-control-allow-methods': 'GET, POST, OPTIONS',
+        'access-control-allow-headers': 'content-type',
+      });
+      res.end();
+      return;
+    }
     // POST /feedback — human marks a skipped signal as good/bad
     if (req.method === 'POST' && u.pathname === '/feedback') {
       let body = '';
