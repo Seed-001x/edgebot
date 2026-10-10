@@ -22,7 +22,7 @@ export function loadConfig(env = process.env) {
     killEquityFrac: num(env, 'KILL_EQUITY_FRAC', 0.5),  // wallet SOL below this fraction of starting → permanent halt
     minReserveSol: num(env, 'MIN_RESERVE_SOL', 0.02),   // never spend the last of the fees
     maxTradesPerHour: num(env, 'MAX_TRADES_PER_HOUR', 6),
-    mintCooldownMin: num(env, 'MINT_COOLDOWN_MIN', 45),
+    mintCooldownMin: num(env, 'MINT_COOLDOWN_MIN', 20),
     maxPoolFraction: num(env, 'MAX_POOL_FRACTION', 0.01), // position ≤ 1% of pool liquidity
     allowLarge: env.ALLOW_LARGE === '1',                // typo guard: TRADE_SOL > 0.25 refused unless set
     shadowStartSol: num(env, 'SHADOW_START_SOL', 1),
