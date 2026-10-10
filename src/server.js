@@ -7,6 +7,22 @@ export function startServer(bot, port) {
   const json = (res, code, body) => { res.writeHead(code, { 'content-type': 'application/json', 'access-control-allow-origin': '*' }); res.end(JSON.stringify(body, null, 2)); };
   const srv = http.createServer((req, res) => {
     const u = new URL(req.url, 'http://x');
+    // POST /feedback — human marks a skipped signal as good/bad
+    if (req.method === 'POST' && u.pathname === '/feedback') {
+      let body = '';
+      req.on('data', c => { body += c; if (body.length > 10000) req.destroy(); });
+      req.on('end', () => {
+        try {
+          const { mint, symbol, good, signalId } = JSON.parse(body);
+          if (!mint) return json(res, 400, { error: 'mint required' });
+          const rec = bot.journal.recordFeedback({ mint, symbol, good, signalId });
+          return json(res, 200, { ok: true, feedback: rec });
+        } catch (e) {
+          return json(res, 400, { error: 'invalid JSON' });
+        }
+      });
+      return;
+    }
     if (req.method !== 'GET') return json(res, 405, { error: 'read-only' });
     if (u.pathname === '/health') return json(res, 200, { ok: true, mode: bot.cfg.realMode ? 'REAL' : 'SHADOW', uptimeSec: Math.round(process.uptime()) });
     if (u.pathname === '/state') return json(res, 200, bot.state());

@@ -26,12 +26,13 @@ export class Journal {
   constructor(dir, { now = Date.now } = {}) {
     this.now = now;
     this.dir = dir;
-    this.f = { sig: path.join(dir, 'signals.jsonl'), out: path.join(dir, 'outcomes.jsonl'), trades: path.join(dir, 'trades.jsonl') };
+    this.f = { sig: path.join(dir, 'signals.jsonl'), out: path.join(dir, 'outcomes.jsonl'), trades: path.join(dir, 'trades.jsonl'), fb: path.join(dir, 'feedback.jsonl') };
     try { fs.mkdirSync(dir, { recursive: true }); } catch { /* ignore */ }
     this.signals = [];        // { id, ts, mint, symbol, setup, decision, reasons, price, mc, out:{} }
     this.byId = new Map();
     this.pending = new Map(); // id -> tracking state
     this.trades = [];
+    this.feedback = [];       // human feedback on skipped signals
     this.seq = 0;
     this.boot();
   }
@@ -40,6 +41,7 @@ export class Journal {
     for (const s of readTail(this.f.sig, KEEP)) { s.out = {}; this.signals.push(s); this.byId.set(s.id, s); this.seq = Math.max(this.seq, Number(String(s.id).split('-').pop()) || 0); }
     for (const o of readTail(this.f.out, KEEP * 2)) { const s = this.byId.get(o.id); if (s) s.out = o; }
     this.trades = readTail(this.f.trades, KEEP);
+    this.feedback = readTail(this.f.fb, KEEP);
     const n = this.now();
     for (const s of this.signals) {
       if (!s.out || s.out.done) continue;
@@ -48,6 +50,15 @@ export class Journal {
   }
 
   append(file, obj) { try { fs.appendFileSync(file, JSON.stringify(obj) + '\n'); } catch { /* disk full etc. — never crash the bot */ } }
+
+  /** Human feedback: user marks a skipped signal as good (shouldn't have been skipped) or bad (correctly skipped). */
+  recordFeedback({ mint, symbol, good, signalId = null }) {
+    const rec = { ts: this.now(), mint, symbol, good: !!good, signalId };
+    this.feedback.push(rec);
+    if (this.feedback.length > KEEP) this.feedback.shift();
+    this.append(this.f.fb, rec);
+    return rec;
+  }
 
   signal({ mint, symbol, setup, decision, reasons = [], price, mc, metrics = null, warnings = [] }) {
     const ts = this.now();
