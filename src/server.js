@@ -80,6 +80,20 @@ export function startServer(bot, port) {
       });
       return;
     }
+    if (req.method === 'GET' && u.pathname === '/watchlist') {
+      const out = [];
+      for (const [mint, w] of bot.watch) {
+        const v = bot.latest.get(mint);
+        out.push({
+          mint,
+          symbol: v?.symbol || '?',
+          name: v?.name || '',
+          mc: v?.mc || null,
+          source: w.source || '?',
+        });
+      }
+      return json(res, 200, { count: out.length, coins: out });
+    }
     if (req.method === 'GET' && u.pathname === '/reallists') {
       return json(res, 200, {
         trending: { n: realLists.trending.length, rows: realLists.trending, ts: realLists.ts },
