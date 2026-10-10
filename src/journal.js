@@ -1,0 +1,138 @@
+// journal.js — the part that tells you whether any of this actually works.
+//
+// EVERY signal is logged — taken AND skipped — with the price at signal time. Then each signal is
+// followed forward and its return is recorded at +5 / +15 / +60 minutes (plus best/worst seen).
+// /report aggregates by setup and decision, and for skipped signals by skip reason, so you can see:
+//   • does each detector have any edge at all?  (taken vs. nothing)
+//   • are the gates SAVING you (skipped coins do badly) or COSTING you (skipped coins do great)?
+// Files are append-only JSONL under DATA_DIR. Use a persistent disk or they vanish on redeploy.
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { mean, median, round } from './util.js';
+
+const CPS = [5, 15, 60];          // minutes
+const EXPIRE_MIN = 90;
+const KEEP = 5000;
+
+function readTail(file, n) {
+  try {
+    const lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean);
+    return lines.slice(-n).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+  } catch { return []; }
+}
+
+export class Journal {
+  constructor(dir, { now = Date.now } = {}) {
+    this.now = now;
+    this.dir = dir;
+    this.f = { sig: path.join(dir, 'signals.jsonl'), out: path.join(dir, 'outcomes.jsonl'), trades: path.join(dir, 'trades.jsonl') };
+    try { fs.mkdirSync(dir, { recursive: true }); } catch { /* ignore */ }
+    this.signals = [];        // { id, ts, mint, symbol, setup, decision, reasons, price, mc, out:{} }
+    this.byId = new Map();
+    this.pending = new Map(); // id -> tracking state
+    this.trades = [];
+    this.seq = 0;
+    this.boot();
+  }
+
+  boot() {
+    for (const s of readTail(this.f.sig, KEEP)) { s.out = {}; this.signals.push(s); this.byId.set(s.id, s); this.seq = Math.max(this.seq, Number(String(s.id).split('-').pop()) || 0); }
+    for (const o of readTail(this.f.out, KEEP * 2)) { const s = this.byId.get(o.id); if (s) s.out = o; }
+    this.trades = readTail(this.f.trades, KEEP);
+    const n = this.now();
+    for (const s of this.signals) {
+      if (!s.out || s.out.done) continue;
+      if (n - s.ts < EXPIRE_MIN * 60000 && s.price > 0) this.pending.set(s.id, { max: s.price, min: s.price, got: {} });
+    }
+  }
+
+  append(file, obj) { try { fs.appendFileSync(file, JSON.stringify(obj) + '\n'); } catch { /* disk full etc. — never crash the bot */ } }
+
+  signal({ mint, symbol, setup, decision, reasons = [], price, mc, metrics = null, warnings = [] }) {
+    const ts = this.now();
+    const id = `${ts}-${++this.seq}`;
+    const rec = { id, ts, mint, symbol, setup, decision, reasons, price, mc, metrics, warnings };
+    this.signals.push(rec); this.byId.set(id, rec); rec.out = {};
+    if (this.signals.length > KEEP) { const old = this.signals.shift(); this.byId.delete(old.id); }
+    this.append(this.f.sig, rec);
+    if (price > 0) this.pending.set(id, { max: price, min: price, got: {} });
+    return id;
+  }
+
+  /** Feed every fresh view in; advances outcome checkpoints for pending signals on that mint. */
+  observe(view) {
+    if (!view || !(view.price > 0)) return;
+    const n = this.now();
+    for (const [id, st] of this.pending) {
+      const s = this.byId.get(id);
+      if (!s) { this.pending.delete(id); continue; }
+      if (s.mint !== view.address) continue;
+      st.max = Math.max(st.max, view.price); st.min = Math.min(st.min, view.price);
+      const ageMin = (n - s.ts) / 60000;
+      for (const cp of CPS) {
+        if (ageMin >= cp && st.got[cp] == null) st.got[cp] = view.price / s.price - 1;
+      }
+      if (st.got[60] != null) this.finish(id, s, st, false);
+    }
+    // expire signals we stopped seeing
+    for (const [id, st] of this.pending) {
+      const s = this.byId.get(id);
+      if (s && (n - s.ts) / 60000 > EXPIRE_MIN) this.finish(id, s, st, true);
+    }
+  }
+
+  finish(id, s, st, expired) {
+    const o = {
+      id, mint: s.mint, symbol: s.symbol, setup: s.setup, decision: s.decision,
+      r5: round(st.got[5]), r15: round(st.got[15]), r60: round(st.got[60]),
+      maxRet: round(st.max / s.price - 1), minRet: round(st.min / s.price - 1), done: true, expired,
+    };
+    s.out = o; this.pending.delete(id); this.append(this.f.out, o);
+  }
+
+  trade(t) { this.trades.push(t); if (this.trades.length > KEEP) this.trades.shift(); this.append(this.f.trades, t); }
+
+  recent(limit = 50) { return this.signals.slice(-limit).reverse(); }
+
+  report() {
+    const live = (s) => {  // outcomes may be partial while pending
+      const st = this.pending.get(s.id);
+      return st ? { r5: st.got[5], r15: st.got[15], r60: st.got[60], maxRet: st.max / s.price - 1 } : s.out || {};
+    };
+    const agg = (arr) => {
+      const o = arr.map(live);
+      const col = (k) => o.map(x => x[k]).filter(Number.isFinite);
+      const r15 = col('r15');
+      return {
+        n: arr.length, withR15: r15.length,
+        avgR5: round(mean(col('r5'))), avgR15: round(mean(r15)), medR15: round(median(r15)), avgR60: round(mean(col('r60'))),
+        winRate15: r15.length ? round(r15.filter(x => x > 0).length / r15.length, 3) : null,
+        avgMaxRet: round(mean(col('maxRet'))),
+      };
+    };
+    const groups = {};
+    for (const s of this.signals) (groups[`${s.setup}/${s.decision}`] ||= []).push(s);
+    const bySetup = Object.fromEntries(Object.entries(groups).map(([k, v]) => [k, agg(v)]));
+
+    const skipped = this.signals.filter(s => s.decision === 'skipped');
+    const cats = {};
+    for (const s of skipped) {
+      const r = (s.reasons && s.reasons[0]) || 'unknown';
+      (cats[String(r).split(':')[0]] ||= []).push(s);
+    }
+    const bySkipReason = Object.fromEntries(Object.entries(cats).map(([k, v]) => [k, agg(v)]));
+
+    const closed = this.trades.filter(t => t.type === 'close');
+    const pnl = closed.map(t => t.pnlSol);
+    const tradeStats = {
+      closed: closed.length, wins: closed.filter(t => t.pnlSol > 0).length,
+      totalPnlSol: round(pnl.reduce((a, b) => a + b, 0), 5), avgPnlSol: round(mean(pnl), 5),
+      byExitReason: Object.fromEntries(Object.entries(closed.reduce((m, t) => { const k = String(t.reason || '').split(' (')[0].split(' ')[0] || 'unknown'; (m[k] ||= []).push(t.pnlSol); return m; }, {})).map(([k, v]) => [k, { n: v.length, pnlSol: round(v.reduce((a, b) => a + b, 0), 5) }])),
+    };
+    return {
+      note: 'avgR* are mean returns of price vs. price at signal time. Skipped-signal returns that are strongly negative mean the gate is saving you; strongly positive means it is costing you.',
+      signals: this.signals.length, bySetup, bySkipReason, trades: tradeStats,
+    };
+  }
+}

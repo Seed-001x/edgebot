@@ -1,0 +1,16 @@
+{
+  "name": "edgebot",
+  "version": "1.0.0",
+  "description": "Solana memecoin runner bot: wide discovery, fast pop detection, rigged-launch + clone gates, exit-value sizing, hard risk limits, outcome logging.",
+  "type": "module",
+  "main": "src/index.js",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.98.0",
+    "bs58": "^6.0.0"
+  }
+}
