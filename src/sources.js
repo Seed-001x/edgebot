@@ -110,20 +110,17 @@ async function dsBoosts() {
  * so you can see immediately if one returns nothing.
  */
 export async function discover(cfg) {
-  const [jupTrend, jupTraded, movers, gtGrad, gtNew, boosts] = await Promise.all([
-    jupList(cfg, 'toptrending/1h?limit=100'),
-    jupList(cfg, 'toptraded/1h?limit=100'),
-    pumpMovers(50),
-    (async () => {
-      const a = await gtPools('networks/solana/dexes/pumpswap/pools?page=1&sort=h24_volume_usd_desc&include=base_token');
-      return a.length ? a : gtPools('networks/solana/dexes/pumpswap/pools?page=1&include=base_token');
-    })(),
-    gtPools('networks/solana/new_pools?page=1&include=base_token'),
+  const [jupTrend, jupTraded, movers, boosts] = await Promise.all([
+    jupList(cfg, 'toptrending/1h?limit=150'),
+    jupList(cfg, 'toptraded/1h?limit=150'),
+    pumpMovers(80),
     dsBoosts(),
   ]);
+  // Note: GeckoTerminal sources (pumpswap-vol, new-pools) removed 2026-10-10 — API fails silently from Render.
+  // Quotas redistributed to working Jupiter/DexScreener sources.
   const plan = [
-    ['jup-trending', jupTrend, 120], ['jup-traded', jupTraded, 80], ['pump-movers', movers, 80],
-    ['pumpswap-vol', gtGrad, 45], ['boosts', boosts, 20], ['new-pools', gtNew, 25],
+    ['jup-trending', jupTrend, 150], ['jup-traded', jupTraded, 100], ['pump-movers', movers, 100],
+    ['boosts', boosts, 30],
   ];
   const out = new Map();
   const counts = {};
