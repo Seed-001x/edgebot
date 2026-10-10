@@ -15,6 +15,7 @@ import { runGates } from './gate.js';
 import { evaluateExit } from './exits.js';
 import { Journal } from './journal.js';
 import { Risk } from './risk.js';
+import { postCallout } from './callout.js';
 
 export class Bot {
   /**
@@ -177,6 +178,9 @@ export class Bot {
     this.positions.push(pos); this.savePositions();
     this.risk.recordEntry(v.address);
     this.stats.entries++;
+    // Fire a pump.fun callout for this entry (non-blocking; rewards accrue to the user).
+    // The thesis is generated from the signal that triggered the entry.
+    postCallout(v, sig).catch(e => console.log('[callout] failed:', e.message));
     this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'taken', reasons: [], price: v.price, mc: v.mc, metrics: { ...sig.metrics, roundTrip: +rt.ratio.toFixed(3), sizeSol: size }, warnings: g.warnings });
     this.journal.trade({ type: 'open', id: pos.id, mint: pos.mint, symbol: pos.symbol, setup: pos.setup, entrySol: pos.entrySol, sig: fill.sig, simulated: fill.simulated, ts: n });
   }
