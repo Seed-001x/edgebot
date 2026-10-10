@@ -135,7 +135,19 @@ export class Bot {
     ]);
     const others = [...byName, ...bySym];
     const g = runGates({ view: v, rug, others, cfg: this.cfg, now: n });
-    if (!g.pass) return this.skip(v, sig, g.fails, g.warnings);
+    if (!g.pass) {
+      // User override: if ALL failing gates are contested by the user (they marked
+      // 3+ similar skips as "good"), don't skip — let it through with a warning.
+      const contested = this.journal.contestedGates();
+      const failReasons = g.fails.map(f => String(f).split(':')[0]);
+      const allContested = failReasons.length > 0 && failReasons.every(r => contested.has(r));
+      if (allContested) {
+        console.log(`[learn] override: user contested gates ${failReasons.join(',')} — letting ${v.symbol} through`);
+        // Don't skip, continue to round-trip check below
+      } else {
+        return this.skip(v, sig, g.fails, g.warnings);
+      }
+    }
 
     // exit-value check: price a buy AND the immediate sell-back before spending anything
     let rt;

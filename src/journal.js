@@ -60,6 +60,37 @@ export class Journal {
     return rec;
   }
 
+  /** Returns Set of gate names the user has contested (marked 3+ as good, good > bad). Cached for performance. */
+  contestedGates() {
+    const now = this.now();
+    // Cache for 60s to avoid recomputing on every signal
+    if (this._contestedCache && now - this._contestedCache.ts < 60000) {
+      return this._contestedCache.gates;
+    }
+    const byReason = {};
+    for (const fb of this.feedback) {
+      let reasons = ['unknown'];
+      if (fb.signalId) {
+        const s = this.byId.get(fb.signalId);
+        if (s && s.reasons) reasons = s.reasons;
+      } else {
+        const sig = [...this.signals].reverse().find(s => s.mint === fb.mint);
+        if (sig && sig.reasons) reasons = sig.reasons;
+      }
+      const r = String(reasons[0] || 'unknown').split(':')[0];
+      if (!byReason[r]) byReason[r] = { good: 0, bad: 0 };
+      if (fb.good) byReason[r].good++;
+      else byReason[r].bad++;
+    }
+    const gates = new Set(
+      Object.entries(byReason)
+        .filter(([_, v]) => (v.good + v.bad) >= 3 && v.good > v.bad)
+        .map(([k, _]) => k)
+    );
+    this._contestedCache = { ts: now, gates };
+    return gates;
+  }
+
   signal({ mint, symbol, setup, decision, reasons = [], price, mc, metrics = null, warnings = [] }) {
     const ts = this.now();
     const id = `${ts}-${++this.seq}`;

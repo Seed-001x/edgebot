@@ -78,7 +78,7 @@ export function loadConfig(env = process.env) {
     discoverEverySec: num(env, 'DISCOVER_EVERY_SEC', 20),
     pollEverySec: num(env, 'POLL_EVERY_SEC', 10),
     positionEverySec: num(env, 'POSITION_EVERY_SEC', 8),
-    watchMax: num(env, 'WATCH_MAX', 150),
+    watchMax: num(env, 'WATCH_MAX', 300),
     watchTtlMin: num(env, 'WATCH_TTL_MIN', 20),
     signalCooldownMin: num(env, 'SIGNAL_COOLDOWN_MIN', 10),
     maxSignalsPerTick: num(env, 'MAX_SIGNALS_PER_TICK', 3),
