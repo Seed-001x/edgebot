@@ -74,7 +74,7 @@ export function loadConfig(env = process.env) {
     setupBlacklistMin: num(env, 'SETUP_BLACKLIST_MIN', 0),
 
     // ---- exits (judged on REALIZABLE value = Jupiter sell quote, not screen price) ----
-    stopLoss: num(env, 'STOP_LOSS', 0.30),
+    stopLoss: num(env, 'STOP_LOSS', 0.15),
     tp1Pct: num(env, 'TP1_PCT', 0.40),
     tp1Frac: num(env, 'TP1_FRAC', 0.5),
     trailArm: num(env, 'TRAIL_ARM', 0.25),
