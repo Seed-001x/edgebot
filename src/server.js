@@ -80,6 +80,12 @@ export function startServer(bot, port) {
       });
       return;
     }
+    if (req.method === 'POST' && u.pathname === '/positions/clear') {
+      const n = bot.positions.length;
+      bot.positions = [];
+      bot.savePositions();
+      return json(res, 200, { ok: true, cleared: n });
+    }
     if (req.method === 'GET' && u.pathname === '/watchlist') {
       const out = [];
       for (const [mint, w] of bot.watch) {
