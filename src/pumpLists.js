@@ -87,6 +87,8 @@ export async function fetchPumpList(name, url, { fetchImpl = fetch, env = proces
     try { j = await r.json(); } catch { st.err = 'non-JSON response (HTML challenge page?)'; return []; }
     const rows = normalizeRows(j, 'pump-' + name);
     st.ok = rows.length > 0; st.n = rows.length;
+    // Cache top 20 for the mirror tab
+    st.rows = rows.slice(0, 20).map(r => ({ address: r.address, symbol: r.symbol, name: r.name, usdMc: r.usdMc }));
     if (!rows.length) st.err = 'parsed 0 coins (unexpected shape): ' + JSON.stringify(j).slice(0, 160);
     return rows;
   } catch (e) { st.err = String(e && (e.cause && e.cause.code || e.message) || e); return []; }
