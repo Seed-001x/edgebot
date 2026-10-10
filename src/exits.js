@@ -29,6 +29,12 @@ export function evaluateExit(pos, mark, cfg, now) {
   // 5. momentum failure: underwater, 10 min in, essentially no buyers (only sell when truly dead)
   if (heldMin >= 10 && ratio < 1 && mark.buysM5 != null && mark.buysM5 <= 1 && mark.sellsM5 > mark.buysM5 * 3) return out(1, 'momentum failure (no buyers)');
 
+  // 5b. volume decay: volume dried up 70%+ from entry and price isn't pushing up — no fuel left
+  if (pos.entryVolH1 > 0 && mark.volH1 != null && heldMin >= 5) {
+    const volRatio = mark.volH1 / pos.entryVolH1;
+    if (volRatio < 0.3 && ratio < 1.05) return out(1, `volume decay (vol ${(volRatio * 100).toFixed(0)}% of entry, price ${((ratio - 1) * 100).toFixed(1)}%)`);
+  }
+
   // 6. time stop: didn't work fast enough
   if (heldMin >= cfg.timeStopMin && ratio < 1 + cfg.timeStopMinGain) return out(1, `time stop (${Math.round(heldMin)}m, ${((ratio - 1) * 100).toFixed(0)}%)`);
 

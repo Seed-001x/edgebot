@@ -206,6 +206,7 @@ export class Bot {
       id: `${v.address.slice(0, 6)}-${n}`, mint: v.address, symbol: v.symbol, setup: sig.setup,
       entryTs: n, entrySol: fill.solSpent, tokensRaw: fill.tokensRaw, remainingFrac: 1, peakRatio: 1, tp1Done: false,
       entryPrice: v.price, entryMc: v.mc, realizedSol: 0, simulated: fill.simulated, sigBuy: fill.sig, markFails: 0,
+      entryVolH1: v.volH1 || 0,
     };
     this.positions.push(pos); this.savePositions();
     this.risk.recordEntry(v.address);
@@ -252,7 +253,7 @@ export class Bot {
       if (pos.markFails >= 4) decision = { fraction: 1, reason: `no sell quote for ${pos.markFails} ticks`, newPeak: pos.peakRatio };
       else return;
     } else {
-      decision = evaluateExit(pos, { valueSol, liqUsd: v.liq != null ? v.liq : null, buysM5: v.buysM5 != null ? v.buysM5 : null, sellsM5: v.sellsM5 || 0, solUsd }, this.cfg, n);
+      decision = evaluateExit(pos, { valueSol, liqUsd: v.liq != null ? v.liq : null, buysM5: v.buysM5 != null ? v.buysM5 : null, sellsM5: v.sellsM5 || 0, solUsd, volH1: v.volH1 || 0 }, this.cfg, n);
     }
     pos.peakRatio = decision.newPeak || pos.peakRatio;
     if (!(decision.fraction > 0)) { this.savePositions(); return; }
