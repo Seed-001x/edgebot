@@ -122,7 +122,7 @@ export async function discover(cfg) {
     dsBoosts(),
   ]);
   const plan = [
-    ['jup-trending', jupTrend, 90], ['jup-traded', jupTraded, 60], ['pump-movers', movers, 60],
+    ['jup-trending', jupTrend, 120], ['jup-traded', jupTraded, 80], ['pump-movers', movers, 80],
     ['pumpswap-vol', gtGrad, 45], ['boosts', boosts, 20], ['new-pools', gtNew, 25],
   ];
   const out = new Map();
