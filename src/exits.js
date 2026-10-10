@@ -17,8 +17,9 @@ export function evaluateExit(pos, mark, cfg, now) {
   const valueUsd = mark.valueSol * (mark.solUsd || 150);
   if (mark.liqUsd != null && (mark.liqUsd < 2000 || mark.liqUsd < valueUsd * 2)) return out(1, `liquidity death ($${Math.round(mark.liqUsd)} liq vs $${Math.round(valueUsd)} position)`);
 
-  // 2. hard stop on realizable value
-  if (ratio <= 1 - cfg.stopLoss) return out(1, `stop-loss (${((ratio - 1) * 100).toFixed(0)}%)`);
+  // 2. hard stop on realizable value — but not into a dip with two-sided volume
+  const twoSided = mark.buysM5 != null && mark.sellsM5 != null && mark.buysM5 >= 2 && mark.sellsM5 >= 2;
+  if (ratio <= 1 - cfg.stopLoss && !twoSided) return out(1, `stop-loss (${((ratio - 1) * 100).toFixed(0)}%)`);
 
   // 3. first take-profit: bank part, let the rest run
   if (!pos.tp1Done && ratio >= 1 + cfg.tp1Pct) return { ...out(cfg.tp1Frac, `TP1 +${(cfg.tp1Pct * 100).toFixed(0)}%`), tp1: true };
