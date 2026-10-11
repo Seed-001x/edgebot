@@ -70,9 +70,9 @@ export function startServer(bot, port) {
       req.on('data', c => { body += c; if (body.length > 5000) req.destroy(); });
       req.on('end', () => {
         try {
-          const { id, reason } = JSON.parse(body);
+          const { id, reason, note } = JSON.parse(body);
           if (!EXIT_REASONS.includes(reason)) return json(res, 400, { error: 'reason must be one of ' + EXIT_REASONS.join(', ') });
-          const m = bot.journal.tagExit(id, reason);
+          const m = bot.journal.tagExit(id, reason, typeof note === 'string' ? note.slice(0, 300) : undefined);
           return m ? json(res, 200, { ok: true, exit: m }) : json(res, 404, { error: 'no such manual exit' });
         } catch { return json(res, 400, { error: 'invalid JSON' }); }
       });
@@ -94,7 +94,7 @@ export function startServer(bot, port) {
     // GET /learn — recent manual exits + comparison with bot winners
     if (req.method === 'GET' && u.pathname === '/learn') {
       const report = learnReport(bot.journal.manual, bot.journal.trades);
-      const exits = bot.journal.manual.slice(-20).reverse().map(m => ({ id: m.id, symbol: m.symbol, mint: m.mint, ts: m.ts, heldMin: m.heldMin, peakRatio: m.peakRatio, pnlSolEstimate: m.pnlSolEstimate, reason: m.reason || null, how: m.how }));
+      const exits = bot.journal.manual.slice(-20).reverse().map(m => ({ id: m.id, symbol: m.symbol, mint: m.mint, ts: m.ts, heldMin: m.heldMin, peakRatio: m.peakRatio, pnlSolEstimate: m.pnlSolEstimate, reason: m.reason || null, note: m.note || null, how: m.how }));
       report.exits = exits;
       report.recent = exits; // dashboard expects `recent`
       return json(res, 200, report);

@@ -70,9 +70,10 @@ export class Journal {
   /** a position the human closed outside the bot */
   manualExit(rec) { this.manual.push(rec); if (this.manual.length > KEEP) this.manual.shift(); this.append(this.f.manual, rec); return rec; }
   /** attach the reason the human gave (see learn.js EXIT_REASONS) */
-  tagExit(id, reason) {
+  tagExit(id, reason, note) {
     const m = this.manual.find(x => x.id === id); if (!m) return null;
-    m.reason = reason; this.append(this.f.manual, { type: 'tag', id, reason, ts: this.now() }); return m;
+    m.reason = reason; if (note) m.note = note;
+    this.append(this.f.manual, { type: 'tag', id, reason, note: note || undefined, ts: this.now() }); return m;
   }
 
   /** Human feedback: user marks a skipped signal as good (shouldn't have been skipped) or bad (correctly skipped). */
