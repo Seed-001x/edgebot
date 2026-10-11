@@ -107,6 +107,14 @@ export class Bot {
       const found = await this.d.discover(this.cfg);
       const n = this.now();
       for (const [mint, source] of found) this.watch.set(mint, { ts: n, source });
+      // Feed scraped pump.fun trending/movers into the watchlist
+      try {
+        const rl = JSON.parse(fs.readFileSync(path.join(this.cfg.dataDir, 'reallists.json'), 'utf8'));
+        for (const row of [...(rl.trending || []), ...(rl.movers || [])]) {
+          const mint = row.mint || row.address;
+          if (mint && !this.watch.has(mint)) this.watch.set(mint, { ts: n, source: 'reallists' });
+        }
+      } catch {}
       this.stats.sourceCounts = found.counts || {};
       this.stats.discoverTicks++; this.stats.lastDiscoverTs = n;
       // prune: stale entries first; hard cap keeps the freshest, never drops open positions
