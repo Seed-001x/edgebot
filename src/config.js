@@ -24,7 +24,7 @@ export function loadConfig(env = process.env) {
     maxTradesPerHour: num(env, 'MAX_TRADES_PER_HOUR', 120),
     mandatoryApesPerHour: num(env, 'MANDATORY_APES_PER_HOUR', 5),
     mintCooldownMin: num(env, 'MINT_COOLDOWN_MIN', 20),
-    maxPoolFraction: num(env, 'MAX_POOL_FRACTION', 0.01), // position ≤ 1% of pool liquidity
+    maxPoolFraction: num(env, 'MAX_POOL_FRACTION', 0.05), // position ≤ 5% of pool liquidity
     allowLarge: env.ALLOW_LARGE === '1',                // typo guard: TRADE_SOL > 0.25 refused unless set
     shadowStartSol: num(env, 'SHADOW_START_SOL', 1),
 
