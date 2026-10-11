@@ -157,6 +157,8 @@ export function startServer(bot, port) {
       return json(res, 200, {
         trending: { n: realLists.trending.length, rows: realLists.trending, ts: realLists.ts },
         movers: { n: realLists.movers.length, rows: realLists.movers, ts: realLists.ts },
+        graduated: { n: (realLists.graduated || []).length, rows: realLists.graduated || [], ts: realLists.ts },
+        new: { n: (realLists.new || []).length, rows: realLists.new || [], ts: realLists.ts },
       });
     }
     if (req.method !== 'GET') return json(res, 405, { error: 'read-only' });
