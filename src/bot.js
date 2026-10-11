@@ -38,7 +38,13 @@ export class Bot {
     this.stats = { discoverTicks: 0, pollTicks: 0, positionTicks: 0, signals: 0, entries: 0, exits: 0, errors: 0, lastError: null, sourceCounts: {}, lastDiscoverTs: 0, lastPollTs: 0 };
     this.entryTimes = []; // timestamps of entries (for pace keeper)
     this.PACE_TARGET = 120; // target trades per hour (2 per min)
+    this.namesFile = path.join(cfg.dataDir, 'entered-names.json');
+    this.enteredNames = this.loadEnteredNames();
   }
+
+  loadEnteredNames() { try { return new Set(JSON.parse(fs.readFileSync(this.namesFile, 'utf8'))); } catch { return new Set(); } }
+  saveEnteredNames() { try { fs.writeFileSync(this.namesFile, JSON.stringify([...this.enteredNames])); } catch { /* best effort */ } }
+  normName(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9]/g, ''); }
 
   // Pace keeper: returns a relaxed cfg if we're behind the hourly target.
   // Never overrides user blacklists, RugCheck safety, or risk limits.
@@ -177,6 +183,12 @@ export class Bot {
       console.log(`[learn] skip: user blacklisted setup "${sig.setup}" — skipping ${v.symbol}`);
       return this.skip(v, sig, [`user-blacklist: setup "${sig.setup}" marked bad ${10}+ times`]);
     }
+    // Copycat dedup: if we already entered a coin with this name, skip same-name coins
+    const nn = this.normName(v.name) || this.normName(v.symbol);
+    if (nn && this.enteredNames.has(nn)) {
+      console.log(`[dedup] skip: already entered a coin named "${v.name || v.symbol}" — skipping copycat`);
+      return this.skip(v, sig, [`copycat: already entered "${v.name || v.symbol}"`]);
+    }
     const [solUsd, walletSol] = await Promise.all([this.d.fetchSolUsd(), this.exec.solBalance()]);
     const open = this.positions.reduce((a, p) => a + p.entrySol * p.remainingFrac, 0);
     this.risk.checkKill(walletSol, open);
@@ -241,6 +253,8 @@ export class Bot {
       bw: { tracked: null, supply: rug && rug.token ? Number(rug.token.supply) || 0 : 0, creator: rug && rug.creator ? String(rug.creator) : null, weights: linkedWeights(rug), snaps: [], vals: [], lastTs: 0, trimmed: false },
     };
     this.positions.push(pos); this.savePositions();
+    const en = this.normName(v.name) || this.normName(v.symbol);
+    if (en) { this.enteredNames.add(en); this.saveEnteredNames(); }
     this.risk.recordEntry(v.address);
     this.stats.entries++;
     this.entryTimes.push(n);
