@@ -195,17 +195,26 @@ export class Bot {
     const { cfg: gateCfg, boosted, pace } = this.paceCfg(n);
     const g = runGates({ view: v, rug, others, cfg: gateCfg, now: n });
     if (!g.pass) {
-      // User override: if ALL failing gates are contested by the user (they marked
-      // 3+ similar skips as "good"), don't skip — let it through with a warning.
-      const contested = this.journal.contestedGates();
-      const failReasons = g.fails.map(f => String(f).split(':')[0]);
-      const allContested = failReasons.length > 0 && failReasons.every(r => contested.has(r));
-      // Structural gates (insiders, farm, SOL-side depth, ladder, mint/freeze, ...) can NEVER be overridden
-      if (allContested && !hasHardFail(g.fails)) {
-        console.log(`[learn] override: user contested gates ${failReasons.join(',')} — letting ${v.symbol} through`);
+      // Mandatory ape mode: if under 5 entries/hour, force through unless unsurvivable
+      const hourEntries = this.entryTimes.filter(t => t > n - 3600000).length;
+      const unsurvivable = (g.fails || []).some(f => /^(rugged|mintAuthority|freezeAuthority)/.test(String(f).split(':')[0]));
+      const mandatoryTarget = this.cfg.mandatoryApesPerHour || 0;
+      if (mandatoryTarget > 0 && hourEntries < mandatoryTarget && !unsurvivable) {
+        console.log(`[mandatory] forcing ${v.symbol} through gates (${hourEntries}/${mandatoryTarget} this hour) — skipped: ${g.fails.join('; ').slice(0, 120)}`);
         // Don't skip, continue to round-trip check below
       } else {
-        return this.skip(v, sig, g.fails, g.warnings);
+        // User override: if ALL failing gates are contested by the user (they marked
+        // 3+ similar skips as "good"), don't skip — let it through with a warning.
+        const contested = this.journal.contestedGates();
+        const failReasons = g.fails.map(f => String(f).split(':')[0]);
+        const allContested = failReasons.length > 0 && failReasons.every(r => contested.has(r));
+        // Structural gates (insiders, farm, SOL-side depth, ladder, mint/freeze, ...) can NEVER be overridden
+        if (allContested && !hasHardFail(g.fails)) {
+          console.log(`[learn] override: user contested gates ${failReasons.join(',')} — letting ${v.symbol} through`);
+          // Don't skip, continue to round-trip check below
+        } else {
+          return this.skip(v, sig, g.fails, g.warnings);
+        }
       }
     }
 
