@@ -17,6 +17,7 @@ import { bundleRisk, bundleDecision, pickTracked, linkedWeights, CREATOR_KEY } f
 import { Journal } from './journal.js';
 import { Risk } from './risk.js';
 import { postCallout } from './callout.js';
+import { snapshotFeatures, externalExit } from './learn.js';
 
 export class Bot {
   /**
@@ -251,6 +252,7 @@ export class Bot {
       entryPrice: v.price, entryMc: v.mc, realizedSol: 0, simulated: fill.simulated, sigBuy: fill.sig, markFails: 0,
       entryVolH1: v.volH1 || 0,
       bw: { tracked: null, supply: rug && rug.token ? Number(rug.token.supply) || 0 : 0, creator: rug && rug.creator ? String(rug.creator) : null, weights: linkedWeights(rug), snaps: [], vals: [], lastTs: 0, trimmed: false },
+      entry: snapshotFeatures({ v, sig, rug, g, now: n }), lastTickTs: 0, lastChainTs: 0, chainDropStrikes: 0,
     };
     this.positions.push(pos); this.savePositions();
     const en = this.normName(v.name) || this.normName(v.symbol);
@@ -319,6 +321,27 @@ export class Bot {
       decision = evaluateExit(pos, { valueSol, liqUsd: v.liq != null ? v.liq : null, buysM5: v.buysM5 != null ? v.buysM5 : null, sellsM5: v.sellsM5 || 0, solUsd, volH1: v.volH1 || 0 }, this.cfg, n);
     }
     pos.peakRatio = decision.newPeak || pos.peakRatio;
+    // learning log: trajectory sample every ~10s, and detection of a sell the human made in their own wallet
+    if (valueSol != null && n - (pos.lastTickTs || 0) >= 10000) {
+      pos.lastTickTs = n;
+      this.journal.tick({ id: pos.id, mint: pos.mint, symbol: pos.symbol, ts: n, heldMin: +((n - pos.entryTs) / 60000).toFixed(2), valueSol: +valueSol.toFixed(6), ratio: +(valueSol / Math.max(1e-9, pos.entrySol * pos.remainingFrac)).toFixed(3), peak: +(pos.peakRatio || 1).toFixed(3), mc: v.mc ?? null, liq: v.liq ?? null, buysM5: v.buysM5 ?? null, sellsM5: v.sellsM5 ?? null, bundle: pos.bundleScore || 0 });
+      // manual exit detection: on-chain balance far below what the bot holds, 2 checks in a row
+      if (this.cfg.realMode && n - pos.entryTs > 60000 && n - (pos.lastChainTs || 0) >= 15000) {
+        pos.lastChainTs = n;
+        const walletAddr = await this.exec.address().catch(() => null);
+        const onchain = walletAddr ? await this.exec.ownerBalance(walletAddr, pos.mint).catch(() => null) : null;
+        if (onchain != null && externalExit(pos.tokensRaw, onchain)) {
+          pos.chainDropStrikes = (pos.chainDropStrikes || 0) + 1;
+          if (pos.chainDropStrikes >= 2) {
+            console.log(`[learn] manual exit detected for ${pos.symbol} — recording`);
+            await this.recordManualExit(pos, valueSol, n, 'sold in own wallet');
+            return;
+          }
+        } else {
+          pos.chainDropStrikes = 0;
+        }
+      }
+    }
     // bundle exit risk: watch the big wallets while we hold; fail-open (any error = no signal)
     if (valueSol != null && this.cfg.bundleWatch && !(decision.fraction >= 1)) {
       const bd = await this.bundleCheck(pos, valueSol, n).catch(() => null);
@@ -343,6 +366,23 @@ export class Bot {
       this.journal.trade({ type: 'close', id: pos.id, mint: pos.mint, symbol: pos.symbol, setup: pos.setup, entrySol: pos.entrySol, exitSol: pos.realizedSol, pnlSol: +pnl.toFixed(6), heldMin: +((n - pos.entryTs) / 60000).toFixed(1), reason: decision.reason, simulated: pos.simulated, ts: n });
     }
     this.savePositions();
+  }
+
+  // the human closed this one outside the bot: record entry snapshot + estimated result, drop the position, await a reason tag
+  async recordManualExit(pos, valueSol, n, how) {
+    const est = valueSol != null ? valueSol : 0;
+    const pnl = pos.realizedSol + est - pos.entrySol;
+    const rec = this.journal.manualExit({ id: pos.id, mint: pos.mint, symbol: pos.symbol, ts: n, how, entry: pos.entry || null, heldMin: +((n - pos.entryTs) / 60000).toFixed(1), peakRatio: pos.peakRatio, bundleScore: pos.bundleScore || 0, pnlSolEstimate: +pnl.toFixed(6), reason: null });
+    this.positions = this.positions.filter(p => p.id !== pos.id);
+    this.risk.recordClose(pnl);
+    this.journal.trade({ type: 'close', manual: true, id: pos.id, mint: pos.mint, symbol: pos.symbol, setup: pos.setup, entrySol: pos.entrySol, pnlSol: +pnl.toFixed(6), estimated: true, heldMin: rec.heldMin, reason: `manual exit (${how})`, simulated: pos.simulated, entry: pos.entry, ts: n });
+    this.savePositions();
+    return rec;
+  }
+  async markManualExit(id) {
+    const pos = this.positions.find(p => p.id === id); if (!pos) return null;
+    const valueSol = await this.exec.markValue(pos.mint, pos.tokensRaw).catch(() => null);
+    return this.recordManualExit(pos, valueSol, this.now(), 'marked in dashboard');
   }
 
   // ------------------------------------------------------------ introspection

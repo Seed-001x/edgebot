@@ -26,13 +26,14 @@ export class Journal {
   constructor(dir, { now = Date.now } = {}) {
     this.now = now;
     this.dir = dir;
-    this.f = { sig: path.join(dir, 'signals.jsonl'), out: path.join(dir, 'outcomes.jsonl'), trades: path.join(dir, 'trades.jsonl'), fb: path.join(dir, 'feedback.jsonl') };
+    this.f = { sig: path.join(dir, 'signals.jsonl'), out: path.join(dir, 'outcomes.jsonl'), trades: path.join(dir, 'trades.jsonl'), fb: path.join(dir, 'feedback.jsonl'), ticks: path.join(dir, 'ticks.jsonl'), manual: path.join(dir, 'manual_exits.jsonl') };
     try { fs.mkdirSync(dir, { recursive: true }); } catch { /* ignore */ }
     this.signals = [];        // { id, ts, mint, symbol, setup, decision, reasons, price, mc, out:{} }
     this.byId = new Map();
     this.pending = new Map(); // id -> tracking state
     this.trades = [];
     this.feedback = [];       // human feedback on skipped signals
+    this.manual = [];         // positions the HUMAN closed (with entry snapshot + optional reason tag)
     this.seq = 0;
     this.boot();
   }
@@ -42,6 +43,10 @@ export class Journal {
     for (const o of readTail(this.f.out, KEEP * 2)) { const s = this.byId.get(o.id); if (s) s.out = o; }
     this.trades = readTail(this.f.trades, KEEP);
     this.feedback = readTail(this.f.fb, KEEP);
+    for (const r of readTail(this.f.manual, KEEP)) {
+      if (r.type === 'tag') { const m = this.manual.find(x => x.id === r.id); if (m) m.reason = r.reason; }
+      else this.manual.push(r);
+    }
     const n = this.now();
     for (const s of this.signals) {
       if (!s.out || s.out.done) continue;
@@ -58,6 +63,16 @@ export class Journal {
     try { require('fs').writeFileSync(this.f.fb, ''); } catch {}
     this._blacklistCache = null;
     return n;
+  }
+
+  /** per-position trajectory sample (for replaying exit rules later) */
+  tick(t) { this.append(this.f.ticks, t); }
+  /** a position the human closed outside the bot */
+  manualExit(rec) { this.manual.push(rec); if (this.manual.length > KEEP) this.manual.shift(); this.append(this.f.manual, rec); return rec; }
+  /** attach the reason the human gave (see learn.js EXIT_REASONS) */
+  tagExit(id, reason) {
+    const m = this.manual.find(x => x.id === id); if (!m) return null;
+    m.reason = reason; this.append(this.f.manual, { type: 'tag', id, reason, ts: this.now() }); return m;
   }
 
   /** Human feedback: user marks a skipped signal as good (shouldn't have been skipped) or bad (correctly skipped). */

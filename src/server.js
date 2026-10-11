@@ -5,6 +5,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { listState } from './pumpLists.js';
+import { EXIT_REASONS, learnReport } from './learn.js';
 
 // Browser-scraped "real" pump.fun lists (from hourly browser task, not the API relay).
 // Stored in DATA_DIR so it persists across deploys.
@@ -62,6 +63,37 @@ export function startServer(bot, port) {
         }
       });
       return;
+    }
+    // POST /exittag {id, reason} — label WHY you closed a position yourself (label only; cannot trade)
+    if (req.method === 'POST' && u.pathname === '/exittag') {
+      let body = '';
+      req.on('data', c => { body += c; if (body.length > 5000) req.destroy(); });
+      req.on('end', () => {
+        try {
+          const { id, reason } = JSON.parse(body);
+          if (!EXIT_REASONS.includes(reason)) return json(res, 400, { error: 'reason must be one of ' + EXIT_REASONS.join(', ') });
+          const m = bot.journal.tagExit(id, reason);
+          return m ? json(res, 200, { ok: true, exit: m }) : json(res, 404, { error: 'no such manual exit' });
+        } catch { return json(res, 400, { error: 'invalid JSON' }); }
+      });
+      return;
+    }
+    // POST /manualexit {id} — SHADOW mode only: "I'd have closed this one". Needs header x-learn-key == LEARN_KEY.
+    if (req.method === 'POST' && u.pathname === '/manualexit') {
+      let body = '';
+      req.on('data', c => { body += c; if (body.length > 5000) req.destroy(); });
+      req.on('end', async () => {
+        const key = process.env.LEARN_KEY;
+        if (bot.cfg.realMode) return json(res, 400, { error: 'real mode: just sell in your wallet — the bot detects it' });
+        if (!key || req.headers['x-learn-key'] !== key) return json(res, 401, { error: 'bad or missing key' });
+        try { const { id } = JSON.parse(body); const r = await bot.markManualExit(id); return r ? json(res, 200, { ok: true, exit: r }) : json(res, 404, { error: 'no such open position' }); }
+        catch { return json(res, 400, { error: 'invalid JSON' }); }
+      });
+      return;
+    }
+    // GET /learn — recent manual exits + comparison with bot winners
+    if (req.method === 'GET' && u.pathname === '/learn') {
+      return json(res, 200, learnReport(bot.journal.manual, bot.journal.trades));
     }
     // POST /reallists — browser task pushes scraped pump.fun lists (trending/movers top 40)
     if (req.method === 'POST' && u.pathname === '/reallists') {
