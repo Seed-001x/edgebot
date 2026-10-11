@@ -80,11 +80,11 @@ export function loadConfig(env = process.env) {
     setupBlacklistMin: num(env, 'SETUP_BLACKLIST_MIN', 0),
 
     // ---- exits (judged on REALIZABLE value = Jupiter sell quote, not screen price) ----
-    stopLoss: num(env, 'STOP_LOSS', 0.40),
-    tp1Pct: num(env, 'TP1_PCT', 1.00),
-    tp1Frac: num(env, 'TP1_FRAC', 0.75),
-    trailArm: num(env, 'TRAIL_ARM', 1.00),
-    trailPct: num(env, 'TRAIL_PCT', 0.50),
+    stopLoss: num(env, 'STOP_LOSS', 0.15),
+    tp1Pct: num(env, 'TP1_PCT', 0.50),
+    tp1Frac: num(env, 'TP1_FRAC', 1.0),
+    trailArm: num(env, 'TRAIL_ARM', 0.50),
+    trailPct: num(env, 'TRAIL_PCT', 0.15),
     timeStopMin: num(env, 'TIME_STOP_MIN', 25),
     timeStopMinGain: num(env, 'TIME_STOP_MIN_GAIN', 0.10),
     maxHoldMin: num(env, 'MAX_HOLD_MIN', 120),
