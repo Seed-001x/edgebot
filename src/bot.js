@@ -126,10 +126,10 @@ export class Bot {
       const found = await this.d.discover(this.cfg);
       const n = this.now();
       for (const [mint, source] of found) this.watch.set(mint, { ts: n, source });
-      // Feed scraped pump.fun trending/movers into the watchlist
+      // Feed scraped pump.fun lists into the watchlist
       try {
         const rl = JSON.parse(fs.readFileSync(path.join(this.cfg.dataDir, 'reallists.json'), 'utf8'));
-        for (const row of [...(rl.trending || []), ...(rl.movers || [])]) {
+        for (const row of [...(rl.trending || []), ...(rl.movers || []), ...(rl.graduated || []), ...(rl.new || [])]) {
           const mint = row.mint || row.address;
           if (mint && !this.watch.has(mint)) this.watch.set(mint, { ts: n, source: 'reallists' });
         }

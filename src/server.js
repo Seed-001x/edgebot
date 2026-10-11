@@ -97,17 +97,23 @@ export function startServer(bot, port) {
       report.exits = bot.journal.manual.slice(-20).reverse().map(m => ({ id: m.id, symbol: m.symbol, mint: m.mint, ts: m.ts, heldMin: m.heldMin, peakRatio: m.peakRatio, pnlSolEstimate: m.pnlSolEstimate, reason: m.reason || null, how: m.how }));
       return json(res, 200, report);
     }
-    // POST /reallists — browser task pushes scraped pump.fun lists (trending/movers top 40)
+    // POST /reallists — browser task pushes scraped pump.fun lists (trending/movers/graduated/new, 50 each)
     if (req.method === 'POST' && u.pathname === '/reallists') {
       let body = '';
-      req.on('data', c => { body += c; if (body.length > 500000) req.destroy(); });
+      req.on('data', c => { body += c; if (body.length > 1000000) req.destroy(); });
       req.on('end', () => {
         try {
-          const { trending, movers } = JSON.parse(body);
+          const { trending, movers, graduated, new: newCoins } = JSON.parse(body);
           if (!Array.isArray(trending) || !Array.isArray(movers)) return json(res, 400, { error: 'trending and movers arrays required' });
-          realLists = { trending: trending.slice(0, 40), movers: movers.slice(0, 40), ts: Date.now() };
+          realLists = {
+            trending: trending.slice(0, 50),
+            movers: movers.slice(0, 50),
+            graduated: Array.isArray(graduated) ? graduated.slice(0, 50) : [],
+            new: Array.isArray(newCoins) ? newCoins.slice(0, 50) : [],
+            ts: Date.now()
+          };
           saveRealLists();
-          return json(res, 200, { ok: true, trending: realLists.trending.length, movers: realLists.movers.length, ts: realLists.ts });
+          return json(res, 200, { ok: true, trending: realLists.trending.length, movers: realLists.movers.length, graduated: realLists.graduated.length, new: realLists.new.length, ts: realLists.ts });
         } catch (e) {
           return json(res, 400, { error: 'invalid JSON' });
         }
