@@ -210,6 +210,17 @@ export class Bot {
       console.log(`[dedup] skip: already entered a coin named "${v.name || v.symbol}" — skipping copycat`);
       return this.skip(v, sig, [`copycat: already entered "${v.name || v.symbol}"`]);
     }
+    // Re-entry quality: same coin signaled again — only re-enter on a dip, never the top of a green candle.
+    // Require price at least 20% below the recent 15-min high (unless it's a fresh pop breakout).
+    if (this.enteredMints.has(v.address) && sig.setup !== 'pop') {
+      const samples = this.history.get(v.address) || [];
+      const recent = samples.filter(s => this.now() - s.ts <= 15 * 60 * 1000);
+      const high = recent.length ? Math.max(...recent.map(s => s.price)) : v.price;
+      if (v.price >= high * 0.8) {
+        console.log(`[reentry] skip: ${v.symbol} at top (price within 20% of 15m high) — waiting for dip`);
+        return this.skip(v, sig, [`reentry: no dip (price within 20% of recent high)`]);
+      }
+    }
     const [solUsd, walletSol] = await Promise.all([this.d.fetchSolUsd(), this.exec.solBalance()]);
     const open = this.positions.reduce((a, p) => a + p.entrySol * p.remainingFrac, 0);
     this.risk.checkKill(walletSol, open);
