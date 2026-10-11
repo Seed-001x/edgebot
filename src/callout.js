@@ -73,24 +73,27 @@ async function aiThesis(v, sig) {
   const m = sig.metrics || {};
   const about = meta.description ? `About the coin: "${meta.description}".` : `Coin name: ${meta.name || v.name || v.symbol}.`;
   const socials = [meta.twitter && 'has Twitter', meta.telegram && 'has Telegram', meta.website && 'has website'].filter(Boolean).join(', ') || 'no socials listed';
-  const prompt = `Write a pump.fun callout for $${v.symbol || '???'}. You just bought it. Sound like THESE real traders:
+  const hasDesc = !!(meta.description && meta.description.trim());
+  const hasSocials = !!(meta.twitter || meta.telegram || meta.website);
+  const prompt = `Write a pump.fun callout for $${v.symbol || '???'}. You just bought it.
 
-- "surprised there aren't more holders here. reminds me of jean phil in a way"
-- "This mf is everywhere Back into this sht again"
-- "I don't see how this can be at $180k MC with it being all over my feed!"
-- "My instagram is flooded with this meme. This should be in the millions!"
-- "unreal how something this viral is at 300K"
+ONLY say things that are TRUE based on the data below. Do not invent virality, attention, or narratives that aren't in the data.
 
 Coin: $${v.symbol || '???'} at ${mc} market cap.
-${about}
+${hasDesc ? `Description: "${meta.description}"` : 'No description.'}
+${hasSocials ? `Links: ${[meta.twitter && 'Twitter', meta.telegram && 'Telegram', meta.website && 'website'].filter(Boolean).join(', ')}` : 'No social links.'}
 Holders: ${m.holders || '?'}. 1h volume: $${m.volH1 || '?'}. 5m buys/sells: ${m.buysM5 ?? '?'}/${m.sellsM5 ?? '?'}.
 
+${hasDesc || hasSocials ? 'You have real info about this coin — reference what it actually is.' : 'You have NO info about what this coin is. Do NOT claim it is viral, everywhere, or a meme. Write only about the chart and the setup — the price action is all you know.'}
+
+Style (match these real traders):
+- "surprised there aren't more holders here. reminds me of jean phil in a way"
+- "I don't see how this can be at $180k MC with it being all over my feed!"
+
 Rules:
-- Max 150 chars. 1-2 sentences MAX. Fragments are fine.
-- Lowercase is fine. Typos are fine. Sound like a text message, not a pitch.
-- React to the coin — disbelief at the MC, a comparison to a past runner, noticing it's everywhere, or just why you bought.
-- NEVER pitch. Never hype. Never explain. Never use exclamation marks unless it's genuine disbelief.
-- No hashtags, no emojis, no "dyor", no hype words (moon, gem, ape, LFG, FOMO, spicy, popping, sweet).`;
+- Max 150 chars. 1-2 sentences. Fragments fine. Lowercase fine.
+- Sound like a text message, not a pitch. No hype words (moon, gem, ape, LFG, FOMO, spicy, popping, sweet).
+- No hashtags, no emojis.`;
   try {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
