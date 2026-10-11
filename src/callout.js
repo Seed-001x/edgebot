@@ -82,7 +82,8 @@ Socials: ${socials}. Setup that flagged it: ${sig.setup || 'momentum'}. Holders:
 Rules:
 - Max 220 chars. 2-3 punchy sentences.
 - Lead with a real THESIS: what's the narrative, why is THIS coin the one, why NOW.
-- Interpret the numbers like a trader: high volume relative to MC = real bids. Climbing holders = distribution. Say what the data MEANS, don't just list it.
+- Interpret the numbers silently — never explain what the data "means" (no "this means real bids", no "volume relative to MC"). Just state your read with confidence.
+- Never meta-commentate on your own analysis. Sound like you glanced at the chart and KNOW, not like you're showing your work.
 - Create urgency without sounding desperate. Confidence, not begging.
 - First person. Casual degen voice. No hashtags, no emojis, no disclaimers, no "dyor".
 - Make the reader feel like they'll miss it if they don't look right now.`;
