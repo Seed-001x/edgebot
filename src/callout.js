@@ -75,7 +75,15 @@ async function aiThesis(v, sig) {
   const socials = [meta.twitter && 'has Twitter', meta.telegram && 'has Telegram', meta.website && 'has website'].filter(Boolean).join(', ') || 'no socials listed';
   const hasDesc = !!(meta.description && meta.description.trim());
   const hasSocials = !!(meta.twitter || meta.telegram || meta.website);
-  const prompt = `Write a pump.fun callout for $${v.symbol || '???'}. You just bought it.
+  const angles = [
+    'a specific detail in the description or name that caught your eye',
+    'the holder count or how fast it is growing',
+    'the volume relative to the market cap',
+    'a comparison to a past runner you remember',
+    'how early you feel you are',
+  ];
+  const angle = angles[Math.floor(Math.random() * angles.length)];
+  const prompt = `Write a pump.fun callout for $${v.symbol || '???'}. You just bought it. This must read like a real human typed it on their phone — pump.fun bans spam accounts, so it cannot sound generated.
 
 ONLY say things that are TRUE based on the data below. Do not invent virality, attention, or narratives that aren't in the data.
 
@@ -84,16 +92,19 @@ ${hasDesc ? `Description: "${meta.description}"` : 'No description.'}
 ${hasSocials ? `Links: ${[meta.twitter && 'Twitter', meta.telegram && 'Telegram', meta.website && 'website'].filter(Boolean).join(', ')}` : 'No social links.'}
 Holders: ${m.holders || '?'}. 1h volume: $${m.volH1 || '?'}. 5m buys/sells: ${m.buysM5 ?? '?'}/${m.sellsM5 ?? '?'}.
 
-${hasDesc || hasSocials ? 'You have real info about this coin — reference what it actually is.' : 'You have NO info about what this coin is. Do NOT claim it is viral, everywhere, or a meme. Write only about the chart and the setup — the price action is all you know.'}
+Your angle for THIS callout: ${angle}. Pick ONE observation and say it plainly. Do not try to cover everything.
 
-Style (match these real traders):
+Good examples of the voice:
 - "surprised there aren't more holders here. reminds me of jean phil in a way"
-- "I don't see how this can be at $180k MC with it being all over my feed!"
+- "grabbed some tiptoe. jordan meme at 500k with 1k holders already, chart finally curling up"
+- "19. no idea what it is but 200 new holders in an hour and the chart won't stop. in."
 
 Rules:
-- Max 150 chars. 1-2 sentences. Fragments fine. Lowercase fine.
-- Sound like a text message, not a pitch. No hype words (moon, gem, ape, LFG, FOMO, spicy, popping, sweet).
-- No hashtags, no emojis.`;
+- Max 140 chars. One or two short sentences.
+- Lowercase preferred. Sound like a phone keyboard, not a press release.
+- Be specific to THIS coin. If you have no real info, talk about the one thing you can see (holders, volume, chart).
+- Never pitch, hype, or beg. No exclamation marks.
+- Banned words: moon, gem, ape, LFG, FOMO, spicy, popping, sweet, sleep on, blows up, flying, wave, heating up, explode, don't miss, everywhere, viral (unless the data proves it).`;
   try {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
