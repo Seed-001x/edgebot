@@ -93,7 +93,9 @@ export function startServer(bot, port) {
     }
     // GET /learn — recent manual exits + comparison with bot winners
     if (req.method === 'GET' && u.pathname === '/learn') {
-      return json(res, 200, learnReport(bot.journal.manual, bot.journal.trades));
+      const report = learnReport(bot.journal.manual, bot.journal.trades);
+      report.exits = bot.journal.manual.slice(-20).reverse().map(m => ({ id: m.id, symbol: m.symbol, mint: m.mint, ts: m.ts, heldMin: m.heldMin, peakRatio: m.peakRatio, pnlSolEstimate: m.pnlSolEstimate, reason: m.reason || null, how: m.how }));
+      return json(res, 200, report);
     }
     // POST /reallists — browser task pushes scraped pump.fun lists (trending/movers top 40)
     if (req.method === 'POST' && u.pathname === '/reallists') {
