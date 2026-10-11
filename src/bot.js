@@ -42,6 +42,8 @@ export class Bot {
     this.PACE_TARGET = 120; // target trades per hour (2 per min)
     this.namesFile = path.join(cfg.dataDir, 'entered-names.json');
     this.enteredNames = this.loadEnteredNames();
+    this.mintsFile = path.join(cfg.dataDir, 'entered-mints.json');
+    this.enteredMints = this.loadEnteredMints();
     this.loadStats();
   }
 
@@ -60,6 +62,8 @@ export class Bot {
   saveStats() { try { fs.writeFileSync(this.statsFile, JSON.stringify(this.stats)); } catch { /* best effort */ } }
   loadEnteredNames() { try { return new Set(JSON.parse(fs.readFileSync(this.namesFile, 'utf8'))); } catch { return new Set(); } }
   saveEnteredNames() { try { fs.writeFileSync(this.namesFile, JSON.stringify([...this.enteredNames])); } catch { /* best effort */ } }
+  loadEnteredMints() { try { return new Set(JSON.parse(fs.readFileSync(this.mintsFile, 'utf8'))); } catch { return new Set(); } }
+  saveEnteredMints() { try { fs.writeFileSync(this.mintsFile, JSON.stringify([...this.enteredMints])); } catch { /* best effort */ } }
   normName(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9]/g, ''); }
 
   // Pace keeper: returns a relaxed cfg if we're behind the hourly target.
@@ -199,9 +203,10 @@ export class Bot {
       console.log(`[learn] skip: user blacklisted setup "${sig.setup}" — skipping ${v.symbol}`);
       return this.skip(v, sig, [`user-blacklist: setup "${sig.setup}" marked bad ${10}+ times`]);
     }
-    // Copycat dedup: if we already entered a coin with this name, skip same-name coins
+    // Copycat dedup: if we already entered a DIFFERENT coin with this name, skip same-name coins
+    // (same mint re-signaled is fine — that's the original, not a copycat)
     const nn = this.normName(v.name) || this.normName(v.symbol);
-    if (nn && this.enteredNames.has(nn)) {
+    if (nn && this.enteredNames.has(nn) && !this.enteredMints.has(v.address)) {
       console.log(`[dedup] skip: already entered a coin named "${v.name || v.symbol}" — skipping copycat`);
       return this.skip(v, sig, [`copycat: already entered "${v.name || v.symbol}"`]);
     }
@@ -272,6 +277,7 @@ export class Bot {
     this.positions.push(pos); this.savePositions();
     const en = this.normName(v.name) || this.normName(v.symbol);
     if (en) { this.enteredNames.add(en); this.saveEnteredNames(); }
+    this.enteredMints.add(v.address); this.saveEnteredMints();
     this.risk.recordEntry(v.address);
     this.stats.entries++;
     this.entryTimes.push(n);
