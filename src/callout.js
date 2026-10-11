@@ -73,12 +73,19 @@ async function aiThesis(v, sig) {
   const m = sig.metrics || {};
   const about = meta.description ? `About the coin: "${meta.description}".` : `Coin name: ${meta.name || v.name || v.symbol}.`;
   const socials = [meta.twitter && 'has Twitter', meta.telegram && 'has Telegram', meta.website && 'has website'].filter(Boolean).join(', ') || 'no socials listed';
-  const prompt = `You are a sharp Solana memecoin trader posting a callout on pump.fun. Write a short callout (max 220 chars) for $${v.symbol || '???'} at ${mc} market cap.
+  const prompt = `You are a Solana memecoin trader with a big following. You just bought $${v.symbol || '???'} and you're posting a callout on pump.fun to get people to buy. Your callouts move markets — write like it.
 
+Coin: $${v.symbol || '???'} at ${mc} market cap.
 ${about}
 Socials: ${socials}. Setup that flagged it: ${sig.setup || 'momentum'}. Holders: ${m.holders || '?'}. 1h volume: $${m.volH1 || '?'}. Buys/sells 5m: ${m.buysM5 ?? '?'}/${m.sellsM5 ?? '?'}.
 
-Write like a real trader with a take — reference what the coin is about, why the setup looks good, where you think it goes. Casual and confident, first person. No corporate speak, no hashtags, no emojis, no "dyor" disclaimers. One or two sentences max.`;
+Rules:
+- Max 220 chars. 2-3 punchy sentences.
+- Lead with a real THESIS: what's the narrative, why is THIS coin the one, why NOW.
+- Interpret the numbers like a trader: high volume relative to MC = real bids. Climbing holders = distribution. Say what the data MEANS, don't just list it.
+- Create urgency without sounding desperate. Confidence, not begging.
+- First person. Casual degen voice. No hashtags, no emojis, no disclaimers, no "dyor".
+- Make the reader feel like they'll miss it if they don't look right now.`;
   try {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
