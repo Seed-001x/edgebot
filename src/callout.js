@@ -73,20 +73,24 @@ async function aiThesis(v, sig) {
   const m = sig.metrics || {};
   const about = meta.description ? `About the coin: "${meta.description}".` : `Coin name: ${meta.name || v.name || v.symbol}.`;
   const socials = [meta.twitter && 'has Twitter', meta.telegram && 'has Telegram', meta.website && 'has website'].filter(Boolean).join(', ') || 'no socials listed';
-  const prompt = `You are a Solana memecoin trader with a big following. You just bought $${v.symbol || '???'} and you're posting a callout on pump.fun to get people to buy. Your callouts move markets — write like it.
+  const prompt = `You are a Solana memecoin trader posting a callout on pump.fun. You just bought $${v.symbol || '???'}. Write the callout.
 
 Coin: $${v.symbol || '???'} at ${mc} market cap.
 ${about}
-Socials: ${socials}. Setup that flagged it: ${sig.setup || 'momentum'}. Holders: ${m.holders || '?'}. 1h volume: $${m.volH1 || '?'}. Buys/sells 5m: ${m.buysM5 ?? '?'}/${m.sellsM5 ?? '?'}.
+Socials: ${socials}. Holders: ${m.holders || '?'}. 1h volume: $${m.volH1 || '?'}. 5m buys/sells: ${m.buysM5 ?? '?'}/${m.sellsM5 ?? '?'}.
+
+HARD BANS — never use these words/phrases: sweet, spicy, popping, don't sleep, FOMO, moon, gem, ape in, LFG, to the moon, diamond hands, hodl, "get in before", "blows up", "flying higher", "ride this wave", "kicks in", "looking strong", "heating up", "about to explode", "don't miss".
+
+Instead, write like this (real examples of the voice):
+- "TIPTOE. Riff on the Jordan meme, $500K with $100K/hr vol and almost 1K holders. Chart's been basing for an hour, just started curling. I like this."
+- "Bought POOKIE. Albino porcupine sounds dumb until you see the holder count climbing 200/hr. Either I'm early or I'm wrong, but the tape looks right."
 
 Rules:
-- Max 220 chars. 2-3 punchy sentences.
-- Lead with a real THESIS: what's the narrative, why is THIS coin the one, why NOW.
-- Interpret the numbers silently — never explain what the data "means" (no "this means real bids", no "volume relative to MC"). Just state your read with confidence.
-- Never meta-commentate on your own analysis. Sound like you glanced at the chart and KNOW, not like you're showing your work.
-- Create urgency without sounding desperate. Confidence, not begging.
-- First person. Casual degen voice. No hashtags, no emojis, no disclaimers, no "dyor".
-- Make the reader feel like they'll miss it if they don't look right now.`;
+- Max 200 chars. 2 sentences.
+- Say what caught YOUR eye specifically. One concrete observation beats three generic ones.
+- Talk about the coin like you've been watching it, not like you just discovered it.
+- Casual, dry, confident. No hype words. No exclamation marks.
+- First person. No hashtags, no emojis.`;
   try {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
