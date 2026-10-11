@@ -37,12 +37,27 @@ export class Bot {
     this.positions = this.loadPositions();
     this.busy = { discover: false, poll: false, pos: false };
     this.stats = { discoverTicks: 0, pollTicks: 0, positionTicks: 0, signals: 0, entries: 0, exits: 0, errors: 0, lastError: null, sourceCounts: {}, lastDiscoverTs: 0, lastPollTs: 0 };
+    this.statsFile = path.join(cfg.dataDir, 'stats.json');
     this.entryTimes = []; // timestamps of entries (for pace keeper)
     this.PACE_TARGET = 120; // target trades per hour (2 per min)
     this.namesFile = path.join(cfg.dataDir, 'entered-names.json');
     this.enteredNames = this.loadEnteredNames();
+    this.loadStats();
   }
 
+  loadStats() {
+    try { const s = JSON.parse(fs.readFileSync(this.statsFile, 'utf8')); Object.assign(this.stats, s); return; }
+    catch { /* no saved stats */ }
+    // Seed from journal history so dashboard isn't empty after first deploy with persistence
+    try {
+      if (this.journal) {
+        this.stats.signals = this.journal.signals.length;
+        this.stats.entries = this.journal.trades.filter(t => t.type === 'open').length;
+        this.stats.exits = this.journal.trades.filter(t => t.type === 'close').length;
+      }
+    } catch {}
+  }
+  saveStats() { try { fs.writeFileSync(this.statsFile, JSON.stringify(this.stats)); } catch { /* best effort */ } }
   loadEnteredNames() { try { return new Set(JSON.parse(fs.readFileSync(this.namesFile, 'utf8'))); } catch { return new Set(); } }
   saveEnteredNames() { try { fs.writeFileSync(this.namesFile, JSON.stringify([...this.enteredNames])); } catch { /* best effort */ } }
   normName(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9]/g, ''); }
@@ -130,7 +145,7 @@ export class Bot {
         for (const [m] of sorted.slice(this.cfg.watchMax)) if (!held.has(m)) this.watch.delete(m);
       }
       this.history.prune(n, new Set([...this.watch.keys(), ...held]));
-    } catch (e) { this.err('discover', e); } finally { this.busy.discover = false; }
+    } catch (e) { this.err('discover', e); } finally { this.busy.discover = false; this.saveStats(); }
   }
 
   // ------------------------------------------------------------ polling + signals
@@ -162,7 +177,7 @@ export class Bot {
         this.lastSignal.set(c.v.address, this.now());
         await this.onSignal(c.v, c.sig).catch(e => this.err('onSignal', e));
       }
-    } catch (e) { this.err('poll', e); } finally { this.busy.poll = false; }
+    } catch (e) { this.err('poll', e); } finally { this.busy.poll = false; this.saveStats(); }
   }
 
   skip(v, sig, reasons, warnings = []) {
@@ -285,7 +300,7 @@ export class Bot {
       const walletSol = await this.exec.solBalance().catch(() => null);
       if (walletSol != null) this.risk.checkKill(walletSol, this.positions.reduce((a, p) => a + p.entrySol * p.remainingFrac, 0));
       this.stats.positionTicks++;
-    } finally { this.busy.pos = false; }
+    } finally { this.busy.pos = false; this.saveStats(); }
   }
 
   async bundleCheck(pos, valueSol, n) {
