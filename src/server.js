@@ -135,6 +135,20 @@ export function startServer(bot, port) {
       bot.savePositions();
       return json(res, 200, { ok: true, cleared: n });
     }
+    if (req.method === 'POST' && u.pathname === '/positions/notp') {
+      let body = '';
+      req.on('data', c => { body += c; if (body.length > 2000) req.destroy(); });
+      req.on('end', () => {
+        try {
+          const { id } = JSON.parse(body);
+          const pos = bot.positions.find(p => p.id === id || p.mint === id);
+          if (!pos) return json(res, 404, { error: 'no such position' });
+          pos.noTp = true; bot.savePositions();
+          return json(res, 200, { ok: true, symbol: pos.symbol });
+        } catch { return json(res, 400, { error: 'invalid JSON' }); }
+      });
+      return;
+    }
     if (req.method === 'POST' && u.pathname === '/risk/reset') {
       bot.risk.s.dayPnlSol = 0;
       bot.risk.s.day = new Date().toISOString().slice(0, 10);
