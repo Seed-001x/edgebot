@@ -73,24 +73,24 @@ async function aiThesis(v, sig) {
   const m = sig.metrics || {};
   const about = meta.description ? `About the coin: "${meta.description}".` : `Coin name: ${meta.name || v.name || v.symbol}.`;
   const socials = [meta.twitter && 'has Twitter', meta.telegram && 'has Telegram', meta.website && 'has website'].filter(Boolean).join(', ') || 'no socials listed';
-  const prompt = `You are a Solana memecoin trader posting a callout on pump.fun. You just bought $${v.symbol || '???'}. Write the callout.
+  const prompt = `Write a pump.fun callout for $${v.symbol || '???'}. You just bought it. Sound like THESE real traders:
+
+- "surprised there aren't more holders here. reminds me of jean phil in a way"
+- "This mf is everywhere Back into this sht again"
+- "I don't see how this can be at $180k MC with it being all over my feed!"
+- "My instagram is flooded with this meme. This should be in the millions!"
+- "unreal how something this viral is at 300K"
 
 Coin: $${v.symbol || '???'} at ${mc} market cap.
 ${about}
-Socials: ${socials}. Holders: ${m.holders || '?'}. 1h volume: $${m.volH1 || '?'}. 5m buys/sells: ${m.buysM5 ?? '?'}/${m.sellsM5 ?? '?'}.
-
-HARD BANS — never use these words/phrases: sweet, spicy, popping, don't sleep, FOMO, moon, gem, ape in, LFG, to the moon, diamond hands, hodl, "get in before", "blows up", "flying higher", "ride this wave", "kicks in", "looking strong", "heating up", "about to explode", "don't miss".
-
-Instead, write like this (real examples of the voice):
-- "TIPTOE. Riff on the Jordan meme, $500K with $100K/hr vol and almost 1K holders. Chart's been basing for an hour, just started curling. I like this."
-- "Bought POOKIE. Albino porcupine sounds dumb until you see the holder count climbing 200/hr. Either I'm early or I'm wrong, but the tape looks right."
+Holders: ${m.holders || '?'}. 1h volume: $${m.volH1 || '?'}. 5m buys/sells: ${m.buysM5 ?? '?'}/${m.sellsM5 ?? '?'}.
 
 Rules:
-- Max 200 chars. 2 sentences.
-- Say what caught YOUR eye specifically. One concrete observation beats three generic ones.
-- Talk about the coin like you've been watching it, not like you just discovered it.
-- Casual, dry, confident. No hype words. No exclamation marks.
-- First person. No hashtags, no emojis.`;
+- Max 150 chars. 1-2 sentences MAX. Fragments are fine.
+- Lowercase is fine. Typos are fine. Sound like a text message, not a pitch.
+- React to the coin — disbelief at the MC, a comparison to a past runner, noticing it's everywhere, or just why you bought.
+- NEVER pitch. Never hype. Never explain. Never use exclamation marks unless it's genuine disbelief.
+- No hashtags, no emojis, no "dyor", no hype words (moon, gem, ape, LFG, FOMO, spicy, popping, sweet).`;
   try {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
