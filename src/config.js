@@ -62,12 +62,6 @@ export function loadConfig(env = process.env) {
     requireReportBelowAgeH: num(env, 'REQUIRE_REPORT_BELOW_AGE_H', 6), // young coins with no RugCheck report are blocked
     minHolders: num(env, 'MIN_HOLDERS', 100),
     cloneMinVolMultiple: num(env, 'CLONE_MIN_VOL_MULTIPLE', 2),
-    // v1.6 structural gates (hard — never overridden)
-    insiderCountMax: num(env, 'INSIDER_COUNT_MAX', 50),
-    minQuoteLiqUsd: num(env, 'MIN_QUOTE_LIQ_USD', 1200),
-    ladderMinN: num(env, 'LADDER_MIN_N', 15), ladderMaxRatio: num(env, 'LADDER_MAX_RATIO', 1.6),
-    revivalDeadDrop: num(env, 'REVIVAL_DEAD_DROP', 50), revivalBounce: num(env, 'REVIVAL_BOUNCE', 50),
-    revivalStrong: num(env, 'REVIVAL_STRONG', 80), revivalSellRatio: num(env, 'REVIVAL_SELL_RATIO', 1.25),
     // farm-wallet tiers: balances within FARM_TOL_PCT of each other, in groups of >= FARM_MIN_CLUSTER
     farmTolPct: num(env, 'FARM_TOL_PCT', 0.005),
     farmMinCluster: num(env, 'FARM_MIN_CLUSTER', 3),

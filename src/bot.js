@@ -52,10 +52,6 @@ export class Bot {
     if (relaxed.minHolders) relaxed.minHolders = Math.max(50, Math.floor(relaxed.minHolders * 0.6));
     if (relaxed.maxMc) relaxed.maxMc *= 1.5;
     if (relaxed.minMc) relaxed.minMc *= 0.7;
-    // Hard gates can NEVER be loosened — restore their thresholds explicitly
-    relaxed.insiderCountMax = this.cfg.insiderCountMax;
-    relaxed.minQuoteLiqUsd = this.cfg.minQuoteLiqUsd;
-    relaxed.ladderMinN = this.cfg.ladderMinN; relaxed.ladderMaxRatio = this.cfg.ladderMaxRatio;
     return { cfg: relaxed, boosted: true, pace };
   }
 
