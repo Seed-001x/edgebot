@@ -71,7 +71,15 @@ export class Journal {
   manualExit(rec) { this.manual.push(rec); if (this.manual.length > KEEP) this.manual.shift(); this.append(this.f.manual, rec); return rec; }
   /** attach the reason the human gave (see learn.js EXIT_REASONS) */
   tagExit(id, reason, note) {
-    const m = this.manual.find(x => x.id === id); if (!m) return null;
+    let m = this.manual.find(x => x.id === id);
+    if (!m) {
+      // also allow tagging regular closed trades (e.g. user closed it but bot recorded the close)
+      const t = this.trades.find(x => x.type === 'close' && (x.id === id || x.mint === id));
+      if (!t) return null;
+      t.userTag = reason; if (note) t.userNote = note;
+      this.saveTrades();
+      return { id: t.id, symbol: t.symbol, userTag: reason };
+    }
     m.reason = reason; if (note) m.note = note;
     this.append(this.f.manual, { type: 'tag', id, reason, note: note || undefined, ts: this.now() }); return m;
   }
