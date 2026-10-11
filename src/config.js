@@ -18,7 +18,7 @@ export function loadConfig(env = process.env) {
     // ---- hard limits (enforced in risk.js, not advisory) ----
     tradeSol: num(env, 'TRADE_SOL', 0.02),
     maxPositions: num(env, 'MAX_POSITIONS', 5),
-    dailyLossSol: num(env, 'DAILY_LOSS_SOL', 0.065),     // realized loss in a UTC day that halts new entries
+    dailyLossSol: num(env, 'DAILY_LOSS_SOL', 0.1),     // realized loss in a UTC day that halts new entries
     killEquityFrac: num(env, 'KILL_EQUITY_FRAC', 0.5),  // wallet SOL below this fraction of starting → permanent halt
     minReserveSol: num(env, 'MIN_RESERVE_SOL', 0.02),   // never spend the last of the fees
     maxTradesPerHour: num(env, 'MAX_TRADES_PER_HOUR', 120),

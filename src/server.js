@@ -93,6 +93,12 @@ export function startServer(bot, port) {
       bot.savePositions();
       return json(res, 200, { ok: true, cleared: n });
     }
+    if (req.method === 'POST' && u.pathname === '/risk/reset') {
+      bot.risk.dayPnlSol = 0;
+      bot.risk.day = new Date().toISOString().slice(0, 10);
+      bot.risk.save();
+      return json(res, 200, { ok: true, dayPnlSol: 0 });
+    }
     if (req.method === 'GET' && u.pathname === '/watchlist') {
       const out = [];
       for (const [mint, w] of bot.watch) {
