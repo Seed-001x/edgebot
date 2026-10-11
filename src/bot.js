@@ -336,6 +336,16 @@ export class Bot {
       decision = evaluateExit(pos, { valueSol, liqUsd: v.liq != null ? v.liq : null, buysM5: v.buysM5 != null ? v.buysM5 : null, sellsM5: v.sellsM5 || 0, solUsd, volH1: v.volH1 || 0 }, this.cfg, n);
     }
     pos.peakRatio = decision.newPeak || pos.peakRatio;
+    // +20% progress callout: let the timeline know it's climbing (once per position)
+    if (valueSol != null && !pos.climbCalloutDone) {
+      const ratio = valueSol / Math.max(1e-9, pos.entrySol * pos.remainingFrac);
+      if (ratio >= 1.2) {
+        pos.climbCalloutDone = true; this.savePositions();
+        postCallout({ address: pos.mint, symbol: pos.symbol, mc: v.mc }, { setup: pos.setup, metrics: {}, progress: true, gainPct: Math.round((ratio - 1) * 100) })
+          .then(() => console.log('[callout] climbing update posted for', pos.symbol))
+          .catch(e => console.log('[callout] climbing update failed:', e.message));
+      }
+    }
     // learning log: trajectory sample every ~10s, and detection of a sell the human made in their own wallet
     if (valueSol != null && n - (pos.lastTickTs || 0) >= 10000) {
       pos.lastTickTs = n;

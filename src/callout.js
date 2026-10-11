@@ -121,11 +121,26 @@ function templateThesis(v, sig) {
 
 export function thesis(v, sig) { return templateThesis(v, sig); }
 
+function progressThesis(v, sig) {
+  const gain = sig.gainPct || 20;
+  const sym = v.symbol || 'this one';
+  const templates = [
+    `${sym} climbing, up ${gain}% from my call. Thesis playing out.`,
+    `Called ${sym} and it's up ${gain}% already. Still holding.`,
+    `${sym} +${gain}% since the callout. Volume still coming in.`,
+    `Update on ${sym}: up ${gain}%. This one's got legs.`,
+  ];
+  let h = 0;
+  for (let i = 0; i < sym.length; i++) h = (h * 31 + sym.charCodeAt(i)) % templates.length;
+  return templates[h].slice(0, 280);
+}
+
 export async function postCallout(v, sig) {
   const token = await auth();
+  const isProgress = !!(sig && sig.progress);
   const body = {
     coinMint: v.address,
-    thesis: await aiThesis(v, sig),
+    thesis: isProgress ? progressThesis(v, sig) : await aiThesis(v, sig),
     marketCap: Math.round(v.mc || 0),
   };
   const res = await fetch(`${API}/callout/create`, {
