@@ -13,6 +13,7 @@ import { History } from './history.js';
 import { detect, eligible } from './detect.js';
 import { runGates, hasHardFail } from './gate.js';
 import { evaluateExit } from './exits.js';
+import { bundleRisk, bundleDecision, pickTracked, linkedWeights, CREATOR_KEY } from './bundleWatch.js';
 import { Journal } from './journal.js';
 import { Risk } from './risk.js';
 import { postCallout } from './callout.js';
@@ -237,6 +238,7 @@ export class Bot {
       entryTs: n, entrySol: fill.solSpent, tokensRaw: fill.tokensRaw, remainingFrac: 1, peakRatio: 1, tp1Done: false,
       entryPrice: v.price, entryMc: v.mc, realizedSol: 0, simulated: fill.simulated, sigBuy: fill.sig, markFails: 0,
       entryVolH1: v.volH1 || 0,
+      bw: { tracked: null, supply: rug && rug.token ? Number(rug.token.supply) || 0 : 0, creator: rug && rug.creator ? String(rug.creator) : null, weights: linkedWeights(rug), snaps: [], vals: [], lastTs: 0, trimmed: false },
     };
     this.positions.push(pos); this.savePositions();
     this.risk.recordEntry(v.address);
@@ -270,6 +272,23 @@ export class Bot {
     } finally { this.busy.pos = false; }
   }
 
+  async bundleCheck(pos, valueSol, n) {
+    const bw = pos.bw; if (!bw || n - (bw.lastTs || 0) < this.cfg.bundleCheckSec * 1000) return null;
+    bw.lastTs = n;
+    const amts = await this.exec.largestAccounts(pos.mint);
+    if (!bw.tracked) bw.tracked = Object.entries(amts).sort((a, b) => b[1] - a[1]).slice(1, 21).map(e => e[0]);
+    if (bw.creator) { const cb = await this.exec.ownerBalance(bw.creator, pos.mint).catch(() => null); if (cb != null) { amts[CREATOR_KEY] = cb; if (!bw.tracked.includes(CREATOR_KEY)) bw.tracked.push(CREATOR_KEY); } }
+    bw.snaps.push({ ts: n, amts }); if (bw.snaps.length > 24) bw.snaps.shift();
+    const basis = pos.entrySol * pos.remainingFrac;
+    bw.vals.push({ ts: n, r: basis > 0 ? valueSol / basis : 0 }); if (bw.vals.length > 24) bw.vals.shift();
+    const win = bw.vals.filter(x => x.ts >= n - this.cfg.bundleWindowSec * 1000);
+    const hi = Math.max(...win.map(x => x.r)), now = bw.vals[bw.vals.length - 1].r;
+    const priceDropPct = hi > 0 ? Math.max(0, (1 - now / hi) * 100) : 0;
+    const r = bundleRisk({ snapshots: bw.snaps, tracked: bw.tracked, weights: bw.weights, supply: bw.supply, priceDropPct, windowSec: this.cfg.bundleWindowSec, dumpFrac: this.cfg.bundleDumpFrac, now: n });
+    pos.bundleScore = r.score;
+    return bundleDecision(r, this.cfg, bw.trimmed);
+  }
+
   async managePosition(pos, solUsd) {
     const n = this.now();
     const v = this.latest.get(pos.mint) || {};
@@ -286,6 +305,11 @@ export class Bot {
       decision = evaluateExit(pos, { valueSol, liqUsd: v.liq != null ? v.liq : null, buysM5: v.buysM5 != null ? v.buysM5 : null, sellsM5: v.sellsM5 || 0, solUsd, volH1: v.volH1 || 0 }, this.cfg, n);
     }
     pos.peakRatio = decision.newPeak || pos.peakRatio;
+    // bundle exit risk: watch the big wallets while we hold; fail-open (any error = no signal)
+    if (valueSol != null && this.cfg.bundleWatch && !(decision.fraction >= 1)) {
+      const bd = await this.bundleCheck(pos, valueSol, n).catch(() => null);
+      if (bd && bd.fraction > (decision.fraction || 0)) decision = { ...bd, newPeak: pos.peakRatio };
+    }
     if (!(decision.fraction > 0)) { this.savePositions(); return; }
 
     const sellRaw = decision.fraction >= 1 ? BigInt(pos.tokensRaw) : (BigInt(pos.tokensRaw) * BigInt(Math.round(decision.fraction * 1000))) / 1000n;

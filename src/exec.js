@@ -40,6 +40,22 @@ export class Executor {
     catch { throw new Error('WALLET_PRIVATE_KEY is not a valid base58 secret key'); }
     return this._kp;
   }
+  // top-20 token accounts for a mint: { [tokenAccount]: rawAmount } (read-only RPC; works in shadow mode too)
+  async largestAccounts(mint) {
+    const r = await this.rpcFn('getTokenLargestAccounts', [mint, { commitment: 'confirmed' }]);
+    const out = {};
+    for (const a of (r && r.value) || []) out[a.address] = Number(a.amount);
+    return out;
+  }
+
+  // raw balance of `mint` held by an arbitrary owner (read-only; used for the creator wallet)
+  async ownerBalance(owner, mint) {
+    const r = await this.rpcFn('getTokenAccountsByOwner', [owner, { mint }, { encoding: 'jsonParsed', commitment: 'confirmed' }]);
+    let total = 0;
+    for (const a of (r && r.value) || []) { const t = a.account?.data?.parsed?.info?.tokenAmount; if (t && t.amount) total += Number(t.amount); }
+    return total;
+  }
+
   async address() { return this.real ? (await this.keypair()).publicKey.toBase58() : 'shadow'; }
 
   async solBalance() {

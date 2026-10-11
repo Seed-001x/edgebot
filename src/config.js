@@ -63,6 +63,11 @@ export function loadConfig(env = process.env) {
     requireReportBelowAgeH: num(env, 'REQUIRE_REPORT_BELOW_AGE_H', 6), // young coins with no RugCheck report are blocked
     minHolders: num(env, 'MIN_HOLDERS', 100),
     cloneMinVolMultiple: num(env, 'CLONE_MIN_VOL_MULTIPLE', 2),
+    linkedDumpMaxDrain: num(env, 'LINKED_DUMP_MAX_DRAIN', 0.35),
+    bundleWatch: num(env, 'BUNDLE_WATCH', 1) === 1,
+    bundleCheckSec: num(env, 'BUNDLE_CHECK_SEC', 8),
+    bundleWindowSec: num(env, 'BUNDLE_WINDOW_SEC', 120),
+    bundleDumpFrac: num(env, 'BUNDLE_DUMP_FRAC', 0.25),
     // farm-wallet tiers: balances within FARM_TOL_PCT of each other, in groups of >= FARM_MIN_CLUSTER
     farmTolPct: num(env, 'FARM_TOL_PCT', 0.005),
     farmMinCluster: num(env, 'FARM_MIN_CLUSTER', 3),

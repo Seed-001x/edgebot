@@ -124,8 +124,21 @@ export function cloneCheck(view, others, cfg) {
   return { pass: true, reason: 'no established look-alike' };
 }
 
+
+// One-go dump simulation: ALL linked supply (creator + linked networks) sold into the pool at once.
+// drain = share of the pool's SOL they could pull.
+export function linkedDumpCheck({ creatorUi, networks, dec, poolBaseUi, poolQuoteUi }, maxDrain = 0.35) {
+  const netUi = (networks || []).reduce((a, n) => a + num(n.currentHolding), 0) / 10 ** dec;
+  const x = num(creatorUi) + netUi;
+  if (!(x > 0)) return { pass: true, reason: 'no linked stack' };
+  const B = num(poolBaseUi), Q = num(poolQuoteUi);
+  if (!(B > 0) || !(Q > 0)) return { pass: true, unknown: true, reason: 'pool data missing' };
+  const drain = x / (B + x);
+  return { pass: drain <= maxDrain, drain, reason: drain <= maxDrain ? `linked stack could pull ${(drain * 100).toFixed(0)}% of pool SOL` : `linked wallets could dump in one go and pull ${(drain * 100).toFixed(0)}% of pool SOL` };
+}
+
 /** Gates that no feedback, "contested" count or pace keeper may override. They describe how the coin is built, not how it looks. */
-export const HARD_GATES = new Set(['rugged', 'mintAuthority', 'freezeAuthority', 'creator', 'insiders', 'clones', 'farm', 'dust']);
+export const HARD_GATES = new Set(['rugged', 'mintAuthority', 'freezeAuthority', 'creator', 'insiders', 'clones', 'farm', 'dust', 'linkedDump']);
 /** `fails` are strings like "insiders: 13.1% …". True if ANY failing gate is a hard gate. */
 export const hasHardFail = (fails) => (fails || []).some(f => HARD_GATES.has(String(f).split(':')[0]));
 
@@ -164,6 +177,7 @@ export function runGates({ view, rug, others = [], cfg, now = Date.now() }) {
     checks.farm = farmTiersCheck(rug.topHolders, skip, { tol: cfg.farmTolPct, minCluster: cfg.farmMinCluster, maxWallets: cfg.farmMaxWallets, maxSupplyPct: cfg.farmMaxSupplyPct });
     checks.creator = creatorDumpCheck({ creatorUi: num(rug.creatorBalance) / 10 ** dec, poolBaseUi: lp.base, poolQuoteUi: lp.quote, supplyUi });
     checks.insiders = insiderCheck(rug.insiderNetworks, supplyRaw);
+    checks.linkedDump = linkedDumpCheck({ creatorUi: num(rug.creatorBalance) / 10 ** dec, networks: rug.insiderNetworks, dec, poolBaseUi: lp.base, poolQuoteUi: lp.quote }, cfg.linkedDumpMaxDrain);
     checks.concentration = concentrationCheck(rug.topHolders, skip);
     if (lp.lpLockedPct != null && num(lp.lpLockedPct) < 80) checks.lp = { pass: false, reason: `LP only ${num(lp.lpLockedPct)}% locked/burned — dev can pull` };
     else if (lp.lpLockedPct == null) warnings.push('LP lock unknown');

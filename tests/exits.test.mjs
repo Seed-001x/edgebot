@@ -8,16 +8,16 @@ const pos = (o = {}) => ({ entrySol: 0.02, remainingFrac: 1, peakRatio: 1, tp1Do
 const mark = (valueSol, o = {}) => ({ valueSol, liqUsd: 200_000, buysM5: 30, sellsM5: 10, solUsd: 150, ...o });
 
 test('holds in the quiet middle', () => assert.equal(evaluateExit(pos(), mark(0.021), cfg, NOW).fraction, 0));
-test('stop-loss on realizable value', () => { const d = evaluateExit(pos(), mark(0.0135), cfg, NOW); assert.equal(d.fraction, 1); assert.match(d.reason, /stop-loss/); });
+test('stop-loss on realizable value', () => { const d = evaluateExit(pos(), mark(0.011), cfg, NOW); assert.equal(d.fraction, 1); assert.match(d.reason, /stop-loss/); });
 test('TP1 sells the configured fraction once', () => {
-  const d = evaluateExit(pos(), mark(0.0285), cfg, NOW); assert.equal(d.fraction, 0.5); assert.equal(d.tp1, true);
-  assert.equal(evaluateExit(pos({ tp1Done: true, remainingFrac: 0.5 }), mark(0.0145), cfg, NOW).fraction, 0); // ratio 1.45 on remaining basis, not re-triggered
+  const d = evaluateExit(pos(), mark(0.04), cfg, NOW); assert.equal(d.fraction, 0.75); assert.equal(d.tp1, true);
+  assert.equal(evaluateExit(pos({ tp1Done: true, remainingFrac: 0.25 }), mark(0.01), cfg, NOW).fraction, 0); // ratio 2.0 on remaining basis, not re-triggered
 });
 test('trailing stop after arming', () => {
-  const p = pos({ tp1Done: true, remainingFrac: 0.5, peakRatio: 2 });
-  const d = evaluateExit(p, mark(0.0165), cfg, NOW);             // ratio 1.65 ≤ 2*0.85
+  const p = pos({ tp1Done: true, remainingFrac: 0.25, peakRatio: 2 });
+  const d = evaluateExit(p, mark(0.004), cfg, NOW);             // ratio 0.8 ≤ 2*0.5
   assert.equal(d.fraction, 1); assert.match(d.reason, /trailing/);
-  assert.equal(evaluateExit(p, mark(0.0185), cfg, NOW).fraction, 0);
+  assert.equal(evaluateExit(p, mark(0.006), cfg, NOW).fraction, 0); // ratio 1.2 > 2*0.5, holds
 });
 test('liquidity death beats everything', () => {
   const d = evaluateExit(pos(), mark(0.05, { liqUsd: 1500 }), cfg, NOW); assert.match(d.reason, /liquidity death/);
