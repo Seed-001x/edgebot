@@ -20,6 +20,8 @@ export function eligible(v, cfg) {
   }
   if (v.liq < cfg.minLiqUsd) r.push(`liq $${Math.round(v.liq)} < $${cfg.minLiqUsd}`);
   if (v.mc > 0 && v.liq / v.mc < cfg.minLiqToMc) r.push(`liq is ${((v.liq / v.mc) * 100).toFixed(1)}% of mc < ${(cfg.minLiqToMc * 100).toFixed(0)}%`);
+  // Don't buy dead coins bouncing: if it's down 50%+ in the last hour, it's a dump, not an opportunity
+  if (v.chgH1 != null && v.chgH1 <= -50) r.push(`down ${Math.round(v.chgH1)}% in 1h — dead bounce`);
   return r;
 }
 
