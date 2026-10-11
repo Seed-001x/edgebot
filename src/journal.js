@@ -210,11 +210,12 @@ export class Journal {
     const bySkipReason = Object.fromEntries(Object.entries(cats).map(([k, v]) => [k, agg(v)]));
 
     const closed = this.trades.filter(t => t.type === 'close');
-    const pnl = closed.map(t => t.pnlSol);
+    const withPnl = closed.filter(t => t.pnlSol != null);
+    const pnl = withPnl.map(t => t.pnlSol);
     const tradeStats = {
-      closed: closed.length, wins: closed.filter(t => t.pnlSol > 0).length,
-      totalPnlSol: round(pnl.reduce((a, b) => a + b, 0), 5), avgPnlSol: round(mean(pnl), 5),
-      byExitReason: Object.fromEntries(Object.entries(closed.reduce((m, t) => { const k = String(t.reason || '').split(' (')[0].split(' ')[0] || 'unknown'; (m[k] ||= []).push(t.pnlSol); return m; }, {})).map(([k, v]) => [k, { n: v.length, pnlSol: round(v.reduce((a, b) => a + b, 0), 5) }])),
+      closed: closed.length, closedWithPnl: withPnl.length, wins: withPnl.filter(t => t.pnlSol > 0).length,
+      totalPnlSol: round(pnl.reduce((a, b) => a + b, 0), 5), avgPnlSol: withPnl.length ? round(mean(pnl), 5) : 0,
+      byExitReason: Object.fromEntries(Object.entries(closed.reduce((m, t) => { const k = String(t.reason || '').split(' (')[0].split(' ')[0] || 'unknown'; (m[k] ||= []).push(t.pnlSol); return m; }, {})).map(([k, v]) => { const known = v.filter(x => x != null); return [k, { n: v.length, nWithPnl: known.length, pnlSol: round(known.reduce((a, b) => a + b, 0), 5) }]; })),
     };
     // Human feedback aggregated by skip reason: shows which gates the user disagrees with
     const fbByReason = {};

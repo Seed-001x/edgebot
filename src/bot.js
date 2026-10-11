@@ -70,7 +70,7 @@ export class Bot {
       for (const p of [...this.positions]) {
         try {
           const bal = await this.exec.tokenBalance(p.mint);
-          if (bal === 0n) { this.positions = this.positions.filter(x => x.id !== p.id); this.journal.trade({ type: 'close', id: p.id, mint: p.mint, symbol: p.symbol, reason: 'reconcile: tokens no longer in wallet', pnlSol: 0, ts: this.now() }); }
+          if (bal === 0n) { this.positions = this.positions.filter(x => x.id !== p.id); this.journal.trade({ type: 'close', id: p.id, mint: p.mint, symbol: p.symbol, reason: 'reconcile: tokens no longer in wallet (P&L unknown — manual sell)', pnlSol: null, ts: this.now() }); }
           else if (bal != null) p.tokensRaw = bal.toString();
         } catch (e) { this.err('reconcile', e); }
       }
@@ -87,7 +87,7 @@ export class Bot {
         const bal = await this.exec.tokenBalance(p.mint);
         if (bal === 0n) {
           this.positions = this.positions.filter(x => x.id !== p.id);
-          this.journal.trade({ type: 'close', id: p.id, mint: p.mint, symbol: p.symbol, reason: 'reconcile: sold outside bot', pnlSol: 0, ts: this.now() });
+          this.journal.trade({ type: 'close', id: p.id, mint: p.mint, symbol: p.symbol, reason: 'reconcile: sold outside bot (P&L unknown — manual sell)', pnlSol: null, ts: this.now() });
           console.log(`[reconcile] dropped ${p.symbol} (not in wallet)`);
         } else if (bal != null) p.tokensRaw = bal.toString();
       } catch (e) { /* RPC flaky — skip, don't drop on error */ }
