@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { History } from './history.js';
 import { detect, eligible } from './detect.js';
-import { runGates } from './gate.js';
+import { runGates, hasHardFail } from './gate.js';
 import { evaluateExit } from './exits.js';
 import { Journal } from './journal.js';
 import { Risk } from './risk.js';
@@ -52,6 +52,10 @@ export class Bot {
     if (relaxed.minHolders) relaxed.minHolders = Math.max(50, Math.floor(relaxed.minHolders * 0.6));
     if (relaxed.maxMc) relaxed.maxMc *= 1.5;
     if (relaxed.minMc) relaxed.minMc *= 0.7;
+    // Hard gates can NEVER be loosened — restore their thresholds explicitly
+    relaxed.insiderCountMax = this.cfg.insiderCountMax;
+    relaxed.minQuoteLiqUsd = this.cfg.minQuoteLiqUsd;
+    relaxed.ladderMinN = this.cfg.ladderMinN; relaxed.ladderMaxRatio = this.cfg.ladderMaxRatio;
     return { cfg: relaxed, boosted: true, pace };
   }
 
@@ -192,7 +196,8 @@ export class Bot {
       const contested = this.journal.contestedGates();
       const failReasons = g.fails.map(f => String(f).split(':')[0]);
       const allContested = failReasons.length > 0 && failReasons.every(r => contested.has(r));
-      if (allContested) {
+      // Structural gates (insiders, farm, SOL-side depth, ladder, mint/freeze, ...) can NEVER be overridden
+      if (allContested && !hasHardFail(g.fails)) {
         console.log(`[learn] override: user contested gates ${failReasons.join(',')} — letting ${v.symbol} through`);
         // Don't skip, continue to round-trip check below
       } else {

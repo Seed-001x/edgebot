@@ -53,7 +53,7 @@ export function farmTiersCheck(topHolders, skip, { tol = 0.005, minCluster = 3, 
   const clusters = [];
   let cur = [];
   for (const h of hs) {
-    if (cur.length && (cur[0].amt - h.amt) / cur[0].amt <= tol) cur.push(h);
+    if (cur.length && (cur[0].amt - h.amt) / cur[0].amt <= tol) cur.push(h);   // anchored to the tier's largest balance, so slow drift can't chain unrelated holders
     else { if (cur.length >= minCluster) clusters.push(cur); cur = [h]; }
   }
   if (cur.length >= minCluster) clusters.push(cur);
@@ -96,6 +96,44 @@ export function insiderCheck(networks, supplyRaw, maxPct = 10) {
   return { pass: pct <= maxPct, reason: pct > maxPct ? `${pct.toFixed(1)}% of supply in linked wallets` : 'no large linked network' };
 }
 
+// 4b. Linked-wallet COUNT: 100+ funded sybil wallets is a distribution operation even when each network is small.
+export function insiderCountCheck(count, max = 50) {
+  const n = num(count);
+  return { pass: n <= max, reason: n > max ? `${n} linked insider wallets (> ${max})` : 'few linked wallets' };
+}
+
+// 4c. Real exit depth = the SOL (quote) side of the pool. DexScreener "liquidity" also counts the token side,
+//     which is worthless after a dump (KAIJU: $2.26k "liquidity", $170 of SOL).
+export function exitSolCheck(quoteUsd, minUsd = 1500) {
+  if (quoteUsd == null || !Number.isFinite(Number(quoteUsd))) return { pass: true, reason: 'quote-side liquidity unknown', unknown: true };
+  const q = Number(quoteUsd);
+  return { pass: q >= minUsd, reason: q >= minUsd ? 'SOL side deep enough' : `only $${Math.round(q)} of SOL in the pool (min $${minUsd}) — the rest is tokens you cannot sell into` };
+}
+
+// 4d. Dead-cat / revival pump and "selling into strength".
+//     (a) down >= deadDrop% on 24h but up >= bounce% in the last hour: a bounce in a coin that already dumped.
+//     (b) up >= strong% in the last hour while sells outnumber buys by sellRatio (>= minTx trades): holders are distributing into the pump.
+export function revivalCheck(v, { deadDrop = 50, bounce = 50, strong = 80, sellRatio = 1.25, minTx = 100 } = {}) {
+  const h24 = num(v.chgH24), h1 = num(v.chgH1);
+  if (h24 <= -deadDrop && h1 >= bounce) return { pass: false, reason: `revival pump: ${Math.round(h24)}% on 24h but +${Math.round(h1)}% in the last hour (dead-cat bounce)` };
+  const tx = num(v.buysH1) + num(v.sellsH1);
+  if (h1 >= strong && tx >= minTx && num(v.sellsH1) > sellRatio * num(v.buysH1)) return { pass: false, reason: `+${Math.round(h1)}% in 1h with ${v.sellsH1} sells vs ${v.buysH1} buys (selling into the pump)` };
+  return { pass: true, reason: 'no revival / distribution pattern' };
+}
+
+// 4e. Holder ladder: >= minN non-pool top holders whose sizes span less than maxRatio (organic top holders have a heavy tail).
+export function ladderCheck(topHolders, skip, { minN = 15, maxRatio = 1.6 } = {}) {
+  const p = (topHolders || []).filter(h => h && !skip.has(h.owner) && !skip.has(h.address) && num(h.pct) > 0).map(h => num(h.pct)).sort((a, b) => b - a).slice(0, 20);
+  if (p.length < minN) return { pass: true, reason: 'too few holders to judge', ratio: null };
+  const ratio = p[0] / p[p.length - 1];
+  return { pass: ratio > maxRatio, reason: ratio > maxRatio ? 'holder sizes vary naturally' : `top ${p.length} holders all within ${ratio.toFixed(2)}× of each other (${p[p.length - 1].toFixed(2)}–${p[0].toFixed(2)}% each) — manufactured ladder`, ratio };
+}
+
+/** Gates that no feedback, "contested" count or pace keeper may override. They describe how the coin is built, not how it looks. */
+export const HARD_GATES = new Set(['rugged', 'mintAuthority', 'freezeAuthority', 'creator', 'insiders', 'insiderCount', 'clones', 'farm', 'dust', 'exitSol', 'ladder']);
+/** `fails` are strings like "insiders: 13.1% …". True if ANY failing gate is a hard gate. */
+export const hasHardFail = (fails) => (fails || []).some(f => HARD_GATES.has(String(f).split(':')[0]));
+
 // 5. Vertical launch: a huge move on a coin minutes old is the pool being pushed, not demand.
 export function verticalLaunchCheck(ageMin, chgPct, maxPct = 5000, maxAgeMin = 120) {
   const bad = ageMin <= maxAgeMin && num(chgPct) >= maxPct;
@@ -136,6 +174,7 @@ export function runGates({ view, rug, others = [], cfg, now = Date.now() }) {
 
   checks.clone = cloneCheck(view, others, cfg);
   checks.vertical = verticalLaunchCheck(ageMin, view.chgH1 ?? view.chgM5 ?? 0);
+  checks.revival = revivalCheck(view, { deadDrop: cfg.revivalDeadDrop, bounce: cfg.revivalBounce, strong: cfg.revivalStrong, sellRatio: cfg.revivalSellRatio });
   checks.dust = dustVolumeCheck(view, { minTx: cfg.dustMinTx, maxAvgUsd: cfg.dustMaxAvgUsd });
 
   if (!rug) {
@@ -159,7 +198,10 @@ export function runGates({ view, rug, others = [], cfg, now = Date.now() }) {
     checks.farm = farmTiersCheck(rug.topHolders, skip, { tol: cfg.farmTolPct, minCluster: cfg.farmMinCluster, maxWallets: cfg.farmMaxWallets, maxSupplyPct: cfg.farmMaxSupplyPct });
     checks.creator = creatorDumpCheck({ creatorUi: num(rug.creatorBalance) / 10 ** dec, poolBaseUi: lp.base, poolQuoteUi: lp.quote, supplyUi });
     checks.insiders = insiderCheck(rug.insiderNetworks, supplyRaw);
+    if (rug.graphInsidersDetected != null) checks.insiderCount = insiderCountCheck(rug.graphInsidersDetected, cfg.insiderCountMax);
+    checks.ladder = ladderCheck(rug.topHolders, skip, { minN: cfg.ladderMinN, maxRatio: cfg.ladderMaxRatio });
     checks.concentration = concentrationCheck(rug.topHolders, skip);
+    { const ex = exitSolCheck(lp.quoteUSD, cfg.minQuoteLiqUsd); if (ex.unknown) warnings.push('SOL-side liquidity unknown'); else checks.exitSol = ex; }
     if (lp.lpLockedPct != null && num(lp.lpLockedPct) < 80) checks.lp = { pass: false, reason: `LP only ${num(lp.lpLockedPct)}% locked/burned — dev can pull` };
     else if (lp.lpLockedPct == null) warnings.push('LP lock unknown');
     const holders = rug.totalHolders;
