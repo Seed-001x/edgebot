@@ -62,10 +62,23 @@ async function auth() {
 // Generate a human-sounding thesis via OpenAI, fallback to template.
 async function aiThesis(v, sig) {
   const key = process.env.OPENAI_API_KEY;
+  // Pull the coin's real metadata so the thesis can talk about what the coin actually is
+  let meta = {};
+  try {
+    const r = await fetch(`${API}/coins/${v.address}`, { signal: AbortSignal.timeout(8000) });
+    if (r.ok) { const c = await r.json(); meta = { description: (c.description || '').slice(0, 200), twitter: c.twitter, telegram: c.telegram, website: c.website, name: c.name }; }
+  } catch {}
   if (!key) return templateThesis(v, sig);
   const mc = v.mc ? (v.mc >= 1e6 ? `$${(v.mc / 1e6).toFixed(1)}M` : `$${Math.round(v.mc / 1e3)}K`) : 'unknown MC';
   const m = sig.metrics || {};
-  const prompt = `Write a short pump.fun callout (max 200 chars) for $${v.symbol || '???'} at ${mc} MC. Setup: ${sig.setup || 'momentum'}. Holders: ${m.holders || '?'}. Vol1h: $${m.volH1 || '?'}. Sound like a real degen trader — casual, confident, no corporate speak, no emojis. Just the play.`;
+  const about = meta.description ? `About the coin: "${meta.description}".` : `Coin name: ${meta.name || v.name || v.symbol}.`;
+  const socials = [meta.twitter && 'has Twitter', meta.telegram && 'has Telegram', meta.website && 'has website'].filter(Boolean).join(', ') || 'no socials listed';
+  const prompt = `You are a sharp Solana memecoin trader posting a callout on pump.fun. Write a short callout (max 220 chars) for $${v.symbol || '???'} at ${mc} market cap.
+
+${about}
+Socials: ${socials}. Setup that flagged it: ${sig.setup || 'momentum'}. Holders: ${m.holders || '?'}. 1h volume: $${m.volH1 || '?'}. Buys/sells 5m: ${m.buysM5 ?? '?'}/${m.sellsM5 ?? '?'}.
+
+Write like a real trader with a take — reference what the coin is about, why the setup looks good, where you think it goes. Casual and confident, first person. No corporate speak, no hashtags, no emojis, no "dyor" disclaimers. One or two sentences max.`;
   try {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -73,9 +86,10 @@ async function aiThesis(v, sig) {
       body: JSON.stringify({
         model: 'gpt-4o-mini',
         messages: [{ role: 'user', content: prompt }],
-        max_tokens: 80,
+        max_tokens: 100,
         temperature: 0.9,
       }),
+      signal: AbortSignal.timeout(15000),
     });
     if (!res.ok) throw new Error(`OpenAI ${res.status}`);
     const data = await res.json();
