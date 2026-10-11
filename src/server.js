@@ -94,7 +94,10 @@ export function startServer(bot, port) {
     // GET /learn — recent manual exits + comparison with bot winners
     if (req.method === 'GET' && u.pathname === '/learn') {
       const report = learnReport(bot.journal.manual, bot.journal.trades);
-      report.exits = bot.journal.manual.slice(-20).reverse().map(m => ({ id: m.id, symbol: m.symbol, mint: m.mint, ts: m.ts, heldMin: m.heldMin, peakRatio: m.peakRatio, pnlSolEstimate: m.pnlSolEstimate, reason: m.reason || null, how: m.how }));
+      const exits = bot.journal.manual.slice(-20).reverse().map(m => ({ id: m.id, symbol: m.symbol, mint: m.mint, ts: m.ts, heldMin: m.heldMin, peakRatio: m.peakRatio, pnlSolEstimate: m.pnlSolEstimate, reason: m.reason || null, how: m.how }));
+      report.exits = exits;
+      report.recent = exits; // dashboard expects `recent`
+      report.report = report; // dashboard expects nested report
       return json(res, 200, report);
     }
     // POST /reallists — browser task pushes scraped pump.fun lists (trending/movers/graduated/new, 50 each)
