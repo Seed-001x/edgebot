@@ -111,7 +111,7 @@ export class Bot {
   closeExternal(p, reason) {
     if (!this.positions.some(x => x.id === p.id)) return false; // already closed — don't log it twice
     const n = this.now();
-    const pnl = p.lastValueSol != null ? (p.realizedSol || 0) + p.lastValueSol - p.entrySol : null;
+    const pnl = p.lastValueSol != null ? (p.realizedSol || 0) + p.lastValueSol - p.entrySol - (p.feesSol || 0) : null;
     this.positions = this.positions.filter(x => x.id !== p.id);
     if (pnl != null) this.risk.recordClose(pnl);
     this.journal.trade({ type: 'close', manual: true, id: p.id, mint: p.mint, symbol: p.symbol, setup: p.setup, entrySol: p.entrySol, pnlSol: pnl != null ? +pnl.toFixed(6) : null, estimated: true, heldMin: +((n - p.entryTs) / 60000).toFixed(1), reason: pnl != null ? `${reason} — P&L est. from last quote` : `${reason} (P&L unknown — no quote yet)`, simulated: p.simulated, ts: n });
@@ -304,7 +304,7 @@ export class Bot {
       entryTs: n, entrySol: fill.solSpent, tokensRaw: fill.tokensRaw, remainingFrac: 1, peakRatio: 1, tp1Done: false,
       entryPrice: v.price, entryMc: v.mc, realizedSol: 0, simulated: fill.simulated, sigBuy: fill.sig, markFails: 0,
       entryVolH1: v.volH1 || 0,
-      entryRoundTrip: rt.ratio, stallSince: n, // stall clock starts at entry (price is at entry by definition)
+      entryRoundTrip: rt.ratio, stallSince: n, feesSol: this.cfg.txFeeSol || 0, // buy tx fee // stall clock starts at entry (price is at entry by definition)
       bw: { tracked: null, supply: rug && rug.token ? Number(rug.token.supply) || 0 : 0, creator: rug && rug.creator ? String(rug.creator) : null, weights: linkedWeights(rug), snaps: [], vals: [], lastTs: 0, trimmed: false },
       entry: snapshotFeatures({ v, sig, rug, g, now: n }), lastTickTs: 0, lastChainTs: 0, chainDropStrikes: 0,
     };
@@ -421,12 +421,14 @@ export class Bot {
     if (sold <= 0n) { pos.markFails = (pos.markFails || 0) + 1; return; }
     pos.tokensRaw = (BigInt(pos.tokensRaw) - sold).toString();
     pos.realizedSol += res.solOut;
+    pos.feesSol = (pos.feesSol || 0) + (this.cfg.txFeeSol || 0);
     this.stats.exits++;
     if (decision.tp1) { pos.tp1Done = true; pos.remainingFrac *= (1 - decision.fraction); }
     this.journal.trade({ type: 'sell', id: pos.id, mint: pos.mint, symbol: pos.symbol, fraction: decision.fraction, solOut: res.solOut, reason: decision.reason, sig: res.sig, simulated: res.simulated, ts: n });
 
     if (decision.fraction >= 1 || BigInt(pos.tokensRaw) <= 0n) {
-      const pnl = pos.realizedSol - pos.entrySol;
+      const pnl = pos.realizedSol - pos.entrySol - (pos.feesSol || 0); // net of SOL network fees
+      if (this.cfg.closeEmptyAccounts && this.exec.closeEmptyAccounts) this.exec.closeEmptyAccounts(pos.mint).catch(e => this.err('close account', e));
       this.positions = this.positions.filter(p => p.id !== pos.id);
       this.risk.recordClose(pnl);
       this.journal.trade({ type: 'close', id: pos.id, mint: pos.mint, symbol: pos.symbol, setup: pos.setup, entrySol: pos.entrySol, exitSol: pos.realizedSol, pnlSol: +pnl.toFixed(6), heldMin: +((n - pos.entryTs) / 60000).toFixed(1), reason: decision.reason, simulated: pos.simulated, ts: n });
@@ -438,7 +440,7 @@ export class Bot {
   async recordManualExit(pos, valueSol, n, how) {
     if (!this.positions.some(p => p.id === pos.id)) return null; // already closed (e.g. by reconcile) — don't log it twice
     const est = valueSol != null ? valueSol : 0;
-    const pnl = pos.realizedSol + est - pos.entrySol;
+    const pnl = pos.realizedSol + est - pos.entrySol - (pos.feesSol || 0);
     const rec = this.journal.manualExit({ id: pos.id, mint: pos.mint, symbol: pos.symbol, ts: n, how, entry: pos.entry || null, heldMin: +((n - pos.entryTs) / 60000).toFixed(1), peakRatio: pos.peakRatio, bundleScore: pos.bundleScore || 0, pnlSolEstimate: +pnl.toFixed(6), reason: null });
     this.positions = this.positions.filter(p => p.id !== pos.id);
     this.risk.recordClose(pnl);

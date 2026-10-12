@@ -147,6 +147,37 @@ export class Executor {
     return { sig, confirmed: ok };
   }
 
+  /**
+   * Close this wallet's EMPTY token accounts for `mint` and get the rent (~0.002 SOL each) back.
+   * Only zero-balance accounts owned by the SPL Token / Token-2022 programs are touched. Costs one base fee.
+   */
+  async closeEmptyAccounts(mint) {
+    if (!this.real) return null;
+    const kp = await this.keypair();
+    const r = await this.rpcFn('getTokenAccountsByOwner', [kp.publicKey.toBase58(), { mint }, { encoding: 'jsonParsed', commitment: 'confirmed' }]);
+    const TOKEN_PROGRAMS = new Set(['TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb']);
+    const { Transaction, TransactionInstruction, PublicKey } = await import('@solana/web3.js');
+    const ixs = [];
+    for (const a of (r && r.value) || []) {
+      const amt = a.account?.data?.parsed?.info?.tokenAmount?.amount;
+      if (amt !== '0' || !TOKEN_PROGRAMS.has(a.account.owner)) continue;
+      ixs.push(new TransactionInstruction({
+        programId: new PublicKey(a.account.owner),
+        keys: [
+          { pubkey: new PublicKey(a.pubkey), isSigner: false, isWritable: true }, // account to close
+          { pubkey: kp.publicKey, isSigner: false, isWritable: true },            // rent goes back to us
+          { pubkey: kp.publicKey, isSigner: true, isWritable: false },            // owner
+        ],
+        data: Buffer.from([9]), // CloseAccount
+      }));
+    }
+    if (!ixs.length) return null;
+    const bh = await this.rpcFn('getLatestBlockhash', [{ commitment: 'confirmed' }]);
+    const tx = new Transaction({ feePayer: kp.publicKey, recentBlockhash: bh.value.blockhash }).add(...ixs);
+    tx.sign(kp);
+    return this.sendFn(Buffer.from(tx.serialize()).toString('base64'));
+  }
+
   // ------------------------------------------------------------ trading API
   /**
    * Price an immediate buy + sell-back. ratio = sell-back SOL / spent SOL.

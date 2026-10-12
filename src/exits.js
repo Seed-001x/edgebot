@@ -17,6 +17,13 @@ export function evaluateExit(pos, mark, cfg, now) {
   const base = pos.entryRoundTrip > 0 ? pos.entryRoundTrip : 1;
   const move = ratio / base;
 
+  // gain = what you'd actually pocket on the remaining position: the sell quote (already net of pool fees,
+  // slippage and price impact) minus SOL network fees for the buy + up to two sells. Profit-side exits use this,
+  // so a take-profit is always a real profit, never a "price is up but fees ate it" exit.
+  const feeFrac = basis > 0 ? (3 * (cfg.txFeeSol || 0)) / basis : 0;
+  const gain = ratio - 1 - feeFrac;
+  const peakGain = peakRatio - 1 - feeFrac;
+
   // stall clock: running while price is below entry + stallBandPct (flat or dipping); resets when it climbs out
   let stallSince = null;
   if (cfg.stallSec > 0 && move < 1 + cfg.stallBandPct) stallSince = pos.stallSince ?? now;
@@ -33,11 +40,16 @@ export function evaluateExit(pos, mark, cfg, now) {
   const twoSided = mark.buysM5 != null && mark.sellsM5 != null && mark.buysM5 >= 5 && mark.sellsM5 >= 5;
   if (ratio <= 1 - cfg.stopLoss && !twoSided) return out(1, `stop-loss (${((ratio - 1) * 100).toFixed(0)}%)`);
 
-  // 3. first take-profit: bank part, let the rest run (skipped if user disabled TP for this position)
-  if (!pos.tp1Done && !pos.noTp && ratio >= 1 + cfg.tp1Pct) return { ...out(cfg.tp1Frac, `TP1 +${(cfg.tp1Pct * 100).toFixed(0)}%`), tp1: true };
+  // 3. first take-profit on the jump: bank part, let the rest run (skipped if user disabled TP for this position).
+  //    +30% means +30% in your pocket after slippage and SOL fees, not +30% on the chart.
+  if (!pos.tp1Done && !pos.noTp && cfg.tp1Frac > 0 && gain >= cfg.tp1Pct) return { ...out(cfg.tp1Frac, `TP1 +${(cfg.tp1Pct * 100).toFixed(0)}%`), tp1: true };
 
   // 4. trailing stop once armed
   if (peakRatio >= 1 + cfg.trailArm && ratio <= peakRatio * (1 - cfg.trailPct)) return out(1, `trailing stop (${(cfg.trailPct * 100).toFixed(0)}% off peak ${(peakRatio).toFixed(2)}x)`);
+
+  // 4a. profit lock: once up lockArm+ after costs, don't let it round-trip — sell if it gives back (1 - lockKeep) of its
+  //     best real gain. Scales with the move: best +40% → sells at +20%; best +200% → sells at +100% (lockKeep 0.5).
+  if (cfg.lockKeep > 0 && peakGain >= cfg.lockArm && gain <= peakGain * cfg.lockKeep) return out(1, `profit lock (best +${(peakGain * 100).toFixed(0)}%, now +${(gain * 100).toFixed(0)}% after fees)`);
 
   // 4b. stall: price stuck at/below entry for stallSec — it isn't running, get out before it dips
   if (stallSince != null && now - stallSince >= cfg.stallSec * 1000) return out(1, `stall (${Math.round((now - stallSince) / 1000)}s near entry, price ${((move - 1) * 100).toFixed(1)}%)`);
