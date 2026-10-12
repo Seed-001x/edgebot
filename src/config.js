@@ -19,7 +19,7 @@ export function loadConfig(env = process.env) {
     tradeSol: num(env, 'TRADE_SOL', 0.05),
     maxPositions: num(env, 'MAX_POSITIONS', 5),
     dailyLossSol: num(env, 'DAILY_LOSS_SOL', 0),        // realized loss in a UTC day that halts new entries; 0 = disabled
-    haltAfterCloses: num(env, 'HALT_AFTER_CLOSES', 1),  // one-shot: halt new entries after this many more closes; 0 = off (TONIGHT ONLY: revert to 0 on resume)
+    haltAfterCloses: num(env, 'HALT_AFTER_CLOSES', 0),  // one-shot: halt new entries after this many more closes; 0 = off
     killEquityFrac: num(env, 'KILL_EQUITY_FRAC', 0.5),  // wallet SOL below this fraction of starting → permanent halt
     minReserveSol: num(env, 'MIN_RESERVE_SOL', 0.02),   // never spend the last of the fees
     maxTradesPerHour: num(env, 'MAX_TRADES_PER_HOUR', 120),

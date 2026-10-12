@@ -13,6 +13,11 @@ export class Risk {
     this.s = { day: dayKey(now()), dayPnlSol: 0, tradeTs: [], cooldown: {}, losers: {}, startEquitySol: null, killed: false, killReason: null, totalCloses: 0, haltArmedAt: null };
     this.load();
     if (!this.s.losers) this.s.losers = {}; // risk.json from before this field existed
+    // arm the one-shot auto-halt at startup so "N more closes" counts from now, not from the first close
+    if ((this.cfg.haltAfterCloses || 0) > 0 && this.s.haltArmedAt == null) {
+      this.s.haltArmedAt = this.s.totalCloses || 0;
+      this.save();
+    }
   }
 
   load() {
