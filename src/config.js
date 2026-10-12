@@ -42,8 +42,8 @@ export function loadConfig(env = process.env) {
     rpcUrls: (env.RPC_URLS || 'https://api.mainnet-beta.solana.com').split(',').map(s => s.trim()).filter(Boolean),
 
     // ---- eligibility ----
-    minMc: num(env, 'MIN_MC', 10000),
-    maxMc: num(env, 'MAX_MC', 2_000_000),
+    minMc: num(env, 'MIN_MC', 30000),
+    maxMc: num(env, 'MAX_MC', 1_000_000),
     minLiqUsd: num(env, 'MIN_LIQ_USD', 15000),
     minLiqToMc: num(env, 'MIN_LIQ_TO_MC', 0.03),
     minPairAgeMin: num(env, 'MIN_PAIR_AGE_MIN', 0),   // skip pools younger than N min (0 = off). Off: winners W/GTRADE/Playground/19 were all bought 1–5m after pool open
