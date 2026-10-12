@@ -19,6 +19,19 @@ const boot = await bot.start();
 console.log(`[edgebot] wallet ${cfg.realMode ? await exec.address() : '(shadow)'} balance ${boot.solBalance} SOL, ${boot.openPositions} open positions restored`);
 startServer(bot, cfg.port);
 
+// Live new-coin feed (PumpPortal websocket): brand-new launches land in the
+// watchlist within seconds, long before the REST APIs index them. Fail-open.
+if (cfg.liveFeed) {
+  const { LiveFeed } = await import('./liveFeed.js');
+  const feed = new LiveFeed({
+    url: cfg.liveFeedUrl,
+    onMint: (mint) => bot.noteMint(mint, 'live-ws'),
+    onStats: (s) => { bot.stats.liveFeed = s; },
+  });
+  feed.start();
+  process.on('SIGTERM', () => feed.stop());
+}
+
 const every = (sec, fn) => { fn(); return setInterval(fn, sec * 1000); };
 every(cfg.discoverEverySec, () => bot.discoverTick());
 every(cfg.pollEverySec, () => bot.pollTick());

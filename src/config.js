@@ -132,6 +132,10 @@ export function loadConfig(env = process.env) {
     signalCooldownMin: num(env, 'SIGNAL_COOLDOWN_MIN', 10),
     maxSignalsPerTick: num(env, 'MAX_SIGNALS_PER_TICK', 3),
 
+    // ---- live feed (PumpPortal websocket: new launches in seconds) ----
+    liveFeed: env.LIVE_FEED !== '0',
+    liveFeedUrl: env.PUMPPORTAL_WS_URL || 'wss://pumpportal.fun/api/data',
+
     dataDir: env.DATA_DIR || './data',
     port: num(env, 'PORT', 3000),
   };

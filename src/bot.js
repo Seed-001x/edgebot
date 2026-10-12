@@ -36,7 +36,7 @@ export class Bot {
     this.posFile = path.join(cfg.dataDir, 'positions.json');
     this.positions = this.loadPositions();
     this.busy = { discover: false, poll: false, pos: false };
-    this.stats = { discoverTicks: 0, pollTicks: 0, positionTicks: 0, signals: 0, entries: 0, exits: 0, errors: 0, lastError: null, sourceCounts: {}, lastDiscoverTs: 0, lastPollTs: 0 };
+    this.stats = { discoverTicks: 0, pollTicks: 0, positionTicks: 0, signals: 0, entries: 0, exits: 0, errors: 0, lastError: null, sourceCounts: {}, lastDiscoverTs: 0, lastPollTs: 0, liveFeed: { connected: false, events: 0, added: 0, reconnects: 0, lastEventTs: 0, lastError: null } };
     this.statsFile = path.join(cfg.dataDir, 'stats.json');
     this.entryTimes = []; // timestamps of entries (for pace keeper)
     this.PACE_TARGET = 120; // target trades per hour (2 per min)
@@ -133,6 +133,17 @@ export class Bot {
   }
 
   // ------------------------------------------------------------ discovery
+  // Live-feed intake: add a mint the moment it's seen (e.g. a brand-new
+  // launch from the websocket). Bounded so the firehose can't evict the
+  // curated sources: only fills spare watchlist capacity. Returns true if added.
+  noteMint(mint, source = 'live-ws') {
+    if (!mint || this.watch.has(mint)) return false;
+    if (this.positions.some(p => p.mint === mint)) return false;
+    if (this.watch.size >= Math.floor(this.cfg.watchMax * 0.9)) return false;
+    this.watch.set(mint, { ts: this.now(), source });
+    return true;
+  }
+
   async discoverTick() {
     if (this.busy.discover) return;
     this.busy.discover = true;
