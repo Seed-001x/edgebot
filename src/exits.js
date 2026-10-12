@@ -36,9 +36,8 @@ export function evaluateExit(pos, mark, cfg, now) {
   // 2a. dip stop: price fell dipStopPct below entry — sell, no exceptions
   if (cfg.dipStopPct > 0 && move <= 1 - cfg.dipStopPct) return out(1, `dip stop (price ${((move - 1) * 100).toFixed(1)}% from entry)`);
 
-  // 2. hard stop on realizable value — but not into a dip with two-sided volume (5+ buys & 5+ sells)
-  const twoSided = mark.buysM5 != null && mark.sellsM5 != null && mark.buysM5 >= 5 && mark.sellsM5 >= 5;
-  if (ratio <= 1 - cfg.stopLoss && !twoSided) return out(1, `stop-loss (${((ratio - 1) * 100).toFixed(0)}%)`);
+  // 2. hard stop on realizable value — no exceptions
+  if (ratio <= 1 - cfg.stopLoss) return out(1, `stop-loss (${((ratio - 1) * 100).toFixed(0)}%)`);
 
   // 3. first take-profit on the jump: bank part, let the rest run (skipped if user disabled TP for this position).
   //    +30% means +30% in your pocket after slippage and SOL fees, not +30% on the chart.
