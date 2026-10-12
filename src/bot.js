@@ -18,6 +18,7 @@ import { Journal } from './journal.js';
 import { Risk } from './risk.js';
 import { postCallout } from './callout.js';
 import { snapshotFeatures, externalExit } from './learn.js';
+import { impliedMove } from './exec.js';
 
 export class Bot {
   /**
@@ -302,6 +303,23 @@ export class Bot {
     try { rt = await this.exec.roundTrip(v.address, size); }
     catch (e) { return this.skip(v, sig, [`roundtrip: no sellable route (${e.message})`], g.warnings); }
     if (rt.ratio < this.cfg.minRoundTrip) return this.skip(v, sig, [`roundtrip: sell-back worth ${(rt.ratio * 100).toFixed(0)}% of spend < ${(this.cfg.minRoundTrip * 100).toFixed(0)}% (impact ${rt.impactPct.toFixed(1)}%)`], g.warnings);
+
+    // freshness guard (quote-level): rt.buyQuote IS the live execution price, fetched seconds
+    // ago from the venue itself. The round-trip RATIO is blind to the price LEVEL collapsing
+    // (buy low, sell back low = ratio still fine), and the DexScreener re-pull further down
+    // can lag the pool by minutes — on NEVER (2026-10-12) the bot decided at $49k and filled
+    // at $2.3k while both DexScreener reads still agreed. Compare levels here and abort if
+    // the live price has moved beyond ±freshGuardPct of the price the gates approved.
+    if (this.cfg.freshGuardPct > 0) {
+      const dec = rug && rug.token && Number.isFinite(Number(rug.token.decimals)) ? Number(rug.token.decimals) : 6;
+      const mv = impliedMove({ decisionPriceUsd: v.price, solUsd, outAmountRaw: rt.buyQuote && rt.buyQuote.outAmount, sizeSol: size, decimals: dec });
+      if (mv != null && Math.abs(mv) > this.cfg.freshGuardPct / 100) {
+        const pct = (Math.abs(mv) * 100).toFixed(0);
+        return this.skip(v, sig, [mv < 0
+          ? `stale: live quote ${pct}% below decision price — dumped during checks, aborting`
+          : `stale: live quote ${pct}% above decision price — chasing, aborting`], g.warnings);
+      }
+    }
 
     // re-check limits right before spending (state may have changed during the awaits above)
     const gate1 = this.risk.canEnter({ mint: v.address, walletSol: await this.exec.solBalance(), openCount: this.positions.length, sizeSol: size, halted: this.halted() });

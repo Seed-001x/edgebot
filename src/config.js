@@ -74,6 +74,10 @@ export function loadConfig(env = process.env) {
     // Pre-buy freshness guard: abort if the price moved hard between signal and execution (stale quote).
     prebuyMaxDumpPct: num(env, 'PREBUY_MAX_DUMP_PCT', 30), // fresh < signal*(1-30%) → dumped, abort
     prebuyMaxPumpPct: num(env, 'PREBUY_MAX_PUMP_PCT', 100), // fresh > signal*2 → chasing, abort
+    // Quote-level freshness guard: price implied by the live round-trip buy quote vs the
+    // decision price. The DexScreener re-pull above can lag the pool by minutes (NEVER,
+    // 2026-10-12: decided at $49k, filled at $2.3k); the Jupiter quote cannot. 0 = off.
+    freshGuardPct: num(env, 'FRESH_GUARD_PCT', 10), // abort if |live − decision| > 10%
 
     // ---- gates ----
     requireReportBelowAgeH: num(env, 'REQUIRE_REPORT_BELOW_AGE_H', 6), // young coins with no RugCheck report are blocked

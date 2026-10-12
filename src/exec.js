@@ -13,6 +13,27 @@ import { fetchJson, SOL_MINT, LAMPORTS, sleep } from './util.js';
 
 const toLamports = (sol) => BigInt(Math.floor(sol * LAMPORTS));
 
+/**
+ * Move between the decision price (USD/token from the scan snapshot) and the price implied
+ * by a live buy quote (SOL in -> raw tokens out). Returns a fraction (+0.1 = live price 10%
+ * above decision) or null when any input is unusable. The quote returns RAW token units, so
+ * `decimals` must come from the token itself (RugCheck); a wrong decimals value blows the
+ * move up to an absurd number, which callers treat as "abort" — the fail-safe direction.
+ */
+export function impliedMove({ decisionPriceUsd, solUsd, outAmountRaw, sizeSol, decimals }) {
+  const dec = Number(decimals);
+  if (!(decisionPriceUsd > 0) || !(solUsd > 0) || !(sizeSol > 0)) return null;
+  if (!Number.isFinite(dec) || dec < 0 || dec > 18) return null;
+  const out = Number(outAmountRaw);
+  if (!(out > 0)) return null;
+  const tokensWhole = out / 10 ** dec;
+  if (!(tokensWhole > 0)) return null;
+  const decisionSol = decisionPriceUsd / solUsd; // SOL per token at decision time
+  if (!(decisionSol > 0)) return null;
+  const freshSol = sizeSol / tokensWhole;        // SOL per token in the live quote
+  return freshSol / decisionSol - 1;
+}
+
 export class Executor {
   /**
    * @param cfg   config

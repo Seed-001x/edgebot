@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Executor } from '../src/exec.js';
+import { Executor, impliedMove } from '../src/exec.js';
 import { SOL_MINT } from '../src/util.js';
 import { testCfg } from './helpers.mjs';
 
@@ -36,4 +36,25 @@ test('real mode without a key fails closed', async () => {
 test('a malformed key is rejected without echoing it', { skip: !hasSolana && '@solana/web3.js not installed in this sandbox' }, async () => {
   const bad = new Executor(testCfg({ realMode: true }), { env: { WALLET_PRIVATE_KEY: 'SUPERSECRETNOTAKEY' }, rpc: async () => ({}) });
   await assert.rejects(bad.address(), (e) => /not a valid/.test(e.message) && !/SUPERSECRET/.test(e.message));
+});
+
+test('impliedMove: live quote at the decision price = no move', () => {
+  // decision: $0.05/token, SOL at $200 -> 0.00025 SOL/token. 0.1 SOL buys 400 tokens (6 dp).
+  const mv = impliedMove({ decisionPriceUsd: 0.05, solUsd: 200, outAmountRaw: '400000000', sizeSol: 0.1, decimals: 6 });
+  assert.ok(Math.abs(mv) < 1e-9);
+});
+test('impliedMove: NEVER case — quote 95% below decision price reads as a dump', () => {
+  // decided at $49k MC price $0.049; live quote buys 20x the tokens per SOL -> price is 1/20th
+  const mv = impliedMove({ decisionPriceUsd: 0.049, solUsd: 200, outAmountRaw: String(0.1 / (0.049 / 200) * 20 * 1e6), sizeSol: 0.1, decimals: 6 });
+  assert.ok(mv < -0.9, `expected ~-0.95, got ${mv}`);
+});
+test('impliedMove: quote above decision price reads as a pump', () => {
+  const mv = impliedMove({ decisionPriceUsd: 0.05, solUsd: 200, outAmountRaw: '200000000', sizeSol: 0.1, decimals: 6 });
+  assert.ok(Math.abs(mv - 1) < 1e-9); // half the tokens per SOL = price doubled
+});
+test('impliedMove: unusable inputs return null (guard falls open to the view check)', () => {
+  assert.equal(impliedMove({ decisionPriceUsd: 0, solUsd: 200, outAmountRaw: '100', sizeSol: 0.1, decimals: 6 }), null);
+  assert.equal(impliedMove({ decisionPriceUsd: 0.05, solUsd: 200, outAmountRaw: '0', sizeSol: 0.1, decimals: 6 }), null);
+  assert.equal(impliedMove({ decisionPriceUsd: 0.05, solUsd: 200, outAmountRaw: undefined, sizeSol: 0.1, decimals: 6 }), null);
+  assert.equal(impliedMove({ decisionPriceUsd: 0.05, solUsd: 200, outAmountRaw: '100', sizeSol: 0.1, decimals: NaN }), null);
 });
