@@ -97,13 +97,25 @@ export class Bot {
       for (const p of [...this.positions]) {
         try {
           const bal = await this.exec.tokenBalance(p.mint);
-          if (bal === 0n) { this.positions = this.positions.filter(x => x.id !== p.id); this.journal.trade({ type: 'close', id: p.id, mint: p.mint, symbol: p.symbol, reason: 'reconcile: tokens no longer in wallet (P&L unknown — manual sell)', pnlSol: null, ts: this.now() }); }
+          if (bal === 0n) this.closeExternal(p, 'reconcile: tokens no longer in wallet (manual sell)');
           else if (bal != null) p.tokensRaw = bal.toString();
         } catch (e) { this.err('reconcile', e); }
       }
       this.savePositions();
     }
     return { solBalance: sol, openPositions: this.positions.length };
+  }
+
+  // Tokens left the wallet outside the bot. Estimate P&L from the last sell quote we saw (marked estimated),
+  // and count it toward the daily loss cap — previously these were logged as "unknown" and the cap never saw them.
+  closeExternal(p, reason) {
+    if (!this.positions.some(x => x.id === p.id)) return false; // already closed — don't log it twice
+    const n = this.now();
+    const pnl = p.lastValueSol != null ? (p.realizedSol || 0) + p.lastValueSol - p.entrySol : null;
+    this.positions = this.positions.filter(x => x.id !== p.id);
+    if (pnl != null) this.risk.recordClose(pnl);
+    this.journal.trade({ type: 'close', manual: true, id: p.id, mint: p.mint, symbol: p.symbol, setup: p.setup, entrySol: p.entrySol, pnlSol: pnl != null ? +pnl.toFixed(6) : null, estimated: true, heldMin: +((n - p.entryTs) / 60000).toFixed(1), reason: pnl != null ? `${reason} — P&L est. from last quote` : `${reason} (P&L unknown — no quote yet)`, simulated: p.simulated, ts: n });
+    return true;
   }
 
   // Periodic reconcile: drop positions whose tokens left the wallet (manual sells)
@@ -113,9 +125,7 @@ export class Bot {
       try {
         const bal = await this.exec.tokenBalance(p.mint);
         if (bal === 0n) {
-          this.positions = this.positions.filter(x => x.id !== p.id);
-          this.journal.trade({ type: 'close', id: p.id, mint: p.mint, symbol: p.symbol, reason: 'reconcile: sold outside bot (P&L unknown — manual sell)', pnlSol: null, ts: this.now() });
-          console.log(`[reconcile] dropped ${p.symbol} (not in wallet)`);
+          if (this.closeExternal(p, 'reconcile: sold outside bot (manual sell)')) console.log(`[reconcile] dropped ${p.symbol} (not in wallet)`);
         } else if (bal != null) p.tokensRaw = bal.toString();
       } catch (e) { /* RPC flaky — skip, don't drop on error */ }
     }
@@ -294,6 +304,7 @@ export class Bot {
       entryTs: n, entrySol: fill.solSpent, tokensRaw: fill.tokensRaw, remainingFrac: 1, peakRatio: 1, tp1Done: false,
       entryPrice: v.price, entryMc: v.mc, realizedSol: 0, simulated: fill.simulated, sigBuy: fill.sig, markFails: 0,
       entryVolH1: v.volH1 || 0,
+      entryRoundTrip: rt.ratio, stallSince: n, // stall clock starts at entry (price is at entry by definition)
       bw: { tracked: null, supply: rug && rug.token ? Number(rug.token.supply) || 0 : 0, creator: rug && rug.creator ? String(rug.creator) : null, weights: linkedWeights(rug), snaps: [], vals: [], lastTs: 0, trimmed: false },
       entry: snapshotFeatures({ v, sig, rug, g, now: n }), lastTickTs: 0, lastChainTs: 0, chainDropStrikes: 0,
     };
@@ -353,7 +364,7 @@ export class Bot {
     const n = this.now();
     const v = this.latest.get(pos.mint) || {};
     let valueSol = null;
-    try { valueSol = await this.exec.markValue(pos.mint, pos.tokensRaw); pos.markFails = 0; }
+    try { valueSol = await this.exec.markValue(pos.mint, pos.tokensRaw); pos.markFails = 0; pos.lastValueSol = valueSol; }
     catch { pos.markFails = (pos.markFails || 0) + 1; }
 
     let decision;
@@ -365,6 +376,7 @@ export class Bot {
       decision = evaluateExit(pos, { valueSol, liqUsd: v.liq != null ? v.liq : null, buysM5: v.buysM5 != null ? v.buysM5 : null, sellsM5: v.sellsM5 || 0, solUsd, volH1: v.volH1 || 0 }, this.cfg, n);
     }
     pos.peakRatio = decision.newPeak || pos.peakRatio;
+    if ('stallSince' in decision) pos.stallSince = decision.stallSince;
     // +20% progress callout: let the timeline know it's climbing (once per position)
     if (valueSol != null && !pos.climbCalloutDone) {
       const ratio = valueSol / Math.max(1e-9, pos.entrySol * pos.remainingFrac);
@@ -424,6 +436,7 @@ export class Bot {
 
   // the human closed this one outside the bot: record entry snapshot + estimated result, drop the position, await a reason tag
   async recordManualExit(pos, valueSol, n, how) {
+    if (!this.positions.some(p => p.id === pos.id)) return null; // already closed (e.g. by reconcile) — don't log it twice
     const est = valueSol != null ? valueSol : 0;
     const pnl = pos.realizedSol + est - pos.entrySol;
     const rec = this.journal.manualExit({ id: pos.id, mint: pos.mint, symbol: pos.symbol, ts: n, how, entry: pos.entry || null, heldMin: +((n - pos.entryTs) / 60000).toFixed(1), peakRatio: pos.peakRatio, bundleScore: pos.bundleScore || 0, pnlSolEstimate: +pnl.toFixed(6), reason: null });

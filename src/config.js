@@ -43,13 +43,16 @@ export function loadConfig(env = process.env) {
     maxMc: num(env, 'MAX_MC', 2_000_000),
     minLiqUsd: num(env, 'MIN_LIQ_USD', 15000),
     minLiqToMc: num(env, 'MIN_LIQ_TO_MC', 0.03),
+    minPairAgeMin: num(env, 'MIN_PAIR_AGE_MIN', 0),   // skip pools younger than N min (0 = off). Off: winners W/GTRADE/Playground/19 were all bought 1–5m after pool open
 
     // ---- 'pop' detector (needs live history: flat → vertical) ----
     popWindowSec: num(env, 'POP_WINDOW_SEC', 300),
     popGainPct: num(env, 'POP_GAIN_PCT', 35),
     popMaxGainPct: num(env, 'POP_MAX_GAIN_PCT', 200),   // already >3x in the window = chasing
-    popMinVolH1: num(env, 'POP_MIN_VOL_H1', 10000),
-    popMinBuysM5: num(env, 'POP_MIN_BUYS_M5', 5), // real momentum: multiple buys, not 1 buy pushing it up
+    popMinVolH1: num(env, 'POP_MIN_VOL_H1', 20000),   // was 10k (let dead coins in); 50k risked blocking fresh-pool winners
+    popMinBuysM5: num(env, 'POP_MIN_BUYS_M5', 20),    // was 5: real momentum = many buyers, not a handful
+    popMinChgH1: num(env, 'POP_MIN_CHG_H1', 0),       // coin must be UP on the hour: a bounce off a crash is not a pop
+    popMaxBelowHigh: num(env, 'POP_MAX_BELOW_HIGH', 0.30), // skip if price is >30% under its 1h high (dead-cat bounce)
     minBuyRatioM5: num(env, 'MIN_BUY_RATIO_M5', 0.55),
     maxDrawFromPeak: num(env, 'MAX_DRAW_FROM_PEAK', 0.15), // enter on strength, not on the way down
 
@@ -93,7 +96,10 @@ export function loadConfig(env = process.env) {
     setupBlacklistMin: num(env, 'SETUP_BLACKLIST_MIN', 0),
 
     // ---- exits (judged on REALIZABLE value = Jupiter sell quote, not screen price) ----
-    stopLoss: num(env, 'STOP_LOSS', 0.15),
+    stopLoss: num(env, 'STOP_LOSS', 0.15),                // backstop on realizable value (incl. fees/slippage)
+    dipStopPct: num(env, 'DIP_STOP_PCT', 0.05),           // sell if PRICE drops this far below entry (0 = off)
+    stallSec: num(env, 'STALL_SEC', 60),                  // sell if price sits near/below entry this long (0 = off)
+    stallBandPct: num(env, 'STALL_BAND_PCT', 0.02),       // "near entry" = below entry +2%; climbing past it resets the clock
     tp1Pct: num(env, 'TP1_PCT', 10.0),
     tp1Frac: num(env, 'TP1_FRAC', 0),
     trailArm: num(env, 'TRAIL_ARM', 1.00),
@@ -126,6 +132,9 @@ export function validateConfig(cfg) {
   if (cfg.dailyLossSol <= 0) errs.push('DAILY_LOSS_SOL must be > 0');
   if (cfg.killEquityFrac <= 0 || cfg.killEquityFrac >= 1) errs.push('KILL_EQUITY_FRAC must be between 0 and 1');
   if (cfg.stopLoss <= 0 || cfg.stopLoss >= 1) errs.push('STOP_LOSS must be between 0 and 1');
+  if (cfg.dipStopPct < 0 || cfg.dipStopPct >= 1) errs.push('DIP_STOP_PCT must be between 0 and 1 (0 = off)');
+  if (cfg.stallSec < 0) errs.push('STALL_SEC must be >= 0 (0 = off)');
+  if (cfg.stallBandPct < 0) errs.push('STALL_BAND_PCT must be >= 0');
   if (cfg.realMode && cfg.rpcUrls.length === 0) errs.push('RPC_URLS required in real mode');
   return errs;
 }

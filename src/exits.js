@@ -1,21 +1,33 @@
 // exits.js — pure exit logic. Judged on REALIZABLE value (Jupiter sell quote), not screen price.
 //
-// pos  = { entrySol, remainingFrac, peakRatio, tp1Done, entryTs }
+// pos  = { entrySol, remainingFrac, peakRatio, tp1Done, entryTs, entryRoundTrip?, stallSince? }
 // mark = { valueSol, liqUsd, buysM5, sellsM5, solUsd }
-// returns { fraction (0..1 of CURRENT holding; 0 = hold), reason, newPeak, ratio }
+// returns { fraction (0..1 of CURRENT holding; 0 = hold), reason, newPeak, ratio, stallSince }
 //
 // ratio = valueSol / (entrySol * remainingFrac): value of what's left vs its share of cost basis.
+// move  = ratio / entryRoundTrip: the PRICE move since entry. Right after a buy the sell quote is already
+//         below cost by the round-trip (fees + slippage), so a flat coin reads e.g. 0.93 on `ratio` but 1.00 on `move`.
+//         The dip stop and the stall exit use `move`, so they fire on what the price did, not on sunk fees.
 
 export function evaluateExit(pos, mark, cfg, now) {
   const basis = pos.entrySol * pos.remainingFrac;
   const ratio = basis > 0 ? mark.valueSol / basis : 0;
   const peakRatio = Math.max(pos.peakRatio || 1, ratio);
   const heldMin = (now - pos.entryTs) / 60000;
-  const out = (fraction, reason) => ({ fraction, reason, newPeak: peakRatio, ratio });
+  const base = pos.entryRoundTrip > 0 ? pos.entryRoundTrip : 1;
+  const move = ratio / base;
+
+  // stall clock: running while price is below entry + stallBandPct (flat or dipping); resets when it climbs out
+  let stallSince = null;
+  if (cfg.stallSec > 0 && move < 1 + cfg.stallBandPct) stallSince = pos.stallSince ?? now;
+  const out = (fraction, reason) => ({ fraction, reason, newPeak: peakRatio, ratio, stallSince });
 
   // 1. liquidity death: the pool can no longer absorb what we hold
   const valueUsd = mark.valueSol * (mark.solUsd || 150);
   if (mark.liqUsd != null && (mark.liqUsd < 2000 || mark.liqUsd < valueUsd * 2)) return out(1, `liquidity death ($${Math.round(mark.liqUsd)} liq vs $${Math.round(valueUsd)} position)`);
+
+  // 2a. dip stop: price fell dipStopPct below entry — sell, no exceptions
+  if (cfg.dipStopPct > 0 && move <= 1 - cfg.dipStopPct) return out(1, `dip stop (price ${((move - 1) * 100).toFixed(1)}% from entry)`);
 
   // 2. hard stop on realizable value — but not into a dip with two-sided volume (5+ buys & 5+ sells)
   const twoSided = mark.buysM5 != null && mark.sellsM5 != null && mark.buysM5 >= 5 && mark.sellsM5 >= 5;
@@ -26,6 +38,9 @@ export function evaluateExit(pos, mark, cfg, now) {
 
   // 4. trailing stop once armed
   if (peakRatio >= 1 + cfg.trailArm && ratio <= peakRatio * (1 - cfg.trailPct)) return out(1, `trailing stop (${(cfg.trailPct * 100).toFixed(0)}% off peak ${(peakRatio).toFixed(2)}x)`);
+
+  // 4b. stall: price stuck at/below entry for stallSec — it isn't running, get out before it dips
+  if (stallSince != null && now - stallSince >= cfg.stallSec * 1000) return out(1, `stall (${Math.round((now - stallSince) / 1000)}s near entry, price ${((move - 1) * 100).toFixed(1)}%)`);
 
   // 5. momentum failure: underwater, 10 min in, essentially no buyers (only sell when truly dead)
   if (heldMin >= 10 && ratio < 1 && mark.buysM5 != null && mark.buysM5 <= 1 && mark.sellsM5 > mark.buysM5 * 3) return out(1, 'momentum failure (no buyers)');
@@ -42,5 +57,5 @@ export function evaluateExit(pos, mark, cfg, now) {
   // 7. absolute max hold
   if (heldMin >= cfg.maxHoldMin) return out(1, `max hold ${cfg.maxHoldMin}m`);
 
-  return { fraction: 0, reason: null, newPeak: peakRatio, ratio };
+  return out(0, null);
 }

@@ -10,7 +10,7 @@
 //           over the last 5 minutes. Uses DexScreener's own priceChange so it works the moment a coin is
 //           discovered — no warm-up history needed.
 
-export function eligible(v, cfg) {
+export function eligible(v, cfg, now = Date.now()) {
   const r = [];
   if (!v || !(v.price > 0)) return ['no price'];
   if (!(v.mc > 0)) r.push('no market cap');
@@ -20,6 +20,12 @@ export function eligible(v, cfg) {
   }
   if (v.liq < cfg.minLiqUsd) r.push(`liq $${Math.round(v.liq)} < $${cfg.minLiqUsd}`);
   if (v.mc > 0 && v.liq / v.mc < cfg.minLiqToMc) r.push(`liq is ${((v.liq / v.mc) * 100).toFixed(1)}% of mc < ${(cfg.minLiqToMc * 100).toFixed(0)}%`);
+  // Fresh pools (just graduated from pump.fun / just launched): early holders dump into the first buyers.
+  // Negative age (clock skew) is ignored rather than treated as young.
+  if (cfg.minPairAgeMin > 0 && v.createdAt) {
+    const ageMin = (now - v.createdAt) / 60000;
+    if (ageMin >= 0 && ageMin < cfg.minPairAgeMin) r.push(`pool only ${ageMin.toFixed(0)}m old < ${cfg.minPairAgeMin}m`);
+  }
   // Don't buy dead coins bouncing: if it's down 50%+ in the last hour, it's a dump, not an opportunity
   if (v.chgH1 != null && v.chgH1 <= -50) r.push(`down ${Math.round(v.chgH1)}% in 1h — dead bounce`);
   return r;
@@ -28,7 +34,7 @@ export function eligible(v, cfg) {
 const buyRatio = (b, s) => (b + s > 0 ? b / (b + s) : null);
 
 export function detect(v, samples, cfg, now) {
-  if (eligible(v, cfg).length) return null;
+  if (eligible(v, cfg, now).length) return null;
 
   const ratio5 = buyRatio(v.buysM5, v.sellsM5);
 
@@ -40,9 +46,12 @@ export function detect(v, samples, cfg, now) {
     const high = Math.max(...win.map(s => s.price));
     const gain = (last / low - 1) * 100;
     const draw = high > 0 ? (high - last) / high : 0;
+    // the 5-minute window can't tell a breakout from a bounce off a crash, so also look at the last hour
+    const hourHigh = Math.max(...(samples || []).filter(s => now - s.ts <= 3600000).map(s => s.price), last);
+    const notBouncing = v.chgH1 != null && v.chgH1 >= cfg.popMinChgH1 && last >= hourHigh * (1 - cfg.popMaxBelowHigh);
     if (
       gain >= cfg.popGainPct && gain <= cfg.popMaxGainPct &&
-      draw <= cfg.maxDrawFromPeak &&
+      draw <= cfg.maxDrawFromPeak && notBouncing &&
       v.volH1 >= cfg.popMinVolH1 &&
       v.buysM5 >= cfg.popMinBuysM5 &&
       ratio5 != null && ratio5 >= cfg.minBuyRatioM5
