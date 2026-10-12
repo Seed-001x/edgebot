@@ -53,11 +53,11 @@ export function detect(v, samples, cfg, now) {
     if (
       gain >= cfg.popGainPct && gain <= cfg.popMaxGainPct &&
       draw <= cfg.maxDrawFromPeak && notBouncing &&
-      v.volH1 >= cfg.popMinVolH1 &&
+      v.volM5 >= cfg.popMinVolM5 &&
       v.buysM5 >= cfg.popMinBuysM5 &&
       ratio5 != null && ratio5 >= cfg.minBuyRatioM5
     ) {
-      return { setup: 'pop', strength: gain, metrics: { gainPct: +gain.toFixed(1), drawFromPeak: +draw.toFixed(3), buyRatioM5: +ratio5.toFixed(2), volH1: v.volH1 } };
+      return { setup: 'pop', strength: gain, metrics: { gainPct: +gain.toFixed(1), drawFromPeak: +draw.toFixed(3), buyRatioM5: +ratio5.toFixed(2), volH1: v.volH1, volM5: v.volM5 } };
     }
   }
 

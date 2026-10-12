@@ -8,7 +8,7 @@ export const testCfg = (over = {}, env = {}) => ({ ...loadConfig({ DATA_DIR: tmp
 
 export const view = (o = {}) => ({
   address: 'MINT1', symbol: 'TEST', name: 'Test Coin', price: 1, mc: 1_000_000, liq: 100_000,
-  volM5: 5000, volH1: 50_000, volH6: 100_000, volH24: 200_000,
+  volM5: 50_000, volH1: 50_000, volH6: 100_000, volH24: 200_000,
   buysM5: 30, sellsM5: 10, buysH1: 200, sellsH1: 100,
   chgM5: 1, chgH1: 5, chgH6: 10, chgH24: 20, createdAt: Date.now() - 10 * 3600e3, dex: 'pumpswap', ...o,
 });

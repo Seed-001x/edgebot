@@ -75,8 +75,10 @@ test('pop: skipped when still far under the 1h high', () => {
   const hist = [sample(NOW - 40 * 60000, 3), sample(NOW - 30 * 60000, 2.5), ...series(popPrices)]; // 1h high 3, now 1.5
   assert.equal(detect(view({ price: 1.5, chgH1: 5 }), hist, cfg, NOW), null);
 });
-test('pop: low hourly volume is skipped', () => {
-  assert.equal(detect(view({ price: 1.5, volH1: 15_000 }), series(popPrices), cfg, NOW), null);
+test('pop: low 5-minute volume is skipped (25k judged on the 5m window)', () => {
+  assert.equal(detect(view({ price: 1.5, volM5: 15_000 }), series(popPrices), cfg, NOW), null);
+  // a hot 5 minutes is enough even when the hour as a whole is quiet
+  assert.equal(detect(view({ price: 1.5, volM5: 40_000, volH1: 5_000 }), series(popPrices), cfg, NOW).setup, 'pop');
 });
 test('pool-age filter: off by default, blocks fresh pools when MIN_PAIR_AGE_MIN is set', () => {
   assert.equal(detect(view({ price: 1.5, createdAt: NOW - 3 * 60000 }), series(popPrices), cfg, NOW).setup, 'pop');

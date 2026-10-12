@@ -52,7 +52,8 @@ export function loadConfig(env = process.env) {
     popWindowSec: num(env, 'POP_WINDOW_SEC', 300),
     popGainPct: num(env, 'POP_GAIN_PCT', 35),
     popMaxGainPct: num(env, 'POP_MAX_GAIN_PCT', 200),   // already >3x in the window = chasing
-    popMinVolH1: num(env, 'POP_MIN_VOL_H1', 20000),   // was 10k (let dead coins in); 50k risked blocking fresh-pool winners
+    popMinVolH1: num(env, 'POP_MIN_VOL_H1', 20000),   // legacy: pop volume is judged on the 5m window now (below)
+    popMinVolM5: num(env, 'POP_MIN_VOL_M5', 25000),   // user 2026-10-12: the 25k belongs on 5m volume, not the hour
     popMinBuysM5: num(env, 'POP_MIN_BUYS_M5', 20),    // was 5: real momentum = many buyers, not a handful
     popMinChgH1: num(env, 'POP_MIN_CHG_H1', 0),       // coin must be UP on the hour: a bounce off a crash is not a pop
     popMaxBelowHigh: num(env, 'POP_MAX_BELOW_HIGH', 0.30), // skip if price is >30% under its 1h high (dead-cat bounce)
