@@ -93,7 +93,7 @@ export class LiveFeed {
       try {
         if (this.onMint(coin.mint)) this.stats.added++;
       } catch (e) { console.log('[livefeed] onMint failed:', e.message); }
-      if (this.stats.events % 50 === 0) this._emitStats();
+      if (this.stats.events % 10 === 0) this._emitStats();
     });
 
     ws.on('error', (e) => {

@@ -134,13 +134,24 @@ export class Bot {
 
   // ------------------------------------------------------------ discovery
   // Live-feed intake: add a mint the moment it's seen (e.g. a brand-new
-  // launch from the websocket). Bounded so the firehose can't evict the
-  // curated sources: only fills spare watchlist capacity. Returns true if added.
+  // launch from the websocket). The feed gets a reserved slice of the
+  // watchlist (25%) with its own rotation: a new mint evicts the OLDEST
+  // live-feed mint once the slice is full, and may evict the single oldest
+  // watch entry overall when the watchlist is at its hard cap. Curated
+  // sources keep the rest. Returns true if added.
   noteMint(mint, source = 'live-ws') {
     if (!mint || this.watch.has(mint)) return false;
     if (this.positions.some(p => p.mint === mint)) return false;
-    if (this.watch.size >= Math.floor(this.cfg.watchMax * 0.9)) return false;
-    this.watch.set(mint, { ts: this.now(), source });
+    const n = this.now();
+    const sliceCap = Math.max(10, Math.floor(this.cfg.watchMax * 0.25));
+    let wsCount = 0, oldestWs = null, oldestWsTs = Infinity, oldestAny = null, oldestAnyTs = Infinity;
+    for (const [m, w] of this.watch) {
+      if (w.ts < oldestAnyTs) { oldestAnyTs = w.ts; oldestAny = m; }
+      if (w.source === source) { wsCount++; if (w.ts < oldestWsTs) { oldestWsTs = w.ts; oldestWs = m; } }
+    }
+    if (wsCount >= sliceCap && oldestWs) this.watch.delete(oldestWs);
+    else if (this.watch.size >= this.cfg.watchMax && oldestAny) this.watch.delete(oldestAny);
+    this.watch.set(mint, { ts: n, source });
     return true;
   }
 
