@@ -163,6 +163,24 @@ export function startServer(bot, port) {
       bot.risk.save();
       return json(res, 200, { ok: true, dayPnlSol: 0 });
     }
+    if (req.method === 'GET' && u.pathname === '/ticks') {
+      const mint = u.searchParams.get('mint') || '';
+      const id = u.searchParams.get('id') || '';
+      const limit = Math.min(parseInt(u.searchParams.get('limit') || '500', 10) || 500, 2000);
+      let lines = [];
+      try {
+        const raw = fs.readFileSync(path.join(DATA_DIR, 'ticks.jsonl'), 'utf8').trim().split('\n');
+        for (const ln of raw) {
+          try {
+            const t = JSON.parse(ln);
+            if (mint && t.mint !== mint) continue;
+            if (id && t.id !== id) continue;
+            lines.push(t);
+          } catch {}
+        }
+      } catch {}
+      return json(res, 200, lines.slice(-limit));
+    }
     if (req.method === 'GET' && u.pathname === '/watchlist') {
       const out = [];
       for (const [mint, w] of bot.watch) {
