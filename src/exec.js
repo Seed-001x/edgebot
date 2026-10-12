@@ -226,7 +226,7 @@ export class Executor {
    * { proceedsSol, txCount } or null when nothing parseable is found — callers fall
    * back to the estimate. Real mode only; any RPC trouble → null, never throws.
    */
-  async sellProceeds(mint, { sinceSec = 0, excludeSigs = new Set(), limit = 25, maxTx = 10 } = {}) {
+  async sellProceeds(mint, { sinceSec = 0, excludeSigs = new Set(), limit = 40, maxTx = 20 } = {}) {
     try {
       if (!this.real) return null;
       const addr = await this.address();
@@ -238,7 +238,10 @@ export class Executor {
         if (!s || s.err || !s.signature || excludeSigs.has(s.signature)) continue;
         if (sinceSec && s.blockTime && s.blockTime < sinceSec) continue;
         fetched++;
-        const tx = await this.rpcFn('getTransaction', [s.signature, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0, commitment: 'confirmed' }]).catch(() => null);
+        // maxSupportedTransactionVersion must be 1: the user's wallet app sends v1
+        // transactions, and a v0 declaration makes the RPC refuse them (-32015) —
+        // with 0 here every manual sell silently fell back to the estimate (2026-10-12).
+        const tx = await this.rpcFn('getTransaction', [s.signature, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 1, commitment: 'confirmed' }]).catch(() => null);
         if (!tx || !tx.meta || tx.meta.err) continue;
         const tokDelta = (list) => (list || []).filter(b => b.mint === mint && b.owner === addr)
           .reduce((a, b) => a + (Number(b.uiTokenAmount && b.uiTokenAmount.uiAmount) || 0), 0);

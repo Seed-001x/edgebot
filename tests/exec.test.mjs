@@ -88,13 +88,14 @@ test('sellProceeds: sums SOL deltas of out-of-bot sells, excludes bot signatures
     },
     transaction: { message: { accountKeys: [{ pubkey: addr }, { pubkey: 'OTHER' }] } },
   };
+  let seenTxParams = null;
   const rpc = async (method, params) => {
     if (method === 'getSignaturesForAddress') return [
       { signature: 'SELL1', blockTime: 2000, err: null },
       { signature: 'BOTSELL', blockTime: 1999, err: null },
       { signature: 'BUY1', blockTime: 1998, err: null },
     ];
-    if (method === 'getTransaction') return params[0] === 'SELL1' ? txSell : params[0] === 'BUY1' ? txBuy : txSell;
+    if (method === 'getTransaction') { seenTxParams = params[1]; return params[0] === 'SELL1' ? txSell : params[0] === 'BUY1' ? txBuy : txSell; }
     throw new Error('unexpected ' + method);
   };
   const ex = new Executor(testCfg({ realMode: true }), { env: { WALLET_PRIVATE_KEY: bs58.encode(kp.secretKey) }, rpc });
@@ -102,4 +103,5 @@ test('sellProceeds: sums SOL deltas of out-of-bot sells, excludes bot signatures
   assert.ok(r, 'expected a result');
   assert.equal(r.txCount, 1);
   assert.ok(Math.abs(r.proceedsSol - 0.4) < 1e-9, `proceeds ${r.proceedsSol}`);
+  assert.equal(seenTxParams.maxSupportedTransactionVersion, 1); // v1 txs (wallet apps) must be parseable
 });
