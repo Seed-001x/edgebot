@@ -56,7 +56,7 @@ test('stall: flat near entry for 60s sells; under 60s holds', () => {
 test('stall clock starts, keeps running, and resets when price climbs out', () => {
   assert.equal(evaluateExit(pos(), mark(0.0201), cfg, NOW).stallSince, NOW);                       // starts now if unset
   assert.equal(evaluateExit(pos({ stallSince: NOW - 30 * S }), mark(0.0201), cfg, NOW).stallSince, NOW - 30 * S);
-  const up = evaluateExit(pos({ stallSince: NOW - 90 * S }), mark(0.0206), cfg, NOW);             // +3% → running
+  const up = evaluateExit(pos({ stallSince: NOW - 90 * S }), mark(0.0212), cfg, NOW);             // +6% → running
   assert.equal(up.fraction, 0); assert.equal(up.stallSince, null);
 });
 test('stall and dip stop can be turned off', () => {
