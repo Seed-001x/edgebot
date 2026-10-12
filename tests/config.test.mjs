@@ -13,7 +13,7 @@ test('real mode needs BOTH flag and key', () => {
 });
 test('defaults are tiny', () => {
   const c = loadConfig({});
-  assert.equal(c.tradeSol, 0.05); assert.equal(c.maxPositions, 5); assert.equal(c.dailyLossSol, 0.1);
+  assert.equal(c.tradeSol, 0.05); assert.equal(c.maxPositions, 5); assert.equal(c.dailyLossSol, 0); // 0 = cap disabled
 });
 test('TRADE_SOL typo guard', () => {
   assert.ok(validateConfig(loadConfig({ TRADE_SOL: '2' })).length > 0);

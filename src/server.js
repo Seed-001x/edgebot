@@ -1,5 +1,5 @@
-// server.js — read-only HTTP status. No control endpoints, nothing secret is ever exposed.
-// Control is deliberately out-of-band: create a file named HALT in DATA_DIR to stop new entries.
+// server.js — HTTP status + control endpoints (POST /halt, /resume, /risk/reset, /positions/*).
+// Nothing secret is ever exposed. HALT file in DATA_DIR stops new entries.
 
 import http from 'node:http';
 import fs from 'node:fs';
@@ -148,6 +148,14 @@ export function startServer(bot, port) {
         } catch { return json(res, 400, { error: 'invalid JSON' }); }
       });
       return;
+    }
+    if (req.method === 'POST' && u.pathname === '/halt') {
+      try { fs.writeFileSync(path.join(bot.cfg.dataDir, 'HALT'), String(Date.now())); } catch {}
+      return json(res, 200, { ok: true, halted: true });
+    }
+    if (req.method === 'POST' && u.pathname === '/resume') {
+      try { fs.unlinkSync(path.join(bot.cfg.dataDir, 'HALT')); } catch {}
+      return json(res, 200, { ok: true, halted: false });
     }
     if (req.method === 'POST' && u.pathname === '/risk/reset') {
       bot.risk.s.dayPnlSol = 0;

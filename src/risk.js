@@ -51,7 +51,7 @@ export class Risk {
     const n = this.now();
     if (halted) return { ok: false, reason: 'HALT file present' };
     if (this.s.killed) return { ok: false, reason: `kill switch: ${this.s.killReason}` };
-    if (this.s.dayPnlSol <= -this.cfg.dailyLossSol) return { ok: false, reason: `daily loss cap hit (${this.s.dayPnlSol.toFixed(4)} SOL)` };
+    if (this.cfg.dailyLossSol > 0 && this.s.dayPnlSol <= -this.cfg.dailyLossSol) return { ok: false, reason: `daily loss cap hit (${this.s.dayPnlSol.toFixed(4)} SOL)` };
     if (openCount >= this.cfg.maxPositions) return { ok: false, reason: `max ${this.cfg.maxPositions} positions open` };
     const cd = this.s.cooldown[mint];
     if (cd && n - cd < this.cfg.mintCooldownMin * 60000) return { ok: false, reason: 'mint cooldown' };

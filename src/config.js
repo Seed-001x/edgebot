@@ -18,7 +18,7 @@ export function loadConfig(env = process.env) {
     // ---- hard limits (enforced in risk.js, not advisory) ----
     tradeSol: num(env, 'TRADE_SOL', 0.05),
     maxPositions: num(env, 'MAX_POSITIONS', 5),
-    dailyLossSol: num(env, 'DAILY_LOSS_SOL', 0.1),     // realized loss in a UTC day that halts new entries
+    dailyLossSol: num(env, 'DAILY_LOSS_SOL', 0),        // realized loss in a UTC day that halts new entries; 0 = disabled
     killEquityFrac: num(env, 'KILL_EQUITY_FRAC', 0.5),  // wallet SOL below this fraction of starting → permanent halt
     minReserveSol: num(env, 'MIN_RESERVE_SOL', 0.02),   // never spend the last of the fees
     maxTradesPerHour: num(env, 'MAX_TRADES_PER_HOUR', 120),
@@ -142,7 +142,7 @@ export function validateConfig(cfg) {
   if (cfg.tradeSol <= 0) errs.push('TRADE_SOL must be > 0');
   if (cfg.tradeSol > 0.25 && !cfg.allowLarge) errs.push(`TRADE_SOL=${cfg.tradeSol} looks like a typo (>0.25). Set ALLOW_LARGE=1 if intentional.`);
   if (cfg.maxPositions < 1 || cfg.maxPositions > 10) errs.push('MAX_POSITIONS must be 1..10');
-  if (cfg.dailyLossSol <= 0) errs.push('DAILY_LOSS_SOL must be > 0');
+  if (cfg.dailyLossSol < 0) errs.push('DAILY_LOSS_SOL must be >= 0 (0 = disabled)');
   if (cfg.killEquityFrac <= 0 || cfg.killEquityFrac >= 1) errs.push('KILL_EQUITY_FRAC must be between 0 and 1');
   if (cfg.stopLoss <= 0 || cfg.stopLoss >= 1) errs.push('STOP_LOSS must be between 0 and 1');
   if (cfg.dipStopPct < 0 || cfg.dipStopPct >= 1) errs.push('DIP_STOP_PCT must be between 0 and 1 (0 = off)');
