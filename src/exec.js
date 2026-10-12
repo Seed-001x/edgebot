@@ -217,6 +217,46 @@ export class Executor {
     };
   }
 
+  /**
+   * Real proceeds of OUT-OF-BOT sells of `mint` (the user selling in their own wallet):
+   * scan the wallet's recent transactions, find the ones where its balance of `mint`
+   * DROPPED (excluding signatures the bot itself produced), and sum the wallet's
+   * SOL-side delta (native SOL + WSOL token accounts) across them. Measuring the actual
+   * sell transactions replaces the last-quote estimate for manual exits. Returns
+   * { proceedsSol, txCount } or null when nothing parseable is found — callers fall
+   * back to the estimate. Real mode only; any RPC trouble → null, never throws.
+   */
+  async sellProceeds(mint, { sinceSec = 0, excludeSigs = new Set(), limit = 25, maxTx = 10 } = {}) {
+    try {
+      if (!this.real) return null;
+      const addr = await this.address();
+      if (!addr || addr === 'shadow') return null;
+      const sigs = await this.rpcFn('getSignaturesForAddress', [addr, { limit }]);
+      let proceeds = 0, txCount = 0, fetched = 0;
+      for (const s of sigs || []) {
+        if (fetched >= maxTx) break;
+        if (!s || s.err || !s.signature || excludeSigs.has(s.signature)) continue;
+        if (sinceSec && s.blockTime && s.blockTime < sinceSec) continue;
+        fetched++;
+        const tx = await this.rpcFn('getTransaction', [s.signature, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0, commitment: 'confirmed' }]).catch(() => null);
+        if (!tx || !tx.meta || tx.meta.err) continue;
+        const tokDelta = (list) => (list || []).filter(b => b.mint === mint && b.owner === addr)
+          .reduce((a, b) => a + (Number(b.uiTokenAmount && b.uiTokenAmount.uiAmount) || 0), 0);
+        const dTok = tokDelta(tx.meta.postTokenBalances) - tokDelta(tx.meta.preTokenBalances);
+        if (!(dTok < 0)) continue; // not a sell of this mint
+        const keys = (tx.transaction.message.accountKeys || []).map(k => (typeof k === 'string' ? k : k.pubkey));
+        const idx = keys.indexOf(addr);
+        let dSol = idx >= 0 ? (Number(tx.meta.postBalances[idx]) - Number(tx.meta.preBalances[idx])) / LAMPORTS : 0;
+        const wDelta = (list) => (list || []).filter(b => b.mint === SOL_MINT && b.owner === addr)
+          .reduce((a, b) => a + (Number(b.uiTokenAmount && b.uiTokenAmount.uiAmount) || 0), 0);
+        dSol += wDelta(tx.meta.postTokenBalances) - wDelta(tx.meta.preTokenBalances);
+        proceeds += dSol;
+        txCount++;
+      }
+      return txCount ? { proceedsSol: proceeds, txCount } : null;
+    } catch { return null; }
+  }
+
   /** Live realizable value (SOL) of `tokensRaw` tokens. */
   async markValue(mint, tokensRaw) {
     const amt = BigInt(tokensRaw);

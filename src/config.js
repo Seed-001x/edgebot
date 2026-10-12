@@ -78,6 +78,7 @@ export function loadConfig(env = process.env) {
     // decision price. The DexScreener re-pull above can lag the pool by minutes (NEVER,
     // 2026-10-12: decided at $49k, filled at $2.3k); the Jupiter quote cannot. 0 = off.
     freshGuardPct: num(env, 'FRESH_GUARD_PCT', 10), // abort if |live − decision| > 10%
+    reportEveryTrades: num(env, 'REPORT_EVERY_TRADES', 10), // full report on the dashboard after every N closes
 
     // ---- gates ----
     requireReportBelowAgeH: num(env, 'REQUIRE_REPORT_BELOW_AGE_H', 6), // young coins with no RugCheck report are blocked

@@ -19,6 +19,8 @@ import { Risk } from './risk.js';
 import { postCallout } from './callout.js';
 import { snapshotFeatures, externalExit } from './learn.js';
 import { impliedMove } from './exec.js';
+import { PostExitTracker } from './postExit.js';
+import { buildTradeReport } from './reports.js';
 
 export class Bot {
   /**
@@ -31,13 +33,15 @@ export class Bot {
     this.history = new History();
     this.journal = new Journal(cfg.dataDir, { now: this.now });
     this.risk = new Risk(cfg, { dir: cfg.dataDir, now: this.now });
+    this.closedIds = new Set(this.journal.trades.filter(t => t.type === 'close').map(t => t.id)); // journaling guarantee (ensureClose)
+    this.postExit = new PostExitTracker(cfg.dataDir, this.now); // 5-min post-exit price tracker (observer only)
     this.watch = new Map();      // mint -> { ts, source }
     this.latest = new Map();     // mint -> latest view
     this.lastSignal = new Map(); // mint -> ts
     this.posFile = path.join(cfg.dataDir, 'positions.json');
     this.positions = this.loadPositions();
     this.busy = { discover: false, poll: false, pos: false };
-    this.stats = { discoverTicks: 0, pollTicks: 0, positionTicks: 0, signals: 0, entries: 0, exits: 0, errors: 0, lastError: null, sourceCounts: {}, lastDiscoverTs: 0, lastPollTs: 0, liveFeed: { connected: false, events: 0, added: 0, reconnects: 0, lastEventTs: 0, lastError: null } };
+    this.stats = { discoverTicks: 0, pollTicks: 0, positionTicks: 0, signals: 0, entries: 0, exits: 0, errors: 0, lastError: null, sourceCounts: {}, lastDiscoverTs: 0, lastPollTs: 0, closesSinceReport: 0, lastReportTs: 0, reportIndex: 0, liveFeed: { connected: false, events: 0, added: 0, reconnects: 0, lastEventTs: 0, lastError: null } };
     this.statsFile = path.join(cfg.dataDir, 'stats.json');
     this.entryTimes = []; // timestamps of entries (for pace keeper)
     this.PACE_TARGET = 120; // target trades per hour (2 per min)
@@ -98,7 +102,7 @@ export class Bot {
       for (const p of [...this.positions]) {
         try {
           const bal = await this.exec.tokenBalance(p.mint);
-          if (bal === 0n) this.closeExternal(p, 'reconcile: tokens no longer in wallet (manual sell)');
+          if (bal === 0n) await this.closeExternal(p, 'reconcile: tokens no longer in wallet (manual sell)');
           else if (bal != null) p.tokensRaw = bal.toString();
         } catch (e) { this.err('reconcile', e); }
       }
@@ -107,15 +111,98 @@ export class Bot {
     return { solBalance: sol, openPositions: this.positions.length };
   }
 
-  // Tokens left the wallet outside the bot. Estimate P&L from the last sell quote we saw (marked estimated),
-  // and count it toward the daily loss cap — previously these were logged as "unknown" and the cap never saw them.
-  closeExternal(p, reason) {
-    if (!this.positions.some(x => x.id === p.id)) return false; // already closed — don't log it twice
+  // THE funnel for closing a position in the journal: every path that removes a position
+  // (bot sell, manual exit, reconcile, admin clear) goes through here, so every open gets
+  // exactly one close record. The DINU ghost — sold on-chain, never journaled, position
+  // never cleared — is the bug this makes structurally impossible. Also registers the
+  // post-exit tracker and the every-N-trades report counter. Returns false when this
+  // position was already closed (double-log guard).
+  ensureClose(pos, rec) {
+    if (this.closedIds.has(pos.id)) return false;
+    this.closedIds.add(pos.id);
+    const full = { type: 'close', ...rec };
+    this.journal.trade(full);
+    try {
+      const v = this.latest.get(pos.mint);
+      this.postExit.watch({ id: pos.id, mint: pos.mint, symbol: pos.symbol, setup: pos.setup, exitTs: full.ts || this.now(), exitPriceUsd: v && v.price > 0 ? v.price : (pos.entryPrice || null), reason: full.reason || null, manual: !!full.manual, pnlSol: full.pnlSol ?? null });
+    } catch { /* observer only — never disturb trading */ }
+    try {
+      this.stats.closesSinceReport = (this.stats.closesSinceReport || 0) + 1;
+      if (this.stats.closesSinceReport >= (this.cfg.reportEveryTrades || 10)) this.makeTradeReport();
+    } catch { /* reporting must never disturb trading */ }
+    return true;
+  }
+
+  makeTradeReport() {
+    const until = this.now();
+    const since = this.stats.lastReportTs || 0;
+    const closes = this.journal.trades.filter(t => t.type === 'close' && (t.ts || 0) > since);
+    const postExits = this.postExit.done.filter(p => (p.finalTs || 0) > since);
+    const staleAborts = this.journal.signals.filter(s => (s.ts || 0) > since && (s.reasons || []).some(r => String(r).startsWith('stale:'))).length;
+    const index = (this.stats.reportIndex || 0) + 1;
+    const rec = buildTradeReport({ index, sinceTs: since, untilTs: until, closes, postExits, staleAborts });
+    this.journal.addTradeReport(rec);
+    this.stats.reportIndex = index;
+    this.stats.lastReportTs = until;
+    this.stats.closesSinceReport = 0;
+    console.log(`[report] trade report #${index} written (${closes.length} closes, net ${rec.netSol} SOL)`);
+  }
+
+  // Real P&L of an out-of-bot exit, read from the chain itself: the proceeds of the
+  // user's own sell transactions (the bot's sell signatures excluded) instead of a
+  // last-quote guess. Returns { pnl } or null when the sells can't be parsed.
+  async chainPnl(pos) {
+    try {
+      if (!this.exec.sellProceeds) return null;
+      const excludeSigs = new Set(this.journal.trades.filter(t => t.id === pos.id && t.sig).map(t => t.sig));
+      const r = await this.exec.sellProceeds(pos.mint, { sinceSec: Math.floor(pos.entryTs / 1000), excludeSigs });
+      if (!r || !(r.proceedsSol > 0)) return null;
+      return { pnl: (pos.realizedSol || 0) + r.proceedsSol - pos.entrySol - (pos.feesSol || 0) };
+    } catch { return null; }
+  }
+
+  // Admin removals go THROUGH the funnel too — a removed position gets its close record
+  // (estimated P&L) instead of vanishing silently.
+  adminDrop(p, reason) {
     const n = this.now();
     const pnl = p.lastValueSol != null ? (p.realizedSol || 0) + p.lastValueSol - p.entrySol - (p.feesSol || 0) : null;
     this.positions = this.positions.filter(x => x.id !== p.id);
     if (pnl != null) this.risk.recordClose(pnl, p.mint);
-    this.journal.trade({ type: 'close', manual: true, id: p.id, mint: p.mint, symbol: p.symbol, setup: p.setup, entrySol: p.entrySol, pnlSol: pnl != null ? +pnl.toFixed(6) : null, estimated: true, heldMin: +((n - p.entryTs) / 60000).toFixed(1), reason: pnl != null ? `${reason} — P&L est. from last quote` : `${reason} (P&L unknown — no quote yet)`, simulated: p.simulated, ts: n });
+    this.ensureClose(p, { id: p.id, mint: p.mint, symbol: p.symbol, setup: p.setup, entrySol: p.entrySol, pnlSol: pnl != null ? +pnl.toFixed(6) : null, estimated: true, pnlSource: 'estimate', heldMin: +((n - p.entryTs) / 60000).toFixed(1), reason, simulated: p.simulated, ts: n });
+  }
+
+  dropPosition(idOrMint) {
+    const p = this.positions.find(x => x.id === idOrMint || x.mint === idOrMint);
+    if (!p) return 0;
+    this.adminDrop(p, 'position removed (admin)');
+    this.savePositions();
+    return 1;
+  }
+
+  clearAllPositions() {
+    let count = 0;
+    for (const p of [...this.positions]) { this.adminDrop(p, 'positions cleared (admin)'); count++; }
+    this.savePositions();
+    return count;
+  }
+
+  // Tokens left the wallet outside the bot. P&L comes from the chain when the user's sell
+  // transactions parse (marked pnlSource 'chain'), else an estimate from the last sell
+  // quote (marked estimated) — and it counts toward the daily loss cap either way.
+  // A reconcile drop IS a manual exit: it also writes a manual-exit record so it lands
+  // in the manual feed and on the dashboard, not only in the trade log.
+  async closeExternal(p, reason) {
+    if (!this.positions.some(x => x.id === p.id)) return false; // already closed — don't log it twice
+    const n = this.now();
+    const chain = await this.chainPnl(p);
+    let pnl = null, source = null;
+    if (chain) { pnl = chain.pnl; source = 'chain'; }
+    else if (p.lastValueSol != null) { pnl = (p.realizedSol || 0) + p.lastValueSol - p.entrySol - (p.feesSol || 0); source = 'estimate'; }
+    this.positions = this.positions.filter(x => x.id !== p.id);
+    if (pnl != null) this.risk.recordClose(pnl, p.mint);
+    const heldMin = +((n - p.entryTs) / 60000).toFixed(1);
+    this.journal.manualExit({ id: p.id, mint: p.mint, symbol: p.symbol, ts: n, how: 'sold outside bot (reconcile)', entry: p.entry || null, heldMin, peakRatio: p.peakRatio, bundleScore: p.bundleScore || 0, pnlSolEstimate: pnl != null ? +pnl.toFixed(6) : null, pnlSol: source === 'chain' ? +pnl.toFixed(6) : null, pnlSource: source || 'unknown', reason: null });
+    this.ensureClose(p, { manual: true, id: p.id, mint: p.mint, symbol: p.symbol, setup: p.setup, entrySol: p.entrySol, pnlSol: pnl != null ? +pnl.toFixed(6) : null, estimated: source !== 'chain', pnlSource: source, heldMin, reason: pnl != null ? `${reason} — P&L ${source === 'chain' ? 'from chain' : 'est. from last quote'}` : `${reason} (P&L unknown — no quote yet)`, simulated: p.simulated, ts: n });
     return true;
   }
 
@@ -126,7 +213,7 @@ export class Bot {
       try {
         const bal = await this.exec.tokenBalance(p.mint);
         if (bal === 0n) {
-          if (this.closeExternal(p, 'reconcile: sold outside bot (manual sell)')) console.log(`[reconcile] dropped ${p.symbol} (not in wallet)`);
+          if (await this.closeExternal(p, 'reconcile: sold outside bot (manual sell)')) console.log(`[reconcile] dropped ${p.symbol} (not in wallet)`);
         } else if (bal != null) p.tokensRaw = bal.toString();
       } catch (e) { /* RPC flaky — skip, don't drop on error */ }
     }
@@ -209,6 +296,8 @@ export class Bot {
         candidates.push({ v, sig });
       }
       this.stats.pollTicks++; this.stats.lastPollTs = n;
+      // post-exit observer: feed the tracker the prices this poll already fetched (no extra calls)
+      try { this.postExit.tick(mint => { const v = this.latest.get(mint); return v ? v.price : null; }, n); } catch { /* observer only */ }
       candidates.sort((a, b) => b.sig.strength - a.sig.strength);
       for (const c of candidates.slice(0, this.cfg.maxSignalsPerTick)) {
         this.lastSignal.set(c.v.address, this.now());
@@ -473,7 +562,7 @@ export class Bot {
       if (this.cfg.closeEmptyAccounts && this.exec.closeEmptyAccounts) this.exec.closeEmptyAccounts(pos.mint).catch(e => this.err('close account', e));
       this.positions = this.positions.filter(p => p.id !== pos.id);
       this.risk.recordClose(pnl, pos.mint);
-      this.journal.trade({ type: 'close', id: pos.id, mint: pos.mint, symbol: pos.symbol, setup: pos.setup, entrySol: pos.entrySol, exitSol: pos.realizedSol, pnlSol: +pnl.toFixed(6), heldMin: +((n - pos.entryTs) / 60000).toFixed(1), reason: decision.reason, simulated: pos.simulated, ts: n });
+      this.ensureClose(pos, { id: pos.id, mint: pos.mint, symbol: pos.symbol, setup: pos.setup, entrySol: pos.entrySol, exitSol: pos.realizedSol, pnlSol: +pnl.toFixed(6), heldMin: +((n - pos.entryTs) / 60000).toFixed(1), reason: decision.reason, simulated: pos.simulated, ts: n });
     }
     this.savePositions();
   }
@@ -482,11 +571,13 @@ export class Bot {
   async recordManualExit(pos, valueSol, n, how) {
     if (!this.positions.some(p => p.id === pos.id)) return null; // already closed (e.g. by reconcile) — don't log it twice
     const est = valueSol != null ? valueSol : 0;
-    const pnl = pos.realizedSol + est - pos.entrySol - (pos.feesSol || 0);
-    const rec = this.journal.manualExit({ id: pos.id, mint: pos.mint, symbol: pos.symbol, ts: n, how, entry: pos.entry || null, heldMin: +((n - pos.entryTs) / 60000).toFixed(1), peakRatio: pos.peakRatio, bundleScore: pos.bundleScore || 0, pnlSolEstimate: +pnl.toFixed(6), reason: null });
+    const estPnl = pos.realizedSol + est - pos.entrySol - (pos.feesSol || 0);
+    const chain = await this.chainPnl(pos);
+    const pnl = chain ? chain.pnl : estPnl;
+    const rec = this.journal.manualExit({ id: pos.id, mint: pos.mint, symbol: pos.symbol, ts: n, how, entry: pos.entry || null, heldMin: +((n - pos.entryTs) / 60000).toFixed(1), peakRatio: pos.peakRatio, bundleScore: pos.bundleScore || 0, pnlSolEstimate: +estPnl.toFixed(6), pnlSol: chain ? +pnl.toFixed(6) : null, pnlSource: chain ? 'chain' : 'estimate', reason: null });
     this.positions = this.positions.filter(p => p.id !== pos.id);
     this.risk.recordClose(pnl, pos.mint);
-    this.journal.trade({ type: 'close', manual: true, id: pos.id, mint: pos.mint, symbol: pos.symbol, setup: pos.setup, entrySol: pos.entrySol, pnlSol: +pnl.toFixed(6), estimated: true, heldMin: rec.heldMin, reason: `manual exit (${how})`, simulated: pos.simulated, entry: pos.entry, ts: n });
+    this.ensureClose(pos, { manual: true, id: pos.id, mint: pos.mint, symbol: pos.symbol, setup: pos.setup, entrySol: pos.entrySol, pnlSol: +pnl.toFixed(6), estimated: !chain, pnlSource: chain ? 'chain' : 'estimate', heldMin: rec.heldMin, reason: `manual exit (${how})`, simulated: pos.simulated, entry: pos.entry, ts: n });
     this.savePositions();
     return rec;
   }

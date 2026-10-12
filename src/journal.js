@@ -26,7 +26,7 @@ export class Journal {
   constructor(dir, { now = Date.now } = {}) {
     this.now = now;
     this.dir = dir;
-    this.f = { sig: path.join(dir, 'signals.jsonl'), out: path.join(dir, 'outcomes.jsonl'), trades: path.join(dir, 'trades.jsonl'), fb: path.join(dir, 'feedback.jsonl'), ticks: path.join(dir, 'ticks.jsonl'), manual: path.join(dir, 'manual_exits.jsonl') };
+    this.f = { sig: path.join(dir, 'signals.jsonl'), out: path.join(dir, 'outcomes.jsonl'), trades: path.join(dir, 'trades.jsonl'), fb: path.join(dir, 'feedback.jsonl'), ticks: path.join(dir, 'ticks.jsonl'), manual: path.join(dir, 'manual_exits.jsonl'), reports: path.join(dir, 'trade_reports.jsonl') };
     try { fs.mkdirSync(dir, { recursive: true }); } catch { /* ignore */ }
     this.signals = [];        // { id, ts, mint, symbol, setup, decision, reasons, price, mc, out:{} }
     this.byId = new Map();
@@ -34,6 +34,7 @@ export class Journal {
     this.trades = [];
     this.feedback = [];       // human feedback on skipped signals
     this.manual = [];         // positions the HUMAN closed (with entry snapshot + optional reason tag)
+    this.tradeReports = [];   // full report after every N closes (see reports.js)
     this.seq = 0;
     this.boot();
   }
@@ -42,6 +43,7 @@ export class Journal {
     for (const s of readTail(this.f.sig, KEEP)) { s.out = {}; this.signals.push(s); this.byId.set(s.id, s); this.seq = Math.max(this.seq, Number(String(s.id).split('-').pop()) || 0); }
     for (const o of readTail(this.f.out, KEEP * 2)) { const s = this.byId.get(o.id); if (s) s.out = o; }
     this.trades = readTail(this.f.trades, KEEP);
+    this.tradeReports = readTail(this.f.reports, 100);
     this.feedback = readTail(this.f.fb, KEEP);
     for (const r of readTail(this.f.manual, KEEP)) {
       if (r.type === 'tag') { const m = this.manual.find(x => x.id === r.id); if (m) m.reason = r.reason; }
@@ -202,6 +204,7 @@ export class Journal {
   }
 
   trade(t) { this.trades.push(t); if (this.trades.length > KEEP) this.trades.shift(); this.append(this.f.trades, t); }
+  addTradeReport(rec) { this.tradeReports.push(rec); if (this.tradeReports.length > 100) this.tradeReports.shift(); this.append(this.f.reports, rec); return rec; }
 
   recent(limit = 50) { return this.signals.slice(-limit).reverse(); }
 

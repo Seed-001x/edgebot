@@ -58,3 +58,48 @@ test('impliedMove: unusable inputs return null (guard falls open to the view che
   assert.equal(impliedMove({ decisionPriceUsd: 0.05, solUsd: 200, outAmountRaw: undefined, sizeSol: 0.1, decimals: 6 }), null);
   assert.equal(impliedMove({ decisionPriceUsd: 0.05, solUsd: 200, outAmountRaw: '100', sizeSol: 0.1, decimals: NaN }), null);
 });
+
+test('sellProceeds: shadow mode and missing key both fail safe to null', async () => {
+  const shadow = new Executor(testCfg(), { quote: quote(1, 1), rpc: async () => ({}) });
+  assert.equal(await shadow.sellProceeds('M', {}), null);
+  const noKey = new Executor(testCfg({ realMode: true }), { env: {}, rpc: async () => ({}) });
+  assert.equal(await noKey.sellProceeds('M', {}), null);
+});
+
+test('sellProceeds: sums SOL deltas of out-of-bot sells, excludes bot signatures and buys', async () => {
+  const { Keypair } = await import('@solana/web3.js');
+  const bs58 = (await import('bs58')).default;
+  const kp = Keypair.generate();
+  const addr = kp.publicKey.toBase58();
+  const MINT = 'MINTX';
+  const txSell = {
+    meta: {
+      err: null, preBalances: [10_000_000_000, 0], postBalances: [10_400_000_000, 0],
+      preTokenBalances: [{ mint: MINT, owner: addr, uiTokenAmount: { uiAmount: 1000 } }],
+      postTokenBalances: [{ mint: MINT, owner: addr, uiTokenAmount: { uiAmount: 0 } }],
+    },
+    transaction: { message: { accountKeys: [{ pubkey: addr }, { pubkey: 'OTHER' }] } },
+  };
+  const txBuy = {
+    meta: {
+      err: null, preBalances: [10_000_000_000, 0], postBalances: [9_900_000_000, 0],
+      preTokenBalances: [{ mint: MINT, owner: addr, uiTokenAmount: { uiAmount: 0 } }],
+      postTokenBalances: [{ mint: MINT, owner: addr, uiTokenAmount: { uiAmount: 500 } }],
+    },
+    transaction: { message: { accountKeys: [{ pubkey: addr }, { pubkey: 'OTHER' }] } },
+  };
+  const rpc = async (method, params) => {
+    if (method === 'getSignaturesForAddress') return [
+      { signature: 'SELL1', blockTime: 2000, err: null },
+      { signature: 'BOTSELL', blockTime: 1999, err: null },
+      { signature: 'BUY1', blockTime: 1998, err: null },
+    ];
+    if (method === 'getTransaction') return params[0] === 'SELL1' ? txSell : params[0] === 'BUY1' ? txBuy : txSell;
+    throw new Error('unexpected ' + method);
+  };
+  const ex = new Executor(testCfg({ realMode: true }), { env: { WALLET_PRIVATE_KEY: bs58.encode(kp.secretKey) }, rpc });
+  const r = await ex.sellProceeds(MINT, { sinceSec: 1000, excludeSigs: new Set(['BOTSELL']) });
+  assert.ok(r, 'expected a result');
+  assert.equal(r.txCount, 1);
+  assert.ok(Math.abs(r.proceedsSol - 0.4) < 1e-9, `proceeds ${r.proceedsSol}`);
+});

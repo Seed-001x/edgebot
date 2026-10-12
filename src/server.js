@@ -124,16 +124,18 @@ export function startServer(bot, port) {
     }
     if (req.method === 'DELETE' && u.pathname.startsWith('/positions/')) {
       const id = decodeURIComponent(u.pathname.slice(11));
-      const n = bot.positions.length;
-      bot.positions = bot.positions.filter(x => x.id !== id && x.mint !== id);
-      bot.savePositions();
-      return json(res, 200, { ok: true, removed: n - bot.positions.length });
+      const removed = bot.dropPosition ? bot.dropPosition(id) : 0;
+      return json(res, 200, { ok: true, removed });
     }
     if (req.method === 'POST' && u.pathname === '/positions/clear') {
-      const n = bot.positions.length;
-      bot.positions = [];
-      bot.savePositions();
-      return json(res, 200, { ok: true, cleared: n });
+      const cleared = bot.clearAllPositions ? bot.clearAllPositions() : 0;
+      return json(res, 200, { ok: true, cleared });
+    }
+    if (req.method === 'GET' && u.pathname === '/postexit') {
+      return json(res, 200, bot.postExit ? bot.postExit.recent(50) : { pending: [], done: [] });
+    }
+    if (req.method === 'GET' && u.pathname === '/reports') {
+      return json(res, 200, (bot.journal.tradeReports || []).slice().reverse());
     }
     if (req.method === 'POST' && u.pathname === '/positions/notp') {
       let body = '';
