@@ -10,7 +10,7 @@ export class Risk {
   constructor(cfg, { dir, now = Date.now } = {}) {
     this.cfg = cfg; this.now = now;
     this.file = dir ? path.join(dir, 'risk.json') : null;
-    this.s = { day: dayKey(now()), dayPnlSol: 0, tradeTs: [], cooldown: {}, losers: {}, startEquitySol: null, killed: false, killReason: null };
+    this.s = { day: dayKey(now()), dayPnlSol: 0, tradeTs: [], cooldown: {}, losers: {}, startEquitySol: null, killed: false, killReason: null, totalCloses: 0, haltArmedAt: null };
     this.load();
     if (!this.s.losers) this.s.losers = {}; // risk.json from before this field existed
   }
@@ -82,6 +82,16 @@ export class Risk {
   recordClose(pnlSol, mint = null) {
     this.rollDay();
     this.s.dayPnlSol += pnlSol;
+    this.s.totalCloses = (this.s.totalCloses || 0) + 1;
+    // one-shot auto-halt: after N more closes, write the HALT file (survives restarts; /resume re-arms)
+    const hac = this.cfg.haltAfterCloses || 0;
+    if (hac > 0) {
+      if (this.s.haltArmedAt == null) this.s.haltArmedAt = this.s.totalCloses;
+      if (this.s.totalCloses - this.s.haltArmedAt >= hac) {
+        try { fs.writeFileSync(path.join(path.dirname(this.file || '.'), 'HALT'), String(this.now())); } catch {}
+        this.s.haltArmedAt = null;
+      }
+    }
     if (mint && pnlSol < 0) {
       const n = this.now();
       this.s.losers[mint] = n;
