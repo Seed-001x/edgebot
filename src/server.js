@@ -131,6 +131,18 @@ export function startServer(bot, port) {
       const cleared = bot.clearAllPositions ? bot.clearAllPositions() : 0;
       return json(res, 200, { ok: true, cleared });
     }
+    if (req.method === 'POST' && u.pathname === '/temprules') {
+      let body = '';
+      req.on('data', c => { body += c; if (body.length > 2000) req.destroy(); });
+      req.on('end', () => {
+        try {
+          const r = JSON.parse(body || '{}');
+          const armed = bot.setTempRules ? bot.setTempRules(r) : null;
+          return json(res, 200, { ok: true, tempRules: armed });
+        } catch { return json(res, 400, { error: 'invalid JSON' }); }
+      });
+      return;
+    }
     if (req.method === 'GET' && u.pathname === '/postexit') {
       return json(res, 200, bot.postExit ? bot.postExit.recent(50) : { pending: [], done: [] });
     }

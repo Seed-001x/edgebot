@@ -218,3 +218,23 @@ export function runGates({ view, rug, others = [], curve = null, cfg, now = Date
   const fails = Object.entries(checks).filter(([, c]) => !c.pass).map(([k, c]) => `${k}: ${c.reason}`);
   return { pass: fails.length === 0, fails, warnings, checks };
 }
+
+/**
+ * One-trade temporary rules, set by the user for the NEXT executed entry only
+ * (bot clears them the moment a buy lands). Pure check over the signal view:
+ *   maxMc       — refuse coins above this market cap
+ *   maxDropPct  — refuse coins down this much (from the 1h high, or over 6h)
+ * Returns a skip reason string, or null when the coin is allowed.
+ */
+export function tempRuleViolation(v, metrics, rules) {
+  if (!rules || !v) return null;
+  if (rules.maxMc > 0 && v.mc != null && v.mc > rules.maxMc) {
+    return `temp: market cap $${Math.round(v.mc).toLocaleString('en-US')} over one-trade cap $${Number(rules.maxMc).toLocaleString('en-US')}`;
+  }
+  if (rules.maxDropPct > 0) {
+    const dd = metrics && metrics.drawFromPeak; // 0..1 below the recent high
+    if (dd != null && dd >= rules.maxDropPct / 100) return `temp: down ${(dd * 100).toFixed(0)}% from its high — one-trade crash ban (${rules.maxDropPct}%)`;
+    if (v.chgH6 != null && v.chgH6 <= -rules.maxDropPct) return `temp: down ${Math.abs(v.chgH6).toFixed(0)}% over 6h — one-trade crash ban (${rules.maxDropPct}%)`;
+  }
+  return null;
+}

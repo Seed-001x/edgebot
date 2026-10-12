@@ -68,3 +68,14 @@ test('clone check: same name but OLDER-and-smaller or unrelated coins are not fl
   assert.equal(cloneCheck(v, [{ ...original, name: 'Totally Different', symbol: 'ZZZ' }], cfg).pass, true);
   assert.equal(cloneCheck(view({ name: 'Quantum Inu', symbol: 'QI', createdAt: NOW - 5 * 60000, volH24: 100, liq: 1000 }), [original], cfg).pass, false);
 });
+
+test('tempRuleViolation: one-trade MC cap and crash ban', async () => {
+  const { tempRuleViolation } = await import('../src/gate.js');
+  const rules = { maxMc: 100000, maxDropPct: 70 };
+  assert.equal(tempRuleViolation({ mc: 50000, chgH6: 10 }, { drawFromPeak: 0.1 }, rules), null);
+  assert.match(tempRuleViolation({ mc: 150000, chgH6: 10 }, { drawFromPeak: 0.1 }, rules), /one-trade cap/);
+  assert.match(tempRuleViolation({ mc: 50000, chgH6: 10 }, { drawFromPeak: 0.75 }, rules), /crash ban/);
+  assert.match(tempRuleViolation({ mc: 50000, chgH6: -82 }, { drawFromPeak: 0.1 }, rules), /crash ban/);
+  assert.equal(tempRuleViolation({ mc: 999999 }, { drawFromPeak: 0.99 }, null), null);
+  assert.equal(tempRuleViolation({ mc: null, chgH6: null }, {}, rules), null);
+});

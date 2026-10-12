@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { History } from './history.js';
 import { detect, eligible } from './detect.js';
-import { runGates, hasHardFail } from './gate.js';
+import { runGates, hasHardFail, tempRuleViolation } from './gate.js';
 import { evaluateExit } from './exits.js';
 import { bundleRisk, bundleDecision, pickTracked, linkedWeights, CREATOR_KEY } from './bundleWatch.js';
 import { Journal } from './journal.js';
@@ -41,7 +41,7 @@ export class Bot {
     this.posFile = path.join(cfg.dataDir, 'positions.json');
     this.positions = this.loadPositions();
     this.busy = { discover: false, poll: false, pos: false };
-    this.stats = { discoverTicks: 0, pollTicks: 0, positionTicks: 0, signals: 0, entries: 0, exits: 0, errors: 0, lastError: null, sourceCounts: {}, lastDiscoverTs: 0, lastPollTs: 0, closesSinceReport: 0, lastReportTs: 0, reportIndex: 0, liveFeed: { connected: false, events: 0, added: 0, reconnects: 0, lastEventTs: 0, lastError: null } };
+    this.stats = { discoverTicks: 0, pollTicks: 0, positionTicks: 0, signals: 0, entries: 0, exits: 0, errors: 0, lastError: null, sourceCounts: {}, lastDiscoverTs: 0, lastPollTs: 0, closesSinceReport: 0, lastReportTs: 0, reportIndex: 0, tempRules: null, liveFeed: { connected: false, events: 0, added: 0, reconnects: 0, lastEventTs: 0, lastError: null } };
     this.statsFile = path.join(cfg.dataDir, 'stats.json');
     this.entryTimes = []; // timestamps of entries (for pace keeper)
     this.PACE_TARGET = 120; // target trades per hour (2 per min)
@@ -351,6 +351,12 @@ export class Bot {
     const gate0 = this.risk.canEnter({ mint: v.address, walletSol, openCount: this.positions.length, sizeSol: size, halted: this.halted() });
     if (!gate0.ok) return this.skip(v, sig, [`risk: ${gate0.reason}`]);
 
+    // one-trade temporary rules (user-set via POST /temprules; cleared on the next executed entry)
+    if (this.stats.tempRules) {
+      const violation = tempRuleViolation(v, sig.metrics, this.stats.tempRules);
+      if (violation) return this.skip(v, sig, [violation]);
+    }
+
     // gates: RugCheck + same-name search in parallel
     const [rug, byName, bySym, curve] = await Promise.all([
       this.d.fetchRug(v.address).catch(() => null),
@@ -457,6 +463,17 @@ export class Bot {
     });
     this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'taken', reasons: [], price: v.price, mc: v.mc, metrics: { ...sig.metrics, roundTrip: +rt.ratio.toFixed(3), sizeSol: size }, warnings: g.warnings });
     this.journal.trade({ type: 'open', id: pos.id, mint: pos.mint, symbol: pos.symbol, setup: pos.setup, entrySol: pos.entrySol, sig: fill.sig, simulated: fill.simulated, ts: n });
+    // one-trade rules are spent the moment an entry executes
+    if (this.stats.tempRules) { console.log(`[temp] one-trade rules spent on ${pos.symbol} — cleared`); this.stats.tempRules = null; this.saveStats(); }
+  }
+
+  // Arm (or clear, with an empty body) the one-trade temporary entry rules.
+  // Persisted in stats so a restart can't quietly drop or resurrect them.
+  setTempRules(rules) {
+    if (!rules || (!(rules.maxMc > 0) && !(rules.maxDropPct > 0))) this.stats.tempRules = null;
+    else this.stats.tempRules = { maxMc: rules.maxMc > 0 ? Number(rules.maxMc) : 0, maxDropPct: rules.maxDropPct > 0 ? Number(rules.maxDropPct) : 0, armedTs: this.now() };
+    this.saveStats();
+    return this.stats.tempRules;
   }
 
   // ------------------------------------------------------------ position management
