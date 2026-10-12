@@ -205,7 +205,7 @@ export function runGates({ view, rug, others = [], curve = null, cfg, now = Date
     checks.clones = cloneHolderCheck(rug.topHolders, skip);
     checks.farm = farmTiersCheck(rug.topHolders, skip, { tol: cfg.farmTolPct, minCluster: cfg.farmMinCluster, maxWallets: cfg.farmMaxWallets, maxSupplyPct: cfg.farmMaxSupplyPct });
     checks.creator = creatorDumpCheck({ creatorUi: num(rug.creatorBalance) / 10 ** dec, poolBaseUi: lp.base, poolQuoteUi: lp.quote, supplyUi });
-    checks.insiders = insiderCheck(rug.insiderNetworks, supplyRaw);
+    checks.insiders = insiderCheck(rug.insiderNetworks, supplyRaw, cfg.insiderMaxPct);
     checks.linkedDump = linkedDumpCheck({ creatorUi: num(rug.creatorBalance) / 10 ** dec, networks: rug.insiderNetworks, dec, poolBaseUi: lp.base, poolQuoteUi: lp.quote }, cfg.linkedDumpMaxDrain);
     checks.concentration = concentrationCheck(rug.topHolders, skip);
     if (lp.lpLockedPct != null && num(lp.lpLockedPct) < 80) checks.lp = { pass: false, reason: `LP only ${num(lp.lpLockedPct)}% locked/burned — dev can pull` };

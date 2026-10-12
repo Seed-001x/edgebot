@@ -87,6 +87,7 @@ export function loadConfig(env = process.env) {
     cloneMinVolMultiple: num(env, 'CLONE_MIN_VOL_MULTIPLE', 2),
     linkedDumpMaxDrain: num(env, 'LINKED_DUMP_MAX_DRAIN', 0.35),
     insiderCountMax: num(env, 'INSIDER_COUNT_MAX', 50),
+    insiderMaxPct: num(env, 'INSIDER_MAX_PCT', 10), // linked-wallet supply cap in the insiders gate (loosened to 15 by env 2026-10-12: skipped coins averaged +16%)
     minQuoteLiqUsd: num(env, 'MIN_QUOTE_LIQ_USD', 1200),
     ladderMinN: num(env, 'LADDER_MIN_N', 15), ladderMaxRatio: num(env, 'LADDER_MAX_RATIO', 1.6),
     revivalDeadDrop: num(env, 'REVIVAL_DEAD_DROP', 50), revivalBounce: num(env, 'REVIVAL_BOUNCE', 50),
