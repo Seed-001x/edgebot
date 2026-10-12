@@ -24,6 +24,7 @@ export function loadConfig(env = process.env) {
     maxTradesPerHour: num(env, 'MAX_TRADES_PER_HOUR', 120),
     mandatoryApesPerHour: num(env, 'MANDATORY_APES_PER_HOUR', 5),
     mintCooldownMin: num(env, 'MINT_COOLDOWN_MIN', 20),
+    loserCooldownH: num(env, 'LOSER_COOLDOWN_H', 6),    // don't re-buy a coin that closed at a loss within this many hours (0 = off)
     maxPoolFraction: num(env, 'MAX_POOL_FRACTION', 0.05), // position ≤ 5% of pool liquidity
     allowLarge: env.ALLOW_LARGE === '1',                // typo guard: TRADE_SOL > 0.25 refused unless set
     shadowStartSol: num(env, 'SHADOW_START_SOL', 1),
@@ -54,6 +55,8 @@ export function loadConfig(env = process.env) {
     popMinBuysM5: num(env, 'POP_MIN_BUYS_M5', 20),    // was 5: real momentum = many buyers, not a handful
     popMinChgH1: num(env, 'POP_MIN_CHG_H1', 0),       // coin must be UP on the hour: a bounce off a crash is not a pop
     popMaxBelowHigh: num(env, 'POP_MAX_BELOW_HIGH', 0.30), // skip if price is >30% under its 1h high (dead-cat bounce)
+    popMaxDropH6: num(env, 'POP_MAX_DROP_H6', 40),    // skip pops on coins down 40%+ over 6h (for young pools: since launch) — a crash
+                                                      // that already left the 1h window still counts (0 = off)
     minBuyRatioM5: num(env, 'MIN_BUY_RATIO_M5', 0.55),
     maxDrawFromPeak: num(env, 'MAX_DRAW_FROM_PEAK', 0.15), // enter on strength, not on the way down
 

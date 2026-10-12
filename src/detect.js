@@ -48,7 +48,8 @@ export function detect(v, samples, cfg, now) {
     const draw = high > 0 ? (high - last) / high : 0;
     // the 5-minute window can't tell a breakout from a bounce off a crash, so also look at the last hour
     const hourHigh = Math.max(...(samples || []).filter(s => now - s.ts <= 3600000).map(s => s.price), last);
-    const notBouncing = v.chgH1 != null && v.chgH1 >= cfg.popMinChgH1 && last >= hourHigh * (1 - cfg.popMaxBelowHigh);
+    const notCrashedH6 = !(cfg.popMaxDropH6 > 0 && v.chgH6 != null && v.chgH6 <= -cfg.popMaxDropH6);
+    const notBouncing = notCrashedH6 && v.chgH1 != null && v.chgH1 >= cfg.popMinChgH1 && last >= hourHigh * (1 - cfg.popMaxBelowHigh);
     if (
       gain >= cfg.popGainPct && gain <= cfg.popMaxGainPct &&
       draw <= cfg.maxDrawFromPeak && notBouncing &&

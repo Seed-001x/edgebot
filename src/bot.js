@@ -113,7 +113,7 @@ export class Bot {
     const n = this.now();
     const pnl = p.lastValueSol != null ? (p.realizedSol || 0) + p.lastValueSol - p.entrySol - (p.feesSol || 0) : null;
     this.positions = this.positions.filter(x => x.id !== p.id);
-    if (pnl != null) this.risk.recordClose(pnl);
+    if (pnl != null) this.risk.recordClose(pnl, p.mint);
     this.journal.trade({ type: 'close', manual: true, id: p.id, mint: p.mint, symbol: p.symbol, setup: p.setup, entrySol: p.entrySol, pnlSol: pnl != null ? +pnl.toFixed(6) : null, estimated: true, heldMin: +((n - p.entryTs) / 60000).toFixed(1), reason: pnl != null ? `${reason} — P&L est. from last quote` : `${reason} (P&L unknown — no quote yet)`, simulated: p.simulated, ts: n });
     return true;
   }
@@ -430,7 +430,7 @@ export class Bot {
       const pnl = pos.realizedSol - pos.entrySol - (pos.feesSol || 0); // net of SOL network fees
       if (this.cfg.closeEmptyAccounts && this.exec.closeEmptyAccounts) this.exec.closeEmptyAccounts(pos.mint).catch(e => this.err('close account', e));
       this.positions = this.positions.filter(p => p.id !== pos.id);
-      this.risk.recordClose(pnl);
+      this.risk.recordClose(pnl, pos.mint);
       this.journal.trade({ type: 'close', id: pos.id, mint: pos.mint, symbol: pos.symbol, setup: pos.setup, entrySol: pos.entrySol, exitSol: pos.realizedSol, pnlSol: +pnl.toFixed(6), heldMin: +((n - pos.entryTs) / 60000).toFixed(1), reason: decision.reason, simulated: pos.simulated, ts: n });
     }
     this.savePositions();
@@ -443,7 +443,7 @@ export class Bot {
     const pnl = pos.realizedSol + est - pos.entrySol - (pos.feesSol || 0);
     const rec = this.journal.manualExit({ id: pos.id, mint: pos.mint, symbol: pos.symbol, ts: n, how, entry: pos.entry || null, heldMin: +((n - pos.entryTs) / 60000).toFixed(1), peakRatio: pos.peakRatio, bundleScore: pos.bundleScore || 0, pnlSolEstimate: +pnl.toFixed(6), reason: null });
     this.positions = this.positions.filter(p => p.id !== pos.id);
-    this.risk.recordClose(pnl);
+    this.risk.recordClose(pnl, pos.mint);
     this.journal.trade({ type: 'close', manual: true, id: pos.id, mint: pos.mint, symbol: pos.symbol, setup: pos.setup, entrySol: pos.entrySol, pnlSol: +pnl.toFixed(6), estimated: true, heldMin: rec.heldMin, reason: `manual exit (${how})`, simulated: pos.simulated, entry: pos.entry, ts: n });
     this.savePositions();
     return rec;

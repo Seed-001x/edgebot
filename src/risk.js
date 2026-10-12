@@ -10,8 +10,9 @@ export class Risk {
   constructor(cfg, { dir, now = Date.now } = {}) {
     this.cfg = cfg; this.now = now;
     this.file = dir ? path.join(dir, 'risk.json') : null;
-    this.s = { day: dayKey(now()), dayPnlSol: 0, tradeTs: [], cooldown: {}, startEquitySol: null, killed: false, killReason: null };
+    this.s = { day: dayKey(now()), dayPnlSol: 0, tradeTs: [], cooldown: {}, losers: {}, startEquitySol: null, killed: false, killReason: null };
     this.load();
+    if (!this.s.losers) this.s.losers = {}; // risk.json from before this field existed
   }
 
   load() {
@@ -54,6 +55,9 @@ export class Risk {
     if (openCount >= this.cfg.maxPositions) return { ok: false, reason: `max ${this.cfg.maxPositions} positions open` };
     const cd = this.s.cooldown[mint];
     if (cd && n - cd < this.cfg.mintCooldownMin * 60000) return { ok: false, reason: 'mint cooldown' };
+    const lost = this.s.losers[mint];
+    if (lost && this.cfg.loserCooldownH > 0 && n - lost < this.cfg.loserCooldownH * 3600000)
+      return { ok: false, reason: `lost on this coin ${((n - lost) / 60000).toFixed(0)}m ago (no re-buy for ${this.cfg.loserCooldownH}h)` };
     this.s.tradeTs = this.s.tradeTs.filter(t => n - t < 3600000);
     if (this.s.tradeTs.length >= this.cfg.maxTradesPerHour) return { ok: false, reason: `hourly trade cap (${this.cfg.maxTradesPerHour})` };
     if (walletSol - sizeSol < this.cfg.minReserveSol) return { ok: false, reason: `would leave < ${this.cfg.minReserveSol} SOL reserve` };
@@ -75,9 +79,15 @@ export class Risk {
     this.save();
   }
 
-  recordClose(pnlSol) {
+  recordClose(pnlSol, mint = null) {
     this.rollDay();
     this.s.dayPnlSol += pnlSol;
+    if (mint && pnlSol < 0) {
+      const n = this.now();
+      this.s.losers[mint] = n;
+      const keepMs = Math.max(this.cfg.loserCooldownH || 0, 1) * 3600000;
+      for (const [k, t] of Object.entries(this.s.losers)) if (n - t > keepMs) delete this.s.losers[k];
+    }
     this.save();
   }
 

@@ -84,3 +84,9 @@ test('pool-age filter: off by default, blocks fresh pools when MIN_PAIR_AGE_MIN 
   assert.ok(eligible(view({ createdAt: NOW - 3 * 60000 }), aged, NOW).some(r => /pool only/.test(r)));
   assert.equal(eligible(view({ createdAt: NOW - 30 * 60000 }), aged, NOW).length, 0);
 });
+
+test('pop: coin down 40%+ over 6h is a crash bounce, even if up on the hour (wINU 00:36)', () => {
+  assert.equal(detect(view({ price: 1.5, chgH1: 10, chgH6: -55 }), series(popPrices), cfg, NOW), null);
+  assert.equal(detect(view({ price: 1.5, chgH1: 10, chgH6: -20 }), series(popPrices), cfg, NOW).setup, 'pop');
+  assert.equal(detect(view({ price: 1.5, chgH1: 10, chgH6: -55 }), series(popPrices), { ...cfg, popMaxDropH6: 0 }, NOW).setup, 'pop'); // off
+});
