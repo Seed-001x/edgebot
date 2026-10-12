@@ -109,7 +109,7 @@ export function loadConfig(env = process.env) {
     stopLoss: num(env, 'STOP_LOSS', 0.15),                // backstop on realizable value (incl. fees/slippage)
     dipStopPct: num(env, 'DIP_STOP_PCT', 0.05),           // sell if PRICE drops this far below entry (0 = off)
     stallSec: num(env, 'STALL_SEC', 60),                  // sell if price sits near/below entry this long (0 = off)
-    stallBandPct: num(env, 'STALL_BAND_PCT', 0.05),       // "near entry" = below entry +5%; climbing past it resets the clock
+    stallBandPct: num(env, 'STALL_BAND_PCT', 0.02),       // "near entry" = below entry +2%; climbing past it resets the clock
     tp1Pct: num(env, 'TP1_PCT', 0.30),                    // bank part on the jump: +30% in your pocket after slippage + SOL fees (was 10.0 = +1000%, i.e. never)
     tp1Frac: num(env, 'TP1_FRAC', 0.5),                   // ...sell half of it (was 0 = sell nothing)
     lockArm: num(env, 'PROFIT_LOCK_ARM', 0.15),           // once up +15% or more after fees...
