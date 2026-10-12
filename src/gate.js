@@ -71,6 +71,29 @@ export function dustVolumeCheck(view, { minTx = 300, maxAvgUsd = 1.5 } = {}) {
   return { pass: avg >= maxAvgUsd, reason: avg >= maxAvgUsd ? 'avg trade size ok' : `${tx} trades in 1h averaging $${avg.toFixed(2)} (scripted dust, not buyers)`, avgUsd: avg };
 }
 
+// 1d. Instant graduation: the whole pump.fun bonding curve filled in a handful of buys.
+//     A real launch has hundreds of buyers before it graduates; ≤3 buys means one party bought ~80% of
+//     supply at launch, then spreads it across farm wallets and walks the price up (the "YouTube" pattern).
+//     `curve` = { buys, sells } on the coin's pump.fun bonding-curve pair, or null if unknown.
+//     Unknown never blocks (fail-open), so a data hiccup can't stop good entries.
+export function instantGradCheck(curve, ageH, { maxBuys = 3, maxAgeH = 24 } = {}) {
+  if (!curve || !(maxBuys > 0)) return { pass: true, reason: 'curve history unknown' };
+  if (ageH > maxAgeH) return { pass: true, reason: 'too old to judge from 24h data' };
+  const buys = num(curve.buys);
+  if (buys <= 0) return { pass: true, reason: 'curve history unknown' };
+  return { pass: buys > maxBuys, reason: buys > maxBuys ? `${buys} buys on the curve` : `bonding curve filled in ${buys} buy(s) — bought out at launch`, buys };
+}
+
+// 1e. Bot flow on a young coin: thousands of trades averaging a few dollars = volume bots walking
+//     the price up (smooth staircase chart), not people. Wider than `dust` but limited to young coins,
+//     where this pattern lives; older runners with lots of small retail trades are not touched.
+export function botFlowCheck(view, ageH, { maxAgeH = 2, minTx = 1000, maxAvgUsd = 6 } = {}) {
+  const tx = (view.buysH1 || 0) + (view.sellsH1 || 0);
+  if (!(maxAvgUsd > 0) || ageH > maxAgeH || tx < minTx) return { pass: true, reason: 'not a young high-churn coin' };
+  const avg = (view.volH1 || 0) / tx;
+  return { pass: avg >= maxAvgUsd, reason: avg >= maxAvgUsd ? 'avg trade size ok' : `${tx} trades in 1h averaging $${avg.toFixed(2)} on a ${Math.round(ageH * 60)}m-old coin (volume bots)`, avgUsd: avg };
+}
+
 // 2. Pool depth vs market cap.
 export function exitDepthCheck(liqUsd, mc, minRatio) {
   if (!(mc > 0)) return { pass: false, reason: 'no market cap' };
@@ -142,7 +165,7 @@ export function linkedDumpCheck({ creatorUi, networks, dec, poolBaseUi, poolQuot
 
 
 /** Gates that no feedback, "contested" count or pace keeper may override. They describe how the coin is built, not how it looks. */
-export const HARD_GATES = new Set(['rugged', 'mintAuthority', 'freezeAuthority', 'creator', 'insiders', 'clones', 'farm', 'dust', 'linkedDump']);
+export const HARD_GATES = new Set(['rugged', 'mintAuthority', 'freezeAuthority', 'creator', 'insiders', 'clones', 'farm', 'dust', 'linkedDump', 'instantGrad', 'botflow']);
 /** `fails` are strings like "insiders: 13.1% …". True if ANY failing gate is a hard gate. */
 export const hasHardFail = (fails) => (fails || []).some(f => HARD_GATES.has(String(f).split(':')[0]));
 
@@ -150,7 +173,7 @@ export const hasHardFail = (fails) => (fails || []).some(f => HARD_GATES.has(Str
  * Run every gate. `rug` may be null. `others` = same-name coins from searchByName.
  * Returns { pass, fails[], warnings[], checks }.
  */
-export function runGates({ view, rug, others = [], cfg, now = Date.now() }) {
+export function runGates({ view, rug, others = [], curve = null, cfg, now = Date.now() }) {
   const checks = {};
   const warnings = [];
   const ageH = view.createdAt ? (now - view.createdAt) / 3600000 : 0;
@@ -159,6 +182,8 @@ export function runGates({ view, rug, others = [], cfg, now = Date.now() }) {
   checks.clone = cloneCheck(view, others, cfg);
   checks.vertical = verticalLaunchCheck(ageMin, view.chgH1 ?? view.chgM5 ?? 0);
   checks.dust = dustVolumeCheck(view, { minTx: cfg.dustMinTx, maxAvgUsd: cfg.dustMaxAvgUsd });
+  checks.botflow = botFlowCheck(view, ageH, { maxAgeH: cfg.botflowMaxAgeH ?? 2, minTx: cfg.botflowMinTx ?? 1000, maxAvgUsd: cfg.botflowMaxAvgUsd ?? 6 });
+  checks.instantGrad = instantGradCheck(curve, ageH, { maxBuys: cfg.instantGradMaxBuys ?? 3 });
 
   if (!rug) {
     if (ageH < cfg.requireReportBelowAgeH) checks.report = { pass: false, reason: 'no RugCheck report for a young coin' };

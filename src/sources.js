@@ -61,6 +61,20 @@ export async function fetchSolUsd(now = Date.now()) {
   return solCache.price;
 }
 
+/**
+ * Trade counts on the coin's pump.fun bonding-curve pair (for the instant-graduation gate).
+ * Returns { buys, sells } from the last 24h, or null if the coin has no curve pair / data is missing.
+ */
+export async function fetchCurve(mint) {
+  const pairs = await fetchJson(`${DS}/token-pairs/v1/solana/${mint}`);
+  const curve = (Array.isArray(pairs) ? pairs : []).find(p => p && p.dexId === 'pumpfun');
+  if (!curve) return null;
+  const graduated = pairs.some(p => p && p.dexId && p.dexId !== 'pumpfun');
+  if (!graduated) return null; // still on the curve — nothing to judge yet
+  const h24 = (curve.txns && curve.txns.h24) || {};
+  return { buys: Number(h24.buys) || 0, sells: Number(h24.sells) || 0 };
+}
+
 /** Same-name / same-ticker coins, for the clone check. */
 export async function searchByName(query) {
   const j = await fetchJson(`${DS}/latest/dex/search?q=${encodeURIComponent(query)}`);

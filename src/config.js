@@ -96,6 +96,12 @@ export function loadConfig(env = process.env) {
     // dust volume: >= DUST_MIN_TX trades in 1h averaging < DUST_MAX_AVG_USD. Set DUST_MAX_AVG_USD=0 to disable.
     dustMinTx: num(env, 'DUST_MIN_TX', 300),
     dustMaxAvgUsd: num(env, 'DUST_MAX_AVG_USD', 1.5),
+    // instant graduation: bonding curve filled in <= N buys = bought out at launch (0 = off)
+    instantGradMaxBuys: num(env, 'INSTANT_GRAD_MAX_BUYS', 3),
+    // bot flow: coin younger than BOTFLOW_MAX_AGE_H with >= BOTFLOW_MIN_TX trades in 1h averaging < BOTFLOW_MAX_AVG_USD (0 = off)
+    botflowMaxAgeH: num(env, 'BOTFLOW_MAX_AGE_H', 2),
+    botflowMinTx: num(env, 'BOTFLOW_MIN_TX', 1000),
+    botflowMaxAvgUsd: num(env, 'BOTFLOW_MAX_AVG_USD', 6),
     // setup blacklist: 0 = off (per-token blocking only). Set to N to block setups with N+ bad marks.
     setupBlacklistMin: num(env, 'SETUP_BLACKLIST_MIN', 0),
 

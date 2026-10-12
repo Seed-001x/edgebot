@@ -240,19 +240,21 @@ export class Bot {
     if (!gate0.ok) return this.skip(v, sig, [`risk: ${gate0.reason}`]);
 
     // gates: RugCheck + same-name search in parallel
-    const [rug, byName, bySym] = await Promise.all([
+    const [rug, byName, bySym, curve] = await Promise.all([
       this.d.fetchRug(v.address).catch(() => null),
       this.d.searchByName(v.name).catch(() => []),
       this.d.searchByName(v.symbol).catch(() => []),
+      this.d.fetchCurve ? this.d.fetchCurve(v.address).catch(() => null) : null,
     ]);
     const others = [...byName, ...bySym];
     // Pace keeper: if behind the hourly target, use relaxed gate thresholds
     const { cfg: gateCfg, boosted, pace } = this.paceCfg(n);
-    const g = runGates({ view: v, rug, others, cfg: gateCfg, now: n });
+    const g = runGates({ view: v, rug, others, curve, cfg: gateCfg, now: n });
     if (!g.pass) {
-      // Mandatory ape mode: if under 5 entries/hour, force through unless unsurvivable
+      // Mandatory ape mode: if under N entries/hour, force through soft gate fails only.
+      // Structural (HARD_GATES) fails are never forced — that bypass is what let rigged launches in.
       const hourEntries = this.entryTimes.filter(t => t > n - 3600000).length;
-      const unsurvivable = (g.fails || []).some(f => /^(rugged|mintAuthority|freezeAuthority)/.test(String(f).split(':')[0]));
+      const unsurvivable = hasHardFail(g.fails) || (g.fails || []).some(f => /^(rugged|mintAuthority|freezeAuthority)/.test(String(f).split(':')[0]));
       const mandatoryTarget = this.cfg.mandatoryApesPerHour || 0;
       if (mandatoryTarget > 0 && hourEntries < mandatoryTarget && !unsurvivable) {
         console.log(`[mandatory] forcing ${v.symbol} through gates (${hourEntries}/${mandatoryTarget} this hour) — skipped: ${g.fails.join('; ').slice(0, 120)}`);
