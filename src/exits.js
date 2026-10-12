@@ -40,8 +40,12 @@ export function evaluateExit(pos, mark, cfg, now) {
   if (ratio <= 1 - cfg.stopLoss) return out(1, `stop-loss (${((ratio - 1) * 100).toFixed(0)}%)`);
 
   // 3. first take-profit on the jump: bank part, let the rest run (skipped if user disabled TP for this position).
-  //    +30% means +30% in your pocket after slippage and SOL fees, not +30% on the chart.
+  //    +25% means +25% in your pocket after slippage and SOL fees, not +25% on the chart.
   if (!pos.tp1Done && !pos.noTp && cfg.tp1Frac > 0 && gain >= cfg.tp1Pct) return { ...out(cfg.tp1Frac, `TP1 +${(cfg.tp1Pct * 100).toFixed(0)}%`), tp1: true };
+
+  // 3b. post-TP1 trail: after banking the TP1 slice, trail the rest tpTrailPct below its peak with a hard floor
+  //     at entry — sell everything if it gives back the trail or fades back to cost.
+  if (pos.tp1Done && (ratio <= peakRatio * (1 - cfg.tpTrailPct) || ratio <= 1)) return out(1, `post-TP1 trail (peak ${(peakRatio).toFixed(2)}x, now ${((ratio - 1) * 100).toFixed(1)}%)`);
 
   // 4. trailing stop once armed
   if (peakRatio >= 1 + cfg.trailArm && ratio <= peakRatio * (1 - cfg.trailPct)) return out(1, `trailing stop (${(cfg.trailPct * 100).toFixed(0)}% off peak ${(peakRatio).toFixed(2)}x)`);

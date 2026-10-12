@@ -66,20 +66,28 @@ test('stall and dip stop can be turned off', () => {
 });
 
 // ---- take profit on the jump + profit lock ----
-test('TP1: price +30% banks half', () => {
+test('TP1: price +25% banks 65%', () => {
   const d = evaluateExit(pos({ stallSince: NOW }), mark(0.0264), cfg, NOW);   // +32% minus ~1.6% fees (0.02 SOL test size)
-  assert.equal(d.fraction, 0.5); assert.equal(d.tp1, true);
-  assert.equal(evaluateExit(pos({ stallSince: NOW }), mark(0.0250), cfg, NOW).fraction, 0);       // +25%: not yet
+  assert.equal(d.fraction, 0.65); assert.equal(d.tp1, true);
+  assert.equal(evaluateExit(pos({ stallSince: NOW }), mark(0.0240), cfg, NOW).fraction, 0);       // +20%: not yet
 });
-test('TP1 judged on what you pocket: chart +31% with 10% round-trip cost is not +30% profit', () => {
+test('TP1 judged on what you pocket: chart +31% with 10% round-trip cost is not +25% profit', () => {
   const p = pos({ entryRoundTrip: 0.9, stallSince: NOW });   // flat = 0.018 value
   assert.equal(evaluateExit(p, mark(0.0236), cfg, NOW).fraction, 0);    // price +31% but only +18% realizable
-  assert.equal(evaluateExit(p, mark(0.0264), cfg, NOW).fraction, 0.5);  // +32% realizable minus fees ≥ +30%
+  assert.equal(evaluateExit(p, mark(0.0264), cfg, NOW).fraction, 0.65);  // +32% realizable minus fees ≥ +25%
+});
+test('post-TP1 trail: 25% below peak or back to entry sells the rest', () => {
+  const p = pos({ tp1Done: true, remainingFrac: 0.35, peakRatio: 1.6, stallSince: NOW });
+  assert.equal(evaluateExit(p, mark(0.02 * 0.35 * 1.2), cfg, NOW).fraction, 1);  // 1.2x = 25% off 1.6x peak → trail fires
+  assert.equal(evaluateExit(p, mark(0.02 * 0.35 * 1.0), cfg, NOW).fraction, 1);  // back to entry → floor fires
+  const big = pos({ tp1Done: true, remainingFrac: 0.35, peakRatio: 3, stallSince: NOW });
+  assert.equal(evaluateExit(big, mark(0.02 * 0.35 * 2.4), cfg, NOW).fraction, 0);  // 2.4x vs 3x peak: holds
+  assert.match(evaluateExit(big, mark(0.02 * 0.35 * 2.1), cfg, NOW).reason, /post-TP1 trail/);  // 2.1x ≤ 2.25x trail, above lock
 });
 test('fees: SOL tx fees are taken out before calling it a take-profit', () => {
   const pricey = { ...cfg, txFeeSol: 0.0005 };  // 3 tx × 0.0005 = 0.0015 on 0.02 basis = 7.5%
-  assert.equal(evaluateExit(pos({ stallSince: NOW }), mark(0.0262), pricey, NOW).fraction, 0);   // +31% - 7.5% < 30%
-  assert.equal(evaluateExit(pos({ stallSince: NOW }), mark(0.0277), pricey, NOW).fraction, 0.5); // +38.5% - 7.5% ≥ 30%
+  assert.equal(evaluateExit(pos({ stallSince: NOW }), mark(0.0262), pricey, NOW).fraction, 0);   // +31% - 7.5% < 25%
+  assert.equal(evaluateExit(pos({ stallSince: NOW }), mark(0.0277), pricey, NOW).fraction, 0.65); // +38.5% - 7.5% ≥ 25%
 });
 test('profit lock: gives back half of the best gain → sell the rest', () => {
   const p = pos({ tp1Done: true, remainingFrac: 0.5, peakRatio: 1.4, stallSince: null });  // peak +40%
@@ -90,8 +98,8 @@ test('profit lock: gives back half of the best gain → sell the rest', () => {
 test('profit lock not armed below +15% peak', () => {
   assert.equal(evaluateExit(pos({ peakRatio: 1.12, stallSince: NOW }), mark(0.0205), cfg, NOW).fraction, 0);
 });
-test('a big runner keeps running until it gives back half', () => {
+test('a big runner keeps running until it gives back a quarter (post-TP1 trail)', () => {
   const p = pos({ tp1Done: true, remainingFrac: 0.5, peakRatio: 3, stallSince: null });      // peak +200%
   assert.equal(evaluateExit(p, mark(0.0240), { ...cfg, trailPct: 0.9 }, NOW).fraction, 0);   // 2.4x: holds
-  assert.match(evaluateExit(p, mark(0.0195), { ...cfg, trailPct: 0.9 }, NOW).reason, /profit lock/); // 1.95x
+  assert.match(evaluateExit(p, mark(0.0195), { ...cfg, trailPct: 0.9 }, NOW).reason, /post-TP1 trail/); // 1.95x ≤ 2.25x
 });

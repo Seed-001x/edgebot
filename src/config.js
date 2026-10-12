@@ -111,8 +111,9 @@ export function loadConfig(env = process.env) {
     dipStopPct: num(env, 'DIP_STOP_PCT', 0.05),           // sell if PRICE drops this far below entry (0 = off)
     stallSec: num(env, 'STALL_SEC', 60),                  // sell if price sits near/below entry this long (0 = off)
     stallBandPct: num(env, 'STALL_BAND_PCT', 0.02),       // "near entry" = below entry +2%; climbing past it resets the clock
-    tp1Pct: num(env, 'TP1_PCT', 0.30),                    // bank part on the jump: +30% in your pocket after slippage + SOL fees (was 10.0 = +1000%, i.e. never)
-    tp1Frac: num(env, 'TP1_FRAC', 0.5),                   // ...sell half of it (was 0 = sell nothing)
+    tp1Pct: num(env, 'TP1_PCT', 0.25),                    // bank part on the jump: +25% in your pocket after slippage + SOL fees
+    tp1Frac: num(env, 'TP1_FRAC', 0.65),                  // ...sell 65% of it
+    tpTrailPct: num(env, 'TP_TRAIL_PCT', 0.25),           // after TP1, trail the rest this far below its peak (hard floor at entry)
     lockArm: num(env, 'PROFIT_LOCK_ARM', 0.15),           // once up +15% or more after fees...
     lockKeep: num(env, 'PROFIT_LOCK_KEEP', 0.5),          // ...sell the rest if it falls below half of its best gain (0 = off)
     trailArm: num(env, 'TRAIL_ARM', 1.00),
@@ -151,6 +152,7 @@ export function validateConfig(cfg) {
   if (cfg.stallSec < 0) errs.push('STALL_SEC must be >= 0 (0 = off)');
   if (cfg.lockKeep < 0 || cfg.lockKeep >= 1) errs.push('PROFIT_LOCK_KEEP must be between 0 and 1 (0 = off)');
   if (cfg.tp1Frac < 0 || cfg.tp1Frac > 1) errs.push('TP1_FRAC must be between 0 and 1');
+  if (cfg.tpTrailPct < 0 || cfg.tpTrailPct >= 1) errs.push('TP_TRAIL_PCT must be between 0 and 1');
   if (cfg.stallBandPct < 0) errs.push('STALL_BAND_PCT must be >= 0');
   if (cfg.realMode && cfg.rpcUrls.length === 0) errs.push('RPC_URLS required in real mode');
   return errs;
