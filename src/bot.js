@@ -273,6 +273,18 @@ export class Bot {
     const gate1 = this.risk.canEnter({ mint: v.address, walletSol: await this.exec.solBalance(), openCount: this.positions.length, sizeSol: size, halted: this.halted() });
     if (!gate1.ok) return this.skip(v, sig, [`risk: ${gate1.reason}`], g.warnings);
 
+    // freshness guard: the signal quote may be stale after the awaits above (gates, round-trip).
+    // Re-pull the price right before spending — abort if it dumped (stale quote) or ripped (chasing).
+    let fv = null;
+    try { const fm = await this.d.fetchViews([v.address]); fv = fm && fm.get(v.address); } catch {}
+    if (fv && fv.price > 0 && v.price > 0) {
+      const r = fv.price / v.price;
+      if (r < 1 - this.cfg.prebuyMaxDumpPct / 100)
+        return this.skip(v, sig, [`stale: dumped ${((1 - r) * 100).toFixed(0)}% since signal (stale quote?) — aborting`], g.warnings);
+      if (r > 1 + this.cfg.prebuyMaxPumpPct / 100)
+        return this.skip(v, sig, [`stale: pumped ${((r - 1) * 100).toFixed(0)}% since signal — chasing, aborting`], g.warnings);
+    }
+
     let fill;
     try { fill = await this.exec.buy(v.address, size, rt.buyQuote); }
     catch (e) { this.err('buy', e); return this.skip(v, sig, [`exec: buy failed (${e.message})`], g.warnings); }

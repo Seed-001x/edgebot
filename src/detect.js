@@ -44,6 +44,7 @@ export function detect(v, samples, cfg, now) {
       gain >= cfg.popGainPct && gain <= cfg.popMaxGainPct &&
       draw <= cfg.maxDrawFromPeak &&
       v.volH1 >= cfg.popMinVolH1 &&
+      v.buysM5 >= cfg.popMinBuysM5 &&
       ratio5 != null && ratio5 >= cfg.minBuyRatioM5
     ) {
       return { setup: 'pop', strength: gain, metrics: { gainPct: +gain.toFixed(1), drawFromPeak: +draw.toFixed(3), buyRatioM5: +ratio5.toFixed(2), volH1: v.volH1 } };
@@ -51,11 +52,15 @@ export function detect(v, samples, cfg, now) {
   }
 
   // ---- TREND ----
+  // Fresh momentum only: most of the hourly move must be happening NOW (chgM5 a real share of chgH1),
+  // not a spike from 40 minutes ago that's just drifting at the top.
   if (
     v.chgH1 != null && v.chgM5 != null &&
     v.chgH1 >= cfg.trendMinH1 && v.chgH1 <= cfg.trendMaxH1 &&
     v.chgM5 >= cfg.trendMinM5 &&
+    v.chgM5 >= v.chgH1 * cfg.trendFreshM5Ratio &&
     v.volH1 >= cfg.trendMinVolH1 &&
+    v.buysM5 >= cfg.trendMinBuysM5 &&
     ratio5 != null && ratio5 >= cfg.trendMinBuyRatio
   ) {
     // don't buy a coin that already rolled over from a recent high

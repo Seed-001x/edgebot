@@ -49,6 +49,7 @@ export function loadConfig(env = process.env) {
     popGainPct: num(env, 'POP_GAIN_PCT', 35),
     popMaxGainPct: num(env, 'POP_MAX_GAIN_PCT', 200),   // already >3x in the window = chasing
     popMinVolH1: num(env, 'POP_MIN_VOL_H1', 10000),
+    popMinBuysM5: num(env, 'POP_MIN_BUYS_M5', 5), // real momentum: multiple buys, not 1 buy pushing it up
     minBuyRatioM5: num(env, 'MIN_BUY_RATIO_M5', 0.55),
     maxDrawFromPeak: num(env, 'MAX_DRAW_FROM_PEAK', 0.15), // enter on strength, not on the way down
 
@@ -58,6 +59,13 @@ export function loadConfig(env = process.env) {
     trendMinM5: num(env, 'TREND_MIN_M5', 2),
     trendMinVolH1: num(env, 'TREND_MIN_VOL_H1', 100000),
     trendMinBuyRatio: num(env, 'TREND_MIN_BUY_RATIO', 0.52),
+    trendMinBuysM5: num(env, 'TREND_MIN_BUYS_M5', 5),
+    // Fresh momentum only: the 5m move must be a real share of the 1h move.
+    // A coin up 50% on the hour but only +5% in the last 5m already made its move — that's chasing.
+    trendFreshM5Ratio: num(env, 'TREND_FRESH_M5_RATIO', 0.3),
+    // Pre-buy freshness guard: abort if the price moved hard between signal and execution (stale quote).
+    prebuyMaxDumpPct: num(env, 'PREBUY_MAX_DUMP_PCT', 30), // fresh < signal*(1-30%) → dumped, abort
+    prebuyMaxPumpPct: num(env, 'PREBUY_MAX_PUMP_PCT', 100), // fresh > signal*2 → chasing, abort
 
     // ---- gates ----
     requireReportBelowAgeH: num(env, 'REQUIRE_REPORT_BELOW_AGE_H', 6), // young coins with no RugCheck report are blocked
