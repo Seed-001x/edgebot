@@ -86,6 +86,7 @@ export function loadConfig(env = process.env) {
     minHolders: num(env, 'MIN_HOLDERS', 100),
     cloneMinVolMultiple: num(env, 'CLONE_MIN_VOL_MULTIPLE', 2),
     linkedDumpMaxDrain: num(env, 'LINKED_DUMP_MAX_DRAIN', 0.35),
+    creatorMaxDrain: num(env, 'CREATOR_MAX_DRAIN', 0.25), // creator-dump gate cap (was hardcoded 0.25 in gate.js)
     insiderCountMax: num(env, 'INSIDER_COUNT_MAX', 50),
     insiderMaxPct: num(env, 'INSIDER_MAX_PCT', 10), // linked-wallet supply cap in the insiders gate (loosened to 15 by env 2026-10-12: skipped coins averaged +16%)
     minQuoteLiqUsd: num(env, 'MIN_QUOTE_LIQ_USD', 1200),
