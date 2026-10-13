@@ -170,6 +170,8 @@ export function loadConfig(env = process.env) {
     tp2Frac: num(env, 'TP2_FRAC', 0.35),                  // ...sells this fraction of the ORIGINAL position (0 = off)
     bagTrailPct: num(env, 'BAG_TRAIL_PCT', 0.15),         // moonbag trail below peak (was 0.35 from the MFE study; user tightened 35→20→15% on 2026-10-13 — exit at -15% under the last recorded peak)
     tpTrailPct: num(env, 'TP_TRAIL_PCT', 0.25),           // after TP1, trail the rest this far below its peak (hard floor at entry)
+    tp2RejectZone: num(env, 'TP2_REJECT_ZONE', 0.80),     // middle stage: peak net gain at/above this = it reached for the TP2 mark (user 2026-10-13)
+    tp2RejectDrop: num(env, 'TP2_REJECT_DROP', 0.10),     // ...and this far off that peak without converting = rejected → sell the remainder (zone 0 = off)
     lockArm: num(env, 'PROFIT_LOCK_ARM', 0.15),           // once up +15% or more after fees...
     lockKeep: num(env, 'PROFIT_LOCK_KEEP', 0.5),          // ...sell the rest if it falls below half of its best gain (0 = off)
     trailArm: num(env, 'TRAIL_ARM', 1.00),
@@ -233,6 +235,8 @@ export function validateConfig(cfg) {
   if (cfg.tp2Frac < 0 || cfg.tp2Frac > 1) errs.push('TP2_FRAC must be between 0 and 1 (0 = off)');
   if (cfg.bagTrailPct < 0 || cfg.bagTrailPct >= 0.9) errs.push('BAG_TRAIL_PCT must be between 0 and 0.9');
   if (cfg.tpTrailPct < 0 || cfg.tpTrailPct >= 1) errs.push('TP_TRAIL_PCT must be between 0 and 1');
+  if (cfg.tp2RejectZone < 0 || cfg.tp2RejectZone > 5) errs.push('TP2_REJECT_ZONE must be between 0 and 5');
+  if (cfg.tp2RejectDrop < 0 || cfg.tp2RejectDrop >= 0.9) errs.push('TP2_REJECT_DROP must be between 0 and 0.9');
   if (cfg.stallBandPct < -0.5 || cfg.stallBandPct > 1) errs.push('STALL_BAND_PCT must be between -0.5 and 1 (breakout bar above entry for the entry stall)');
   if (cfg.realMode && cfg.rpcUrls.length === 0) errs.push('RPC_URLS required in real mode');
   return errs;

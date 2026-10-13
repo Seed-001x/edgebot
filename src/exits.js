@@ -129,6 +129,12 @@ export function evaluateExit(pos, mark, cfg, now) {
   //     the generic trailing stop / profit lock below skip tp2Done positions: the bag's job is to ride.
   if (pos.tp2Done && ratio <= peakRatio * (1 - cfg.bagTrailPct)) return out(1, `moonbag trail (${Math.round(cfg.bagTrailPct * 100)}% off peak ${peakRatio.toFixed(2)}x, now ${((ratio - 1) * 100).toFixed(1)}%)`);
 
+  // 3d-pre. TP2 rejection (user 2026-10-13): the middle stage climbed to within reach of the TP2
+  //     mark (peak net gain >= tp2RejectZone) but never converted; a fade of tp2RejectDrop off
+  //     that peak is a rejection, not a pullback — sell the remainder instead of riding the wide
+  //     trail down (wizardcat: peaked +80% net, rode the 25% trail out at +34%).
+  if (pos.tp1Done && !pos.tp2Done && cfg.tp2RejectZone > 0 && peakGain >= cfg.tp2RejectZone && ratio <= peakRatio * (1 - cfg.tp2RejectDrop)) return out(1, `TP2 rejection (peak +${(peakGain * 100).toFixed(0)}%, now ${((ratio - 1) * 100).toFixed(1)}%)`);
+
   // 3d. post-TP1 trail (middle stage, pre-TP2): trail the rest tpTrailPct below its peak with a hard
   //     floor at entry — sell everything if it gives back the trail or fades back to cost.
   if (pos.tp1Done && !pos.tp2Done && (ratio <= peakRatio * (1 - cfg.tpTrailPct) || ratio <= 1)) return out(1, `post-TP1 trail (peak ${(peakRatio).toFixed(2)}x, now ${((ratio - 1) * 100).toFixed(1)}%)`);

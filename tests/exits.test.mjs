@@ -141,13 +141,28 @@ test('TP1 judged on what you pocket: chart +31% with 10% round-trip cost is not 
   assert.equal(evaluateExit(p, mark(0.0264), fixed, NOW).fraction, 0.65);  // +32% realizable minus fees ≥ +25%
 });
 test('post-TP1 trail: 25% below peak or back to entry sells the rest', () => {
-  const noTp2 = { ...cfg, tp2Pct: 99 };   // isolate the middle stage: TP2 off
+  const noTp2 = { ...cfg, tp2Pct: 99, tp2RejectZone: 0 };   // isolate the middle stage: TP2 + rejection off
   const p = pos({ tp1Done: true, remainingFrac: 0.35, peakRatio: 1.6, stallSince: NOW });
   assert.equal(evaluateExit(p, mark(0.02 * 0.35 * 1.2), noTp2, NOW).fraction, 1);  // 1.2x = 25% off 1.6x peak → trail fires
   assert.equal(evaluateExit(p, mark(0.02 * 0.35 * 1.0), noTp2, NOW).fraction, 1);  // back to entry → floor fires
   const big = pos({ tp1Done: true, remainingFrac: 0.35, peakRatio: 3, stallSince: NOW });
   assert.equal(evaluateExit(big, mark(0.02 * 0.35 * 2.4), noTp2, NOW).fraction, 0);  // 2.4x vs 3x peak: holds
   assert.match(evaluateExit(big, mark(0.02 * 0.35 * 2.1), noTp2, NOW).reason, /post-TP1 trail/);  // 2.1x ≤ 2.25x trail, above lock
+});
+test('TP2 rejection: peaked in the zone, 10% off the peak without converting sells the rest', () => {
+  const p = pos({ tp1Done: true, remainingFrac: 0.6, peakRatio: 1.85, stallSince: NOW });   // wizardcat shape: peak +85%
+  const d = evaluateExit(p, mark(0.02 * 0.6 * 1.6465), cfg, NOW);                            // 11% off the peak
+  assert.equal(d.fraction, 1); assert.match(d.reason, /TP2 rejection/);
+  assert.equal(evaluateExit(p, mark(0.02 * 0.6 * 1.7205), cfg, NOW).fraction, 0);            // only 7% off: still riding
+});
+test('TP2 rejection: a peak below the zone is just a pullback — the wide trail governs', () => {
+  const p = pos({ tp1Done: true, remainingFrac: 0.6, peakRatio: 1.6, stallSince: NOW });      // peak +60% < +80% zone
+  assert.equal(evaluateExit(p, mark(0.02 * 0.6 * 1.36), cfg, NOW).fraction, 0);              // 15% off peak: holds
+});
+test('TP2 rejection: zone 0 disables the rule', () => {
+  const off = { ...cfg, tp2RejectZone: 0 };
+  const p = pos({ tp1Done: true, remainingFrac: 0.6, peakRatio: 1.85, stallSince: NOW });
+  assert.equal(evaluateExit(p, mark(0.02 * 0.6 * 1.6465), off, NOW).fraction, 0);
 });
 test('fees: SOL tx fees are taken out before calling it a take-profit', () => {
   const pricey = { ...cfg, txFeeSol: 0.0005, tp1AdaptMax: cfg.tp1Pct };  // 3 tx × 0.0005 = 0.0015 on 0.02 basis = 7.5%
@@ -165,8 +180,8 @@ test('profit lock not armed below +15% peak', () => {
 });
 test('a big runner keeps running until it gives back a quarter (post-TP1 trail)', () => {
   const p = pos({ tp1Done: true, remainingFrac: 0.5, peakRatio: 3, stallSince: null });      // peak +200%
-  assert.equal(evaluateExit(p, mark(0.0240), { ...cfg, trailPct: 0.9, tp2Pct: 99 }, NOW).fraction, 0);   // 2.4x: holds
-  assert.match(evaluateExit(p, mark(0.0195), { ...cfg, trailPct: 0.9, tp2Pct: 99 }, NOW).reason, /post-TP1 trail/); // 1.95x ≤ 2.25x
+  assert.equal(evaluateExit(p, mark(0.0240), { ...cfg, trailPct: 0.9, tp2Pct: 99, tp2RejectZone: 0 }, NOW).fraction, 0);   // 2.4x: holds
+  assert.match(evaluateExit(p, mark(0.0195), { ...cfg, trailPct: 0.9, tp2Pct: 99, tp2RejectZone: 0 }, NOW).reason, /post-TP1 trail/); // 1.95x ≤ 2.25x
 });
 
 // ---- TP ladder (user 2026-10-13): adaptive TP1, TP2 at +100%, moonbag ----
