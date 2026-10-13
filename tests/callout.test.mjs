@@ -42,3 +42,21 @@ test('factBlock: no setup at all — numbers come from the live view (ETHINU cop
   const view = { symbol: 'ETHINU', mc: 208969, chgH1: 375, chgM5: 7.97, volH1: 151761.93, volM5: 46049.55, buysM5: 464, sellsM5: 323 };
   assert.equal(factBlock(view, {}), 'in $ethinu at $209k mc. +375% on the hour, +8% last 5m, $152k/h volume, 59% buys.');
 });
+
+test('narrativeClause: no links — falls back to a name riff, still validated', async () => {
+  const { narrativeClause } = await import('../src/callout.js');
+  const realFetch = globalThis.fetch;
+  process.env.OPENAI_API_KEY = 'test-key';
+  const stub = (content) => async () => ({ ok: true, json: async () => ({ choices: [{ message: { content } }] }) });
+  try {
+    globalThis.fetch = stub('riding this eth pair');
+    assert.equal(await narrativeClause({}, { name: 'ETH INU', symbol: 'ETHINU' }), 'riding this eth pair');
+    globalThis.fetch = stub('a coin with 5000 holders ready to moon');
+    assert.equal(await narrativeClause({}, { name: 'ETH INU', symbol: 'ETHINU' }), null); // digits + hype rejected
+    globalThis.fetch = stub('NONE');
+    assert.equal(await narrativeClause({}, { name: 'XQZ', symbol: 'XQZ' }), null);
+  } finally {
+    globalThis.fetch = realFetch;
+    delete process.env.OPENAI_API_KEY;
+  }
+});

@@ -8,8 +8,10 @@
 //      through the model came out as filler like "pure momentum play"/"whopping".)
 //   3. Narrative clause (optional): if research (description/website/X) finds a real
 //      project story, the LLM may contribute ONE short clause saying what the coin
-//      is. It is validated to contain no numbers and no hype, so it can never
-//      corrupt the facts; absent a real story, the callout is facts only.
+//      is. When the coin has no links or description at all, the clause instead
+//      riffs on the coin's NAME — the name is the whole pitch for those. Either
+//      way the clause is validated: no numbers, no hype, so it can never corrupt
+//      the facts; no valid clause → the callout is facts only.
 //   4. Post: POST /callout/create { coinMint, thesis, marketCap }
 //
 // The callout posts as the user's pump.fun profile, so callout rewards
@@ -243,17 +245,9 @@ export function validClause(txt) {
   return t;
 }
 
-async function narrativeClause(r) {
+async function llmClause(prompt) {
   const key = process.env.OPENAI_API_KEY;
   if (!key) return null;
-  const src = [r.description && `description: ${r.description}`, r.site && `website: ${r.site}`, r.xText && `X: ${r.xText}`].filter(Boolean).join('\n');
-  if (src.replace(/\s/g, '').length < 40) return null; // nothing real to summarize
-  const prompt = `From this text about a crypto project, write ONE clause (max 12 words, lowercase, NO numbers, no hype, no prices) saying what the project IS or claims to do, in its own framing — e.g. "a prediction market for livestream events" or "the mascot dog of the eth merge anniversary". If the text is generic, empty, just links, or says nothing concrete about what the project is, reply with exactly: NONE
-
-Text:
-${src.slice(0, 1800)}
-
-Return only the clause or NONE.`;
   try {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -272,11 +266,32 @@ Return only the clause or NONE.`;
   } catch { return null; }
 }
 
+export async function narrativeClause(r, v) {
+  const src = [r.description && `description: ${r.description}`, r.site && `website: ${r.site}`, r.xText && `X: ${r.xText}`].filter(Boolean).join('\n');
+  if (src.replace(/\s/g, '').length >= 40) {
+    return llmClause(`From this text about a crypto project, write ONE clause (max 12 words, lowercase, NO numbers, no hype, no prices) saying what the project IS or claims to do, in its own framing — e.g. "a prediction market for livestream events" or "the mascot dog of the eth merge anniversary". If the text is generic, empty, just links, or says nothing concrete about what the project is, reply with exactly: NONE
+
+Text:
+${src.slice(0, 1800)}
+
+Return only the clause or NONE.`);
+  }
+  // No links, no description — the NAME is the story. A human callout riffs on what
+  // the ticker is playing on (user, 2026-10-12: ETHINU could have said "riding this
+  // eth pair"). Interpret the name only; never invent features or promises.
+  const name = (r.name || v.name || '').trim();
+  const sym = (r.symbol || v.symbol || '').replace(/^\$/, '').trim();
+  if (!name && !sym) return null;
+  return llmClause(`A memecoin is named "${name}" with ticker $${sym}. It has no website, no socials, no description — the name IS the whole pitch. Write ONE short clause (max 10 words, lowercase, NO numbers, no hype words like moon/gem/viral, no exclamation marks) capturing what the name is riffing on, the way a trader would say it — voice examples: "riding this eth pair", "a president coin for the election run", "the grocery store cat from the viral video". Interpret the name's reference, mascot or pun only. Do NOT invent features, rewards, utilities or promises the name doesn't state. If the name is random letters with no readable reference, reply with exactly: NONE
+
+Return only the clause or NONE.`);
+}
+
 async function aiThesis(v, sig) {
   const facts = factBlock(v, sig);
   try {
     const r = await research(v);
-    const clause = await narrativeClause(r);
+    const clause = await narrativeClause(r, v);
     if (clause) {
       console.log(`[callout] thesis for ${v.symbol}: narrative clause + facts`);
       return `${clause} — ${facts}`.slice(0, 280);
