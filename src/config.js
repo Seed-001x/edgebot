@@ -118,7 +118,8 @@ export function loadConfig(env = process.env) {
 
     // ---- exits (judged on REALIZABLE value = Jupiter sell quote, not screen price) ----
     stopLoss: num(env, 'STOP_LOSS', 0.15),                // grace-stop ARM line on realizable value (user 2026-10-13: 0.10 live via env)
-    stopHardPct: num(env, 'STOP_HARD_PCT', 0.20),         // hard floor: sells instantly at this drawdown, no grace/veto
+    stopHardPct: num(env, 'STOP_HARD_PCT', 0.20),         // hard floor: sells at this drawdown, no grace/veto once confirmed
+    stopHardConfirmChecks: num(env, 'STOP_HARD_CONFIRM_CHECKS', 2), // consecutive checks at/below the floor before it fires (1 = instant, pre-2026-10-13 behavior)
     stopGraceSec: num(env, 'STOP_GRACE_SEC', 5),          // seconds between arming and the flow-confirmed sell
     stopFlowVeto: num(env, 'STOP_FLOW_VETO', 1),          // 1 = buyers absorbing the dip vetoes a confirmed stop (0 = off)
     dipStopPct: num(env, 'DIP_STOP_PCT', 0.05),           // sell if PRICE drops this far below entry (0 = off)
@@ -167,6 +168,7 @@ export function validateConfig(cfg) {
   if (cfg.killEquityFrac <= 0 || cfg.killEquityFrac >= 1) errs.push('KILL_EQUITY_FRAC must be between 0 and 1');
   if (cfg.stopLoss <= 0 || cfg.stopLoss >= 1) errs.push('STOP_LOSS must be between 0 and 1');
   if (cfg.stopHardPct <= 0 || cfg.stopHardPct >= 1) errs.push('STOP_HARD_PCT must be between 0 and 1');
+  if (cfg.stopHardConfirmChecks < 1 || cfg.stopHardConfirmChecks > 10) errs.push('STOP_HARD_CONFIRM_CHECKS must be between 1 and 10');
   if (cfg.stopGraceSec < 0 || cfg.stopGraceSec > 120) errs.push('STOP_GRACE_SEC must be between 0 and 120');
   if (cfg.dipStopPct < 0 || cfg.dipStopPct >= 1) errs.push('DIP_STOP_PCT must be between 0 and 1 (0 = off)');
   if (cfg.stallSec < 0) errs.push('STALL_SEC must be >= 0 (0 = off)');

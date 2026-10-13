@@ -33,7 +33,11 @@ export function evaluateExit(pos, mark, cfg, now) {
   // Recovery above the arm line cancels the arming outright (user 2026-10-13).
   let stopArmedTs = pos.stopArmedTs || null;
   if (ratio > 1 - cfg.stopLoss) stopArmedTs = null;
-  const out = (fraction, reason) => ({ fraction, reason, newPeak: peakRatio, newPeakMove: peakMove, ratio, stallSince: null, stopArmedTs });
+  // hard-floor confirmation (user 2026-10-13): consecutive checks seen at/below the floor.
+  // Any check back above the floor resets the count — a wick that snaps back never fires it.
+  const hardBreached = cfg.stopHardPct > 0 && ratio <= 1 - cfg.stopHardPct;
+  let floorChecks = hardBreached ? (pos.floorChecks || 0) : 0;
+  const out = (fraction, reason) => ({ fraction, reason, newPeak: peakRatio, newPeakMove: peakMove, ratio, stallSince: null, stopArmedTs, floorChecks });
 
   // 1. liquidity death: the pool can no longer absorb what we hold
   const valueUsd = mark.valueSol * (mark.solUsd || 150);
@@ -42,8 +46,18 @@ export function evaluateExit(pos, mark, cfg, now) {
   // 2a. dip stop: price fell dipStopPct below entry — sell, no exceptions
   if (cfg.dipStopPct > 0 && move <= 1 - cfg.dipStopPct) return out(1, `dip stop (price ${((move - 1) * 100).toFixed(1)}% from entry)`);
 
-  // 2a2. hard floor on realizable value — no grace, no veto, no exceptions
-  if (cfg.stopHardPct > 0 && ratio <= 1 - cfg.stopHardPct) return out(1, `stop-loss (${((ratio - 1) * 100).toFixed(0)}%, hard floor)`);
+  // 2a2. hard floor on realizable value — but confirmed (user 2026-10-13): one tick under the
+  //      floor is a wick until the next check proves the price is still there. Both of today's
+  //      floor fires (Udderstep, SAMM) were sub-4s wicks that bounced instantly and then ripped;
+  //      the floor sold the bottom of both. Requiring stopHardConfirmChecks consecutive checks
+  //      at/below the floor (default 2) lets the snap-back disarm it (floorChecks resets above),
+  //      while a real collapse is still there ~4s later and sells. No flow veto once confirmed.
+  //      An unconfirmed breach falls through: the grace stop (2b) arms on this same tick and
+  //      governs the -10..-20 zone unless the floor confirms on the next check.
+  if (hardBreached) {
+    floorChecks += 1;
+    if (floorChecks >= (cfg.stopHardConfirmChecks ?? 2)) return out(1, `stop-loss (${((ratio - 1) * 100).toFixed(0)}%, hard floor${(cfg.stopHardConfirmChecks ?? 2) > 1 ? `, confirmed ${floorChecks} checks` : ''})`);
+  }
 
   // 2b. grace stop (user 2026-10-13): breaching the arm line (cfg.stopLoss) starts a grace window
   //     instead of selling on the tick. When the window ends, the flow decides with an exact test:

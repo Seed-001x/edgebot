@@ -441,7 +441,7 @@ export class Bot {
       entryTs: n, entrySol: fill.solSpent, tokensRaw: fill.tokensRaw, remainingFrac: 1, peakRatio: 1, tp1Done: false,
       entryPrice: v.price, entryMc: v.mc, realizedSol: 0, simulated: fill.simulated, sigBuy: fill.sig, markFails: 0,
       entryVolH1: v.volH1 || 0,
-      entryRoundTrip: rt.ratio, peakMove: 1, stopArmedTs: null, feesSol: this.cfg.txFeeSol || 0, // buy tx fee // entry stall: price is at entry (move 1.0) by definition; the 60s clock runs from entryTs
+      entryRoundTrip: rt.ratio, peakMove: 1, stopArmedTs: null, floorChecks: 0, feesSol: this.cfg.txFeeSol || 0, // buy tx fee // entry stall: price is at entry (move 1.0) by definition; the 60s clock runs from entryTs
       bw: { tracked: null, supply: rug && rug.token ? Number(rug.token.supply) || 0 : 0, creator: rug && rug.creator ? String(rug.creator) : null, weights: linkedWeights(rug), snaps: [], vals: [], lastTs: 0, trimmed: false },
       entry: snapshotFeatures({ v, sig, rug, g, now: n }), lastTickTs: 0, lastChainTs: 0, chainDropStrikes: 0,
     };
@@ -527,6 +527,7 @@ export class Bot {
     if (decision.newPeakMove != null) pos.peakMove = decision.newPeakMove;
     if ('stallSince' in decision) pos.stallSince = decision.stallSince;
     if ('stopArmedTs' in decision) pos.stopArmedTs = decision.stopArmedTs;
+    if ('floorChecks' in decision) pos.floorChecks = decision.floorChecks;
     // +20% progress callout: let the timeline know it's climbing (once per position)
     if (valueSol != null && !pos.climbCalloutDone) {
       const ratio = valueSol / Math.max(1e-9, pos.entrySol * pos.remainingFrac);

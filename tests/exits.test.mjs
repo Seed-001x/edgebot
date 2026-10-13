@@ -8,7 +8,7 @@ const pos = (o = {}) => ({ entrySol: 0.02, remainingFrac: 1, peakRatio: 1, tp1Do
 const mark = (valueSol, o = {}) => ({ valueSol, liqUsd: 200_000, buysM5: 30, sellsM5: 10, solUsd: 150, ...o });
 
 test('holds in the quiet middle', () => assert.equal(evaluateExit(pos({ entryTs: NOW - 30000 }), mark(0.021), cfg, NOW).fraction, 0));
-test('stop-loss on realizable value (backstop when dip stop is off)', () => { const d = evaluateExit(pos(), mark(0.011, { buysM5: 1, sellsM5: 1 }), { ...cfg, dipStopPct: 0 }, NOW); assert.equal(d.fraction, 1); assert.match(d.reason, /stop-loss/); });
+test('stop-loss on realizable value (backstop when dip stop is off)', () => { const c = { ...cfg, dipStopPct: 0 }; const d1 = evaluateExit(pos(), mark(0.011, { buysM5: 1, sellsM5: 1 }), c, NOW); assert.equal(d1.fraction, 0); assert.equal(d1.floorChecks, 1); const d = evaluateExit(pos({ floorChecks: d1.floorChecks }), mark(0.011, { buysM5: 1, sellsM5: 1 }), c, NOW); assert.equal(d.fraction, 1); assert.match(d.reason, /stop-loss/); });
 test('TP1 sells the configured fraction once', () => {
   const d = evaluateExit(pos(), mark(0.04), cfg, NOW); assert.equal(d.fraction, 0.75); assert.equal(d.tp1, true);
   assert.equal(evaluateExit(pos({ tp1Done: true, remainingFrac: 0.25 }), mark(0.01), cfg, NOW).fraction, 0); // ratio 2.0 on remaining basis, not re-triggered
@@ -85,8 +85,21 @@ test('grace stop: recovery above the arm line cancels the arming', () => {
   const d = evaluateExit(pos({ entryTs: NOW - 30 * S, stopArmedTs: NOW - 3 * S }), mark(0.0192), stopCfg, NOW); // ratio 0.96
   assert.equal(d.fraction, 0); assert.equal(d.stopArmedTs, null);
 });
-test('hard floor sells instantly — no grace, no veto', () => {
+test('hard floor needs a confirming check — first breach only arms it', () => {
   const d = evaluateExit(pos({ entryTs: NOW - 30 * S }), mark(0.0158, { buysM5: 40, sellsM5: 2 }), stopCfg, NOW); // ratio 0.79, strong buys
+  assert.equal(d.fraction, 0); assert.equal(d.floorChecks, 1); // a wick gets one more look
+  const d2 = evaluateExit(pos({ entryTs: NOW - 34 * S, floorChecks: d.floorChecks }), mark(0.0156, { buysM5: 40, sellsM5: 2 }), stopCfg, NOW); // still under the floor next check
+  assert.equal(d2.fraction, 1); assert.match(d2.reason, /hard floor/); // confirmed: no veto even with strong buys
+});
+test('hard floor: a wick that snaps back above the floor never fires', () => {
+  const d = evaluateExit(pos({ entryTs: NOW - 30 * S }), mark(0.0158), stopCfg, NOW); // ratio 0.79 breach
+  assert.equal(d.floorChecks, 1);
+  const d2 = evaluateExit(pos({ entryTs: NOW - 34 * S, floorChecks: d.floorChecks }), mark(0.0170), stopCfg, NOW); // ratio 0.85: above floor, still in grace zone
+  assert.equal(d2.fraction, 0); assert.equal(d2.floorChecks, 0); // disarmed; grace governs from here
+});
+test('hard floor: STOP_HARD_CONFIRM_CHECKS=1 restores the old instant sell', () => {
+  const instant = { ...stopCfg, stopHardConfirmChecks: 1 };
+  const d = evaluateExit(pos({ entryTs: NOW - 30 * S }), mark(0.0158), instant, NOW);
   assert.equal(d.fraction, 1); assert.match(d.reason, /hard floor/);
 });
 test('stall and dip stop can be turned off', () => {
