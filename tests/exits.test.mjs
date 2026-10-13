@@ -39,29 +39,30 @@ const S = 1000;
 test('dip stop: sells at -5% price even with two-sided volume (old stop-loss would skip it)', () => {
   const d = evaluateExit(pos(), mark(0.011), cfg, NOW); assert.equal(d.fraction, 1); assert.match(d.reason, /dip stop/);
   assert.match(evaluateExit(pos(), mark(0.0189), cfg, NOW).reason, /dip stop/);                 // -5.5%
-  assert.equal(evaluateExit(pos({ stallSince: NOW }), mark(0.0192), cfg, NOW).fraction, 0);      // -4%, holds
+  assert.equal(evaluateExit(pos({ entryTs: NOW - 30 * S }), mark(0.0192), cfg, NOW).fraction, 0);      // -4%, holds (stall not due yet)
 });
 test('dip stop ignores the round-trip cost already paid at entry', () => {
   // round-trip 0.90: a flat coin reads 0.018 on 0.02 spent — that is NOT a 10% dip
-  const p = pos({ entryRoundTrip: 0.9, stallSince: NOW });
+  const p = pos({ entryRoundTrip: 0.9, entryTs: NOW - 30 * S });
   assert.equal(evaluateExit(p, mark(0.018), cfg, NOW).fraction, 0);
   assert.match(evaluateExit(p, mark(0.0170), cfg, NOW).reason, /dip stop/);                   // price -5.6%
 });
-test('stall: flat near entry for 60s sells; under 60s holds', () => {
-  assert.equal(evaluateExit(pos({ stallSince: NOW - 59 * S }), mark(0.0201), cfg, NOW).fraction, 0);
-  const d = evaluateExit(pos({ stallSince: NOW - 60 * S }), mark(0.0201), cfg, NOW);
-  assert.equal(d.fraction, 1); assert.match(d.reason, /stall/);
-  assert.match(evaluateExit(pos({ stallSince: NOW - 60 * S }), mark(0.0196), cfg, NOW).reason, /stall/); // drifting under entry counts
+// ---- entry stall (user 2026-10-13): clock from entry; no breakout above +band in stallSec = sell ----
+const stallCfg = { ...cfg, stallSec: 60, stallBandPct: 0.05 };
+test('entry stall: no breakout in 60s sells; before the deadline it holds', () => {
+  assert.equal(evaluateExit(pos({ entryTs: NOW - 59 * S, peakMove: 1.01 }), mark(0.0201), stallCfg, NOW).fraction, 0);
+  const d = evaluateExit(pos({ entryTs: NOW - 60 * S, peakMove: 1.01 }), mark(0.0201), stallCfg, NOW);
+  assert.equal(d.fraction, 1); assert.match(d.reason, /stall \(no breakout/);
+  assert.match(evaluateExit(pos({ entryTs: NOW - 90 * S, peakMove: 1.02 }), mark(0.0196), stallCfg, NOW).reason, /stall/); // under entry inside the range counts too — the clock never pauses
 });
-test('stall clock starts, keeps running, and resets when price climbs out', () => {
-  assert.equal(evaluateExit(pos(), mark(0.0201), cfg, NOW).stallSince, NOW);                       // starts now if unset
-  assert.equal(evaluateExit(pos({ stallSince: NOW - 30 * S }), mark(0.0201), cfg, NOW).stallSince, NOW - 30 * S);
-  const up = evaluateExit(pos({ stallSince: NOW - 90 * S }), mark(0.0206), cfg, NOW);             // +3% → running
-  assert.equal(up.fraction, 0); assert.equal(up.stallSince, null);
+test('entry stall: a breakout inside the window exempts the trade for good', () => {
+  const p = pos({ entryTs: NOW - 300 * S, peakMove: 1.08 });   // flashed +8% in its first minute, since faded
+  assert.equal(evaluateExit(p, mark(0.0192), stallCfg, NOW).fraction, 0);
+  assert.equal(evaluateExit(pos({ entryTs: NOW - 30 * S }), mark(0.0212), stallCfg, NOW).newPeakMove, 1.06); // peak move tracks the price move, not the floored ratio
 });
 test('stall and dip stop can be turned off', () => {
   const off = { ...cfg, stallSec: 0, dipStopPct: 0 };
-  assert.equal(evaluateExit(pos({ stallSince: NOW - 600 * S }), mark(0.0201), off, NOW).fraction, 0);
+  assert.equal(evaluateExit(pos({ entryTs: NOW - 600 * S, peakMove: 1 }), mark(0.0201), off, NOW).fraction, 0);
   assert.equal(evaluateExit(pos(), mark(0.0189), off, NOW).fraction, 0);
 });
 

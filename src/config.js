@@ -119,8 +119,8 @@ export function loadConfig(env = process.env) {
     // ---- exits (judged on REALIZABLE value = Jupiter sell quote, not screen price) ----
     stopLoss: num(env, 'STOP_LOSS', 0.15),                // backstop on realizable value (incl. fees/slippage)
     dipStopPct: num(env, 'DIP_STOP_PCT', 0.05),           // sell if PRICE drops this far below entry (0 = off)
-    stallSec: num(env, 'STALL_SEC', 60),                  // sell if price sits near/below entry this long (0 = off)
-    stallBandPct: num(env, 'STALL_BAND_PCT', 0.02),       // stall zone = price below entry + band; climbing out resets the clock. May be negative (user 2026-10-12: -0.03 = only time spent 3%+ under entry counts)
+    stallSec: num(env, 'STALL_SEC', 60),                  // entry stall: sell if price never breaks out within this many seconds of entry (0 = off)
+    stallBandPct: num(env, 'STALL_BAND_PCT', 0.05),       // breakout bar: best price move must exceed entry + this within stallSec (user 2026-10-13: the -5%..+5% entry range; clock runs from entry, never pauses)
     tp1Pct: num(env, 'TP1_PCT', 0.25),                    // bank part on the jump: +25% in your pocket after slippage + SOL fees
     tp1Frac: num(env, 'TP1_FRAC', 0.65),                  // ...sell 65% of it
     tpTrailPct: num(env, 'TP_TRAIL_PCT', 0.25),           // after TP1, trail the rest this far below its peak (hard floor at entry)
@@ -168,7 +168,7 @@ export function validateConfig(cfg) {
   if (cfg.lockKeep < 0 || cfg.lockKeep >= 1) errs.push('PROFIT_LOCK_KEEP must be between 0 and 1 (0 = off)');
   if (cfg.tp1Frac < 0 || cfg.tp1Frac > 1) errs.push('TP1_FRAC must be between 0 and 1');
   if (cfg.tpTrailPct < 0 || cfg.tpTrailPct >= 1) errs.push('TP_TRAIL_PCT must be between 0 and 1');
-  if (cfg.stallBandPct < -0.5 || cfg.stallBandPct > 1) errs.push('STALL_BAND_PCT must be between -0.5 and 1 (negative = stall only counts time spent that far UNDER entry)');
+  if (cfg.stallBandPct < -0.5 || cfg.stallBandPct > 1) errs.push('STALL_BAND_PCT must be between -0.5 and 1 (breakout bar above entry for the entry stall)');
   if (cfg.realMode && cfg.rpcUrls.length === 0) errs.push('RPC_URLS required in real mode');
   return errs;
 }

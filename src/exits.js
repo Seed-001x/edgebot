@@ -1,8 +1,8 @@
 // exits.js — pure exit logic. Judged on REALIZABLE value (Jupiter sell quote), not screen price.
 //
-// pos  = { entrySol, remainingFrac, peakRatio, tp1Done, entryTs, entryRoundTrip?, stallSince? }
+// pos  = { entrySol, remainingFrac, peakRatio, peakMove, tp1Done, entryTs, entryRoundTrip? }
 // mark = { valueSol, liqUsd, buysM5, sellsM5, solUsd }
-// returns { fraction (0..1 of CURRENT holding; 0 = hold), reason, newPeak, ratio, stallSince }
+// returns { fraction (0..1 of CURRENT holding; 0 = hold), reason, newPeak, newPeakMove, ratio }
 //
 // ratio = valueSol / (entrySol * remainingFrac): value of what's left vs its share of cost basis.
 // move  = ratio / entryRoundTrip: the PRICE move since entry. Right after a buy the sell quote is already
@@ -24,10 +24,12 @@ export function evaluateExit(pos, mark, cfg, now) {
   const gain = ratio - 1 - feeFrac;
   const peakGain = peakRatio - 1 - feeFrac;
 
-  // stall clock: running while price is below entry + stallBandPct (flat or dipping); resets when it climbs out
-  let stallSince = null;
-  if (cfg.stallSec > 0 && move < 1 + cfg.stallBandPct) stallSince = pos.stallSince ?? now;
-  const out = (fraction, reason) => ({ fraction, reason, newPeak: peakRatio, ratio, stallSince });
+  // best price move seen so far (peak of `move`, NOT of ratio: peakRatio is floored at 1 while the
+  // first realizable quote already sits at the round-trip ~0.95, so ratio/base would fake a breakout).
+  // Positions opened before peakMove existed seed from their stored peakRatio — a one-off migration
+  // approximation; every position opened since carries the exact peakMove from birth.
+  const peakMove = Math.max(pos.peakMove != null ? pos.peakMove : (pos.peakRatio || 1) / base, move);
+  const out = (fraction, reason) => ({ fraction, reason, newPeak: peakRatio, newPeakMove: peakMove, ratio, stallSince: null });
 
   // 1. liquidity death: the pool can no longer absorb what we hold
   const valueUsd = mark.valueSol * (mark.solUsd || 150);
@@ -54,8 +56,11 @@ export function evaluateExit(pos, mark, cfg, now) {
   //     best real gain. Scales with the move: best +40% → sells at +20%; best +200% → sells at +100% (lockKeep 0.5).
   if (cfg.lockKeep > 0 && peakGain >= cfg.lockArm && gain <= peakGain * cfg.lockKeep) return out(1, `profit lock (best +${(peakGain * 100).toFixed(0)}%, now +${(gain * 100).toFixed(0)}% after fees)`);
 
-  // 4b. stall: price stuck at/below entry for stallSec — it isn't running, get out before it dips
-  if (stallSince != null && now - stallSince >= cfg.stallSec * 1000) return out(1, `stall (${Math.round((now - stallSince) / 1000)}s near entry, price ${((move - 1) * 100).toFixed(1)}%)`);
+  // 4b. entry stall (user 2026-10-13): the clock starts AT ENTRY and never pauses. If the price never
+  //     broke out of the entry range — best move stayed under entry + stallBandPct — within stallSec,
+  //     it isn't running: sell. Above or below entry inside the range makes no difference, and a coin
+  //     that did break out inside the window is exempt for the rest of the trade however it fades.
+  if (cfg.stallSec > 0 && heldMin * 60 >= cfg.stallSec && peakMove < 1 + cfg.stallBandPct) return out(1, `stall (no breakout in ${cfg.stallSec}s, best ${((peakMove - 1) * 100).toFixed(1)}%)`);
 
   // 5. momentum failure: underwater, 10 min in, essentially no buyers (only sell when truly dead)
   if (heldMin >= 10 && ratio < 1 && mark.buysM5 != null && mark.buysM5 <= 1 && mark.sellsM5 > mark.buysM5 * 3) return out(1, 'momentum failure (no buyers)');
