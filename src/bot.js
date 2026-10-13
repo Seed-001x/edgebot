@@ -137,10 +137,16 @@ export class Bot {
     const until = this.now();
     const since = this.stats.lastReportTs || 0;
     const closes = this.journal.trades.filter(t => t.type === 'close' && (t.ts || 0) > since);
-    const postExits = this.postExit.done.filter(p => (p.finalTs || 0) > since);
+    const opens = this.journal.trades.filter(t => t.type === 'open');
     const staleAborts = this.journal.signals.filter(s => (s.ts || 0) > since && (s.reasons || []).some(r => String(r).startsWith('stale:'))).length;
     const index = (this.stats.reportIndex || 0) + 1;
-    const rec = buildTradeReport({ index, sinceTs: since, untilTs: until, closes, postExits, staleAborts });
+    const rec = buildTradeReport({
+      index, sinceTs: since, untilTs: until, closes, opens,
+      signals: this.journal.signals,
+      postExits: this.postExit.done, // matched per trade by position id inside the builder
+      postExitPending: [...this.postExit.pending.keys()],
+      staleAborts,
+    });
     this.journal.addTradeReport(rec);
     this.stats.reportIndex = index;
     this.stats.lastReportTs = until;
