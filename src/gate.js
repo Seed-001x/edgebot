@@ -161,6 +161,27 @@ export function blockedNameWord(name, words) {
   return null;
 }
 
+// 7c. Stale pop: the pop trigger reads trailing aggregates, which only cross AFTER a move has
+//     printed — on a minutes-old coin the signal can arrive at the echo (second hump rolling over)
+//     instead of the spike. Judged on the bot's OWN recorded samples of this mint: if the sampled
+//     high is `staleSec`+ old and the current price has rolled `dropPct`+ off it, the pop is stale.
+//     Too few samples = no evidence = pass (fail-open, like every data gate here).
+export function stalePopCheck(samples, price, now, { staleSec = 60, dropPct = 0.08, windowMin = 10 } = {}) {
+  if (!(staleSec > 0) || !(price > 0)) return { pass: true, reason: 'stale-pop check off' };
+  const win = (samples || []).filter(s => s && s.price > 0 && now - s.ts <= windowMin * 60000);
+  if (win.length < 3) return { pass: true, reason: 'too few samples to judge staleness' };
+  let peak = 0, peakTs = 0;
+  for (const s of win) if (s.price > peak) { peak = s.price; peakTs = s.ts; }
+  if (!(peak > price)) return { pass: true, reason: 'at the sampled high — move is fresh' };
+  const peakAgeSec = (now - peakTs) / 1000;
+  const drop = 1 - price / peak;
+  const stale = peakAgeSec >= staleSec && drop >= dropPct;
+  return {
+    pass: !stale, peakAgeSec, dropFromPeak: drop,
+    reason: stale ? `pop is stale: sampled high ${Math.round(peakAgeSec)}s ago, price now ${(drop * 100).toFixed(0)}% below it (second-hump rollover)` : 'pop still fresh',
+  };
+}
+
 // One-go dump simulation: ALL linked supply (creator + linked networks) sold into the pool at once.
 // drain = share of the pool's SOL they could pull.
 export function linkedDumpCheck({ creatorUi, networks, dec, poolBaseUi, poolQuoteUi }, maxDrain = 0.35) {

@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { History } from './history.js';
 import { detect, eligible } from './detect.js';
-import { runGates, hasHardFail, tempRuleViolation, blockedNameWord } from './gate.js';
+import { runGates, hasHardFail, tempRuleViolation, blockedNameWord, stalePopCheck } from './gate.js';
 import { evaluateExit } from './exits.js';
 import { bundleRisk, bundleDecision, pickTracked, linkedWeights, CREATOR_KEY } from './bundleWatch.js';
 import { Journal } from './journal.js';
@@ -362,6 +362,17 @@ export class Bot {
     if (blockedWord) {
       console.log(`[nameblock] skip: "${v.name}" contains blocked word "${blockedWord}"`);
       return this.skip(v, sig, [`nameblock: name "${v.name || v.symbol}" contains blocked word "${blockedWord}"`]);
+    }
+    // Stale-pop veto (user 2026-10-13): a pop whose own sampled high is old and rolled off is the
+    // echo of a move, not the move — SCI's first spike peaked ~90s before the bot's first signal
+    // and it bought the second hump rolling over. Pop entries only; judged on the bot's own
+    // recorded samples, fail-open when there are too few to judge.
+    if (sig.setup === 'pop') {
+      const sp = stalePopCheck(this.history.get(v.address), v.price, n, { staleSec: this.cfg.popStaleSec, dropPct: this.cfg.popStaleDropPct });
+      if (!sp.pass) {
+        console.log(`[stalepop] skip: ${v.symbol} — ${sp.reason}`);
+        return this.skip(v, sig, [`stalepop: ${sp.reason}`]);
+      }
     }
     // Re-entry quality: same coin signaled again — only re-enter on a dip, never the top of a green candle.
     // Require price at least 20% below the recent 15-min high (unless it's a fresh pop breakout).

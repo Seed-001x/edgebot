@@ -93,3 +93,24 @@ test('blockedNameWord: whole-word name block (user 2026-10-13, CI/SCI)', async (
   assert.equal(blockedNameWord(null, ['inu']), null);
   assert.equal(blockedNameWord('Crypto Inu', null), null);
 });
+
+test('stalePopCheck: second-hump rollover vetoed, fresh pops pass (user 2026-10-13, SCI)', async () => {
+  const { stalePopCheck } = await import('../src/gate.js');
+  const now = 1_000_000_000_000;
+  const S = (agoSec, price) => ({ ts: now - agoSec * 1000, price });
+  const opts = { staleSec: 60, dropPct: 0.08 };
+  // SCI shape: high 90s ago, price 20% below it -> stale
+  const sci = [S(150, 60), S(120, 90), S(90, 118), S(60, 95), S(30, 100), S(5, 94)];
+  assert.equal(stalePopCheck(sci, 94, now, opts).pass, false);
+  // fresh spike: high is the current sample -> pass
+  assert.equal(stalePopCheck([S(60, 50), S(30, 80), S(2, 118)], 118, now, opts).pass, true);
+  // old high but barely rolled (3%) -> pass (reclaim/continuation)
+  assert.equal(stalePopCheck([S(120, 100), S(90, 118), S(30, 112), S(5, 114)], 114, now, opts).pass, true);
+  // recent high (30s old) even with a 12% dip -> pass (not yet stale)
+  assert.equal(stalePopCheck([S(90, 80), S(30, 118), S(5, 104)], 104, now, opts).pass, true);
+  // too few samples -> fail-open
+  assert.equal(stalePopCheck([S(90, 118)], 90, now, opts).pass, true);
+  assert.equal(stalePopCheck([], 90, now, opts).pass, true);
+  // disabled
+  assert.equal(stalePopCheck(sci, 94, now, { staleSec: 0, dropPct: 0.08 }).pass, true);
+});
