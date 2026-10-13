@@ -59,7 +59,11 @@ export function evaluateExit(pos, mark, cfg, now) {
   // Any check back above the floor resets the count — a wick that snaps back never fires it.
   const hardBreached = cfg.stopHardPct > 0 && ratio <= 1 - cfg.stopHardPct;
   let floorChecks = hardBreached ? (pos.floorChecks || 0) : 0;
-  const out = (fraction, reason) => ({ fraction, reason, newPeak: peakRatio, newPeakMove: peakMove, ratio, stallSince: null, stopArmedTs, floorChecks, tp1Arm });
+  // how long the breach has persisted: the floor also requires stopHardConfirmSec down there
+  // before it fires (user 2026-10-13: 3s — "be sure it's still there"). Any check back above
+  // the floor clears the clock together with the count.
+  let floorSince = hardBreached ? (pos.floorSince ?? now) : null;
+  const out = (fraction, reason) => ({ fraction, reason, newPeak: peakRatio, newPeakMove: peakMove, ratio, stallSince: null, stopArmedTs, floorChecks, floorSince, tp1Arm });
 
   // 1. liquidity death: the pool can no longer absorb what we hold
   const valueUsd = mark.valueSol * (mark.solUsd || 150);
@@ -78,7 +82,9 @@ export function evaluateExit(pos, mark, cfg, now) {
   //      governs the -10..-20 zone unless the floor confirms on the next check.
   if (hardBreached) {
     floorChecks += 1;
-    if (floorChecks >= (cfg.stopHardConfirmChecks ?? 2)) return out(1, `stop-loss (${((ratio - 1) * 100).toFixed(0)}%, hard floor${(cfg.stopHardConfirmChecks ?? 2) > 1 ? `, confirmed ${floorChecks} checks` : ''})`);
+    const checksOk = floorChecks >= (cfg.stopHardConfirmChecks ?? 2);
+    const timeOk = now - floorSince >= (cfg.stopHardConfirmSec || 0) * 1000;
+    if (checksOk && timeOk) return out(1, `stop-loss (${((ratio - 1) * 100).toFixed(0)}%, hard floor${(cfg.stopHardConfirmSec || 0) > 0 ? `, confirmed ${((now - floorSince) / 1000).toFixed(0)}s under` : ((cfg.stopHardConfirmChecks ?? 2) > 1 ? `, confirmed ${floorChecks} checks` : '')})`);
   }
 
   // 2b. grace stop (user 2026-10-13): breaching the arm line (cfg.stopLoss) starts a grace window

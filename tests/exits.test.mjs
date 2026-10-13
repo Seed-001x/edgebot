@@ -102,6 +102,25 @@ test('hard floor: STOP_HARD_CONFIRM_CHECKS=1 restores the old instant sell', () 
   const d = evaluateExit(pos({ entryTs: NOW - 30 * S }), mark(0.0158), instant, NOW);
   assert.equal(d.fraction, 1); assert.match(d.reason, /hard floor/);
 });
+test('hard floor: 3s persistence — the breach must still be there 3s later', () => {
+  const timed = { ...stopCfg, stopHardConfirmChecks: 1, stopHardConfirmSec: 3 };
+  const t0 = NOW;
+  const d = evaluateExit(pos({ entryTs: t0 - 30 * S }), mark(0.0158), timed, t0); // breach lands
+  assert.equal(d.fraction, 0); assert.equal(d.floorSince, t0); // clock started, no sell yet
+  const d2 = evaluateExit(pos({ entryTs: t0 - 30 * S, floorChecks: d.floorChecks, floorSince: d.floorSince }), mark(0.0156), timed, t0 + 2 * S); // +2s: still under, not long enough
+  assert.equal(d2.fraction, 0);
+  const d3 = evaluateExit(pos({ entryTs: t0 - 30 * S, floorChecks: d2.floorChecks, floorSince: d2.floorSince }), mark(0.0156), timed, t0 + 3.5 * S); // +3.5s: still there
+  assert.equal(d3.fraction, 1); assert.match(d3.reason, /hard floor/); assert.match(d3.reason, /confirmed 3s under|confirmed 4s under/);
+});
+test('hard floor: recovery inside the 3s window resets the clock', () => {
+  const timed = { ...stopCfg, stopHardConfirmChecks: 1, stopHardConfirmSec: 3 };
+  const t0 = NOW;
+  const d = evaluateExit(pos({ entryTs: t0 - 30 * S }), mark(0.0158), timed, t0);
+  const d2 = evaluateExit(pos({ entryTs: t0 - 30 * S, floorChecks: d.floorChecks, floorSince: d.floorSince }), mark(0.0170), timed, t0 + 2 * S); // ratio 0.85: back above the floor
+  assert.equal(d2.fraction, 0); assert.equal(d2.floorSince, null); assert.equal(d2.floorChecks, 0);
+  const d3 = evaluateExit(pos({ entryTs: t0 - 30 * S, floorChecks: d2.floorChecks, floorSince: d2.floorSince }), mark(0.0158), timed, t0 + 4 * S); // a fresh breach starts a NEW clock
+  assert.equal(d3.fraction, 0); assert.equal(d3.floorSince, t0 + 4 * S);
+});
 test('stall and dip stop can be turned off', () => {
   const off = { ...cfg, stallSec: 0, dipStopPct: 0 };
   assert.equal(evaluateExit(pos({ entryTs: NOW - 600 * S, peakMove: 1 }), mark(0.0201), off, NOW).fraction, 0);
