@@ -457,7 +457,7 @@ export class Bot {
 
     const pos = {
       id: `${v.address.slice(0, 6)}-${n}`, mint: v.address, symbol: v.symbol, setup: sig.setup,
-      entryTs: n, entrySol: fill.solSpent, tokensRaw: fill.tokensRaw, remainingFrac: 1, peakRatio: 1, tp1Done: false,
+      entryTs: n, entrySol: fill.solSpent, tokensRaw: fill.tokensRaw, remainingFrac: 1, peakRatio: 1, tp1Done: false, tp2Done: false, tp1Arm: null, flowHist: [],
       entryPrice: v.price, entryMc: v.mc, realizedSol: 0, simulated: fill.simulated, sigBuy: fill.sig, markFails: 0,
       entryVolH1: v.volH1 || 0,
       entryRoundTrip: rt.ratio, peakMove: 1, stopArmedTs: null, floorChecks: 0, feesSol: this.cfg.txFeeSol || 0, // buy tx fee // entry stall: price is at entry (move 1.0) by definition; the 60s clock runs from entryTs
@@ -540,13 +540,19 @@ export class Bot {
       if (pos.markFails >= 4) decision = { fraction: 1, reason: `no sell quote for ${pos.markFails} ticks`, newPeak: pos.peakRatio };
       else return;
     } else {
-      decision = evaluateExit(pos, { valueSol, liqUsd: v.liq != null ? v.liq : null, buysM5: v.buysM5 != null ? v.buysM5 : null, sellsM5: v.sellsM5 || 0, solUsd, volH1: v.volH1 || 0 }, this.cfg, n);
+      const markNow = { valueSol, liqUsd: v.liq != null ? v.liq : null, buysM5: v.buysM5 != null ? v.buysM5 : null, sellsM5: v.sellsM5 || 0, solUsd, volH1: v.volH1 || 0 };
+      // flow history for the adaptive TP1's strength test: this position's own marks, every check
+      pos.flowHist = pos.flowHist || [];
+      pos.flowHist.push({ ts: n, buys: markNow.buysM5, sells: markNow.sellsM5, tx: (markNow.buysM5 != null || markNow.sellsM5 != null) ? (markNow.buysM5 || 0) + (markNow.sellsM5 || 0) : null });
+      if (pos.flowHist.length > 45) pos.flowHist.splice(0, pos.flowHist.length - 45);
+      decision = evaluateExit(pos, markNow, this.cfg, n);
     }
     pos.peakRatio = decision.newPeak || pos.peakRatio;
     if (decision.newPeakMove != null) pos.peakMove = decision.newPeakMove;
     if ('stallSince' in decision) pos.stallSince = decision.stallSince;
     if ('stopArmedTs' in decision) pos.stopArmedTs = decision.stopArmedTs;
     if ('floorChecks' in decision) pos.floorChecks = decision.floorChecks;
+    if ('tp1Arm' in decision) pos.tp1Arm = decision.tp1Arm;
     // +20% progress callout: let the timeline know it's climbing (once per position)
     if (valueSol != null && !pos.climbCalloutDone) {
       const ratio = valueSol / Math.max(1e-9, pos.entrySol * pos.remainingFrac);
@@ -594,6 +600,7 @@ export class Bot {
     pos.feesSol = (pos.feesSol || 0) + (this.cfg.txFeeSol || 0);
     this.stats.exits++;
     if (decision.tp1) { pos.tp1Done = true; pos.remainingFrac *= (1 - decision.fraction); }
+    if (decision.tp2) { pos.tp2Done = true; pos.remainingFrac *= (1 - decision.fraction); }
     this.journal.trade({ type: 'sell', id: pos.id, mint: pos.mint, symbol: pos.symbol, fraction: decision.fraction, solOut: res.solOut, reason: decision.reason, sig: res.sig, simulated: res.simulated, ts: n });
 
     if (decision.fraction >= 1 || BigInt(pos.tokensRaw) <= 0n) {

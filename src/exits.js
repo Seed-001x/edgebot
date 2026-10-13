@@ -29,6 +29,28 @@ export function evaluateExit(pos, mark, cfg, now) {
   // Positions opened before peakMove existed seed from their stored peakRatio — a one-off migration
   // approximation; every position opened since carries the exact peakMove from birth.
   const peakMove = Math.max(pos.peakMove != null ? pos.peakMove : (pos.peakRatio || 1) / base, move);
+
+  // Adaptive-TP1 state + strength snapshot (user 2026-10-13): "strong" = the run still looks
+  // supported RIGHT NOW — price at/near its high, buyers holding their share of the 5m flow, and
+  // the trade count not collapsing — trended over the position's OWN recorded marks (bot.js appends
+  // {ts, buys, sells, tx} to pos.flowHist at every position check, the freshest series available).
+  // Missing data never counts against strength (null = unknown = neutral).
+  let tp1Arm = pos.tp1Arm || null;
+  const txNow = (mark.buysM5 != null || mark.sellsM5 != null) ? (mark.buysM5 || 0) + (mark.sellsM5 || 0) : null;
+  const shareNow = txNow > 0 && mark.buysM5 != null ? mark.buysM5 / txNow : null;
+  let shareTrend = null, txTrend = null;
+  const fh = (pos.flowHist || []).filter(s => s && now - s.ts <= 90000 && now - s.ts >= 0);
+  if (fh.length >= 2) {
+    const f0 = fh[0], f1 = fh[fh.length - 1];
+    const sh = s => (s.tx > 0 && s.buys != null) ? s.buys / s.tx : null;
+    const s0 = sh(f0), s1 = sh(f1);
+    if (s0 != null && s1 != null) shareTrend = s1 - s0;
+    if (f0.tx > 0 && f1.tx != null) txTrend = f1.tx / f0.tx;
+  }
+  const strong = ratio >= peakRatio * 0.98
+    && (shareNow == null || shareNow >= (cfg.tp1FlowMin ?? 0.5))
+    && (shareTrend == null || shareTrend >= -0.10)
+    && (txTrend == null || txTrend >= 0.6);
   // grace-stop state: armed the first tick the realizable value breaches the arm line (section 2b).
   // Recovery above the arm line cancels the arming outright (user 2026-10-13).
   let stopArmedTs = pos.stopArmedTs || null;
@@ -37,7 +59,7 @@ export function evaluateExit(pos, mark, cfg, now) {
   // Any check back above the floor resets the count — a wick that snaps back never fires it.
   const hardBreached = cfg.stopHardPct > 0 && ratio <= 1 - cfg.stopHardPct;
   let floorChecks = hardBreached ? (pos.floorChecks || 0) : 0;
-  const out = (fraction, reason) => ({ fraction, reason, newPeak: peakRatio, newPeakMove: peakMove, ratio, stallSince: null, stopArmedTs, floorChecks });
+  const out = (fraction, reason) => ({ fraction, reason, newPeak: peakRatio, newPeakMove: peakMove, ratio, stallSince: null, stopArmedTs, floorChecks, tp1Arm });
 
   // 1. liquidity death: the pool can no longer absorb what we hold
   const valueUsd = mark.valueSol * (mark.solUsd || 150);
@@ -73,20 +95,45 @@ export function evaluateExit(pos, mark, cfg, now) {
     }
   }
 
-  // 3. first take-profit on the jump: bank part, let the rest run (skipped if user disabled TP for this position).
-  //    +25% means +25% in your pocket after slippage and SOL fees, not +25% on the chart.
-  if (!pos.tp1Done && !pos.noTp && cfg.tp1Frac > 0 && gain >= cfg.tp1Pct) return { ...out(cfg.tp1Frac, `TP1 +${(cfg.tp1Pct * 100).toFixed(0)}%`), tp1: true };
+  // 3. TP ladder (user 2026-10-13): sell INTO strength at fixed levels — up-firing exits fill near
+  //    their level, while down-firing trails gap 25-55 points through their lines on one-candle
+  //    dumps (the recorded exits of all nine recent 2.4-3.1x runners). TP1 is ADAPTIVE (the user's
+  //    twist): it arms at tp1Pct and, while the run still looks strong (see `strong` above), the
+  //    bank target slides up toward tp1AdaptMax; it fires at the ceiling, on a tp1Giveback rollover
+  //    from the peak, or the moment strength fades. Gains are net of fees, as always here.
+  if (!pos.tp1Done && !pos.noTp && cfg.tp1Frac > 0) {
+    if (tp1Arm == null && gain >= cfg.tp1Pct) tp1Arm = { ts: now, share: shareNow };
+    if (tp1Arm != null) {
+      let fire = null;
+      if (gain >= cfg.tp1AdaptMax) fire = `ceiling +${Math.round(cfg.tp1AdaptMax * 100)}%`;
+      else if (peakGain - gain >= cfg.tp1Giveback) fire = 'rollover';
+      else if (!strong) fire = 'strength faded';
+      if (fire) return { ...out(cfg.tp1Frac, `TP1 +${(gain * 100).toFixed(0)}% (adaptive: ${fire})`), tp1: true, tp1Arm: null };
+    }
+  }
 
-  // 3b. post-TP1 trail: after banking the TP1 slice, trail the rest tpTrailPct below its peak with a hard floor
-  //     at entry — sell everything if it gives back the trail or fades back to cost.
-  if (pos.tp1Done && (ratio <= peakRatio * (1 - cfg.tpTrailPct) || ratio <= 1)) return out(1, `post-TP1 trail (peak ${(peakRatio).toFixed(2)}x, now ${((ratio - 1) * 100).toFixed(1)}%)`);
+  // 3b. TP2: the second bank, at tp2Pct — sells tp2Frac of the ORIGINAL position (converted to a
+  //     fraction of what remains). Fires on the way up, near the level, before the dump candle.
+  if (pos.tp1Done && !pos.tp2Done && !pos.noTp && cfg.tp2Frac > 0 && gain >= cfg.tp2Pct) {
+    const frac = Math.min(1, cfg.tp2Frac / Math.max(pos.remainingFrac, 1e-9));
+    return { ...out(frac, `TP2 +${(gain * 100).toFixed(0)}%`), tp2: true };
+  }
 
-  // 4. trailing stop once armed
-  if (peakRatio >= 1 + cfg.trailArm && ratio <= peakRatio * (1 - cfg.trailPct)) return out(1, `trailing stop (${(cfg.trailPct * 100).toFixed(0)}% off peak ${(peakRatio).toFixed(2)}x)`);
+  // 3c. moonbag: the post-TP2 remainder trails bagTrailPct below its peak — no at-entry floor, and
+  //     the generic trailing stop / profit lock below skip tp2Done positions: the bag's job is to ride.
+  if (pos.tp2Done && ratio <= peakRatio * (1 - cfg.bagTrailPct)) return out(1, `moonbag trail (${Math.round(cfg.bagTrailPct * 100)}% off peak ${peakRatio.toFixed(2)}x, now ${((ratio - 1) * 100).toFixed(1)}%)`);
+
+  // 3d. post-TP1 trail (middle stage, pre-TP2): trail the rest tpTrailPct below its peak with a hard
+  //     floor at entry — sell everything if it gives back the trail or fades back to cost.
+  if (pos.tp1Done && !pos.tp2Done && (ratio <= peakRatio * (1 - cfg.tpTrailPct) || ratio <= 1)) return out(1, `post-TP1 trail (peak ${(peakRatio).toFixed(2)}x, now ${((ratio - 1) * 100).toFixed(1)}%)`);
+
+  // 4. trailing stop once armed (never on the moonbag — it has its own wider trail, 3c)
+  if (!pos.tp2Done && peakRatio >= 1 + cfg.trailArm && ratio <= peakRatio * (1 - cfg.trailPct)) return out(1, `trailing stop (${(cfg.trailPct * 100).toFixed(0)}% off peak ${(peakRatio).toFixed(2)}x)`);
 
   // 4a. profit lock: once up lockArm+ after costs, don't let it round-trip — sell if it gives back (1 - lockKeep) of its
   //     best real gain. Scales with the move: best +40% → sells at +20%; best +200% → sells at +100% (lockKeep 0.5).
-  if (cfg.lockKeep > 0 && peakGain >= cfg.lockArm && gain <= peakGain * cfg.lockKeep) return out(1, `profit lock (best +${(peakGain * 100).toFixed(0)}%, now +${(gain * 100).toFixed(0)}% after fees)`);
+  //     Skips the moonbag (post-TP2): the ladder, not the lock, governs the bag.
+  if (!pos.tp2Done && cfg.lockKeep > 0 && peakGain >= cfg.lockArm && gain <= peakGain * cfg.lockKeep) return out(1, `profit lock (best +${(peakGain * 100).toFixed(0)}%, now +${(gain * 100).toFixed(0)}% after fees)`);
 
   // 4b. entry stall (user 2026-10-13, endpoint version): at stallSec from entry, judge where the
   //     price IS, not where it has been — inside the ±stallBandPct entry range = stalling = sell,

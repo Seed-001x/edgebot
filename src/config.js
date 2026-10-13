@@ -136,6 +136,17 @@ export function loadConfig(env = process.env) {
     stallBandPct: num(env, 'STALL_BAND_PCT', 0.05),       // entry range half-width: at stallSec the price must be OUTSIDE entry ± this or the position sells (user 2026-10-13 endpoint version)
     tp1Pct: num(env, 'TP1_PCT', 0.25),                    // bank part on the jump: +25% in your pocket after slippage + SOL fees
     tp1Frac: num(env, 'TP1_FRAC', 0.65),                  // ...sell 65% of it
+    // TP ladder (user 2026-10-13): TP1 is adaptive — it ARMS at tp1Pct and the bank target slides up
+    // to tp1AdaptMax while the run still looks strong (price near its high + flow supportive, judged
+    // on the position's own recorded marks). Fires early on a tp1Giveback rollover from the peak or
+    // when strength fades. TP2 banks tp2Frac OF THE ORIGINAL position at tp2Pct; the post-TP2
+    // moonbag trails bagTrailPct below peak with no floor/lock.
+    tp1AdaptMax: num(env, 'TP1_ADAPT_MAX_PCT', 0.60),     // adaptive TP1 ceiling (net gain)
+    tp1Giveback: num(env, 'TP1_GIVEBACK_PCT', 0.08),      // give-back from peak (gain points) that banks TP1 once armed
+    tp1FlowMin: num(env, 'TP1_FLOW_MIN_SHARE', 0.50),     // min buy share of 5m flow for the run to count as supported
+    tp2Pct: num(env, 'TP2_PCT', 1.00),                    // second bank at +100% net
+    tp2Frac: num(env, 'TP2_FRAC', 0.35),                  // ...sells this fraction of the ORIGINAL position (0 = off)
+    bagTrailPct: num(env, 'BAG_TRAIL_PCT', 0.35),         // moonbag trail below peak
     tpTrailPct: num(env, 'TP_TRAIL_PCT', 0.25),           // after TP1, trail the rest this far below its peak (hard floor at entry)
     lockArm: num(env, 'PROFIT_LOCK_ARM', 0.15),           // once up +15% or more after fees...
     lockKeep: num(env, 'PROFIT_LOCK_KEEP', 0.5),          // ...sell the rest if it falls below half of its best gain (0 = off)
@@ -185,6 +196,12 @@ export function validateConfig(cfg) {
   if (cfg.stallSec < 0) errs.push('STALL_SEC must be >= 0 (0 = off)');
   if (cfg.lockKeep < 0 || cfg.lockKeep >= 1) errs.push('PROFIT_LOCK_KEEP must be between 0 and 1 (0 = off)');
   if (cfg.tp1Frac < 0 || cfg.tp1Frac > 1) errs.push('TP1_FRAC must be between 0 and 1');
+  if (cfg.tp1AdaptMax < cfg.tp1Pct || cfg.tp1AdaptMax > 3) errs.push('TP1_ADAPT_MAX_PCT must be >= TP1_PCT and <= 3');
+  if (cfg.tp1Giveback < 0 || cfg.tp1Giveback > 0.5) errs.push('TP1_GIVEBACK_PCT must be between 0 and 0.5');
+  if (cfg.tp1FlowMin < 0 || cfg.tp1FlowMin > 1) errs.push('TP1_FLOW_MIN_SHARE must be between 0 and 1');
+  if (cfg.tp2Pct < 0 || cfg.tp2Pct > 5) errs.push('TP2_PCT must be between 0 and 5');
+  if (cfg.tp2Frac < 0 || cfg.tp2Frac > 1) errs.push('TP2_FRAC must be between 0 and 1 (0 = off)');
+  if (cfg.bagTrailPct < 0 || cfg.bagTrailPct >= 0.9) errs.push('BAG_TRAIL_PCT must be between 0 and 0.9');
   if (cfg.tpTrailPct < 0 || cfg.tpTrailPct >= 1) errs.push('TP_TRAIL_PCT must be between 0 and 1');
   if (cfg.stallBandPct < -0.5 || cfg.stallBandPct > 1) errs.push('STALL_BAND_PCT must be between -0.5 and 1 (breakout bar above entry for the entry stall)');
   if (cfg.realMode && cfg.rpcUrls.length === 0) errs.push('RPC_URLS required in real mode');
