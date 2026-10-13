@@ -82,3 +82,50 @@ export function detect(v, samples, cfg, now) {
   }
   return null;
 }
+
+// ---- FAST POP (live trade stream) ----
+// Samples are individual stream trades: { ts, price, sol, side: 'buy'|'sell' } with
+// price in SOL per token as printed by the trade itself. Judged over a short rolling
+// window (default 90s): a real move must be big from the window low, still printing
+// (recent trades), buy-dominated in LIVE flow (not a trailing average), and not
+// already rolling over from the window peak. Returns the same signal shape as the
+// classic pop so the whole downstream pipeline (gates, risk, journal) is shared.
+export function fastPop(samples, cfg, now) {
+  const win = (samples || []).filter(s => now - s.ts <= cfg.fastPopWindowSec * 1000 && s.price > 0);
+  if (win.length < cfg.fastPopMinTrades) return null;
+  const last = win[win.length - 1];
+  if (now - last.ts > cfg.fastPopRecentSec * 1000) return null; // the stream went quiet — the moment passed
+  const recent = win.filter(s => now - s.ts <= cfg.fastPopRecentSec * 1000);
+  if (recent.length < cfg.fastPopMinRecent) return null;
+  const low = Math.min(...win.map(s => s.price));
+  const high = Math.max(...win.map(s => s.price));
+  if (!(low > 0) || !(high > 0)) return null;
+  const gain = (last.price / low - 1) * 100;
+  const draw = (high - last.price) / high;
+  const buys = win.filter(s => s.side === 'buy').length;
+  const sells = win.length - buys;
+  const share = buys + sells > 0 ? buys / (buys + sells) : null;
+  const volSol = win.reduce((a, s) => a + (s.sol || 0), 0);
+  if (
+    gain >= cfg.fastPopGainPct &&
+    draw <= cfg.fastPopMaxDrop &&
+    volSol >= cfg.fastPopMinVolSol &&
+    buys >= cfg.fastPopMinBuys &&
+    share != null && share >= cfg.fastPopMinBuyShare
+  ) {
+    return {
+      setup: 'pop',
+      strength: gain,
+      metrics: {
+        gainPct: +gain.toFixed(1),
+        drawFromPeak: +draw.toFixed(3),
+        buyRatioM5: +share.toFixed(2),
+        volM5: Math.round(volSol), // stream SOL volume in the window (solUsd not known here; bot converts for the journal)
+        fastStream: 1,
+        windowSec: cfg.fastPopWindowSec,
+        trades: win.length,
+      },
+    };
+  }
+  return null;
+}

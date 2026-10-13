@@ -26,6 +26,8 @@ if (cfg.liveFeed) {
   const feed = new LiveFeed({
     url: cfg.liveFeedUrl,
     onMint: (mint) => bot.noteMint(mint, 'live-ws'),
+    onTrade: cfg.fastPop ? (mint, trade) => bot.noteTrade(mint, trade) : null,
+    tradeWatch: cfg.fastPop ? () => bot.tradeWatchMints() : null,
     onStats: (s) => { bot.stats.liveFeed = s; },
   });
   feed.start();

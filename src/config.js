@@ -64,6 +64,25 @@ export function loadConfig(env = process.env) {
     minBuyRatioM5: num(env, 'MIN_BUY_RATIO_M5', 0.55),
     maxDrawFromPeak: num(env, 'MAX_DRAW_FROM_PEAK', 0.15), // enter on strength, not on the way down
 
+    // ---- 'fast pop' detector (live trade stream, user 2026-10-13) ----
+    // The classic pop reads trailing DexScreener aggregates and fires at the echo of a
+    // move (SCI: first signal ~90s after the spike peaked; OSPREY: no signal at all
+    // during a +230% recovery). Fast pop computes the move from PumpPortal's live
+    // trade stream over a short window, so the signal exists seconds after the move
+    // does. Same 'pop' pipeline after detection — every gate still applies.
+    fastPop: num(env, 'FAST_POP', 1),                        // 1 = on (stream detection active)
+    fastPopWindowSec: num(env, 'FAST_POP_WINDOW_SEC', 90),   // rolling window judged on stream trades
+    fastPopGainPct: num(env, 'FAST_POP_GAIN_PCT', 30),       // price gain from the window low, %
+    fastPopMinVolSol: num(env, 'FAST_POP_MIN_VOL_SOL', 2.5), // total SOL traded inside the window
+    fastPopMinBuys: num(env, 'FAST_POP_MIN_BUYS', 8),        // distinct buy trades inside the window
+    fastPopMinBuyShare: num(env, 'FAST_POP_MIN_BUY_SHARE', 0.55), // buys / (buys + sells), live flow
+    fastPopMaxDrop: num(env, 'FAST_POP_MAX_DROP', 0.08),     // last price may be at most this below the window peak
+    fastPopMinTrades: num(env, 'FAST_POP_MIN_TRADES', 12),   // total trades inside the window
+    fastPopRecentSec: num(env, 'FAST_POP_RECENT_SEC', 15),   // the move must still be printing…
+    fastPopMinRecent: num(env, 'FAST_POP_MIN_RECENT', 3),    // …with at least this many trades in the recent slice
+    fastPopMaxSubs: num(env, 'FAST_POP_MAX_SUBS', 150),      // stream subscriptions track the freshest watch mints
+    fastPopEvalMs: num(env, 'FAST_POP_EVAL_MS', 1000),       // per-mint evaluation throttle
+
     // ---- 'trend' detector (runner already ranked hot; uses DexScreener priceChange, no history needed) ----
     trendMinH1: num(env, 'TREND_MIN_H1', 25),
     trendMaxH1: num(env, 'TREND_MAX_H1', 400),
@@ -188,6 +207,11 @@ export function validateConfig(cfg) {
   if (cfg.haltAfterCloses < 0) errs.push('HALT_AFTER_CLOSES must be >= 0');
   if (cfg.haltDownSol < 0) errs.push('HALT_DOWN_SOL must be >= 0');
   if (cfg.killEquityFrac <= 0 || cfg.killEquityFrac >= 1) errs.push('KILL_EQUITY_FRAC must be between 0 and 1');
+  if (cfg.fastPopWindowSec < 10 || cfg.fastPopWindowSec > 600) errs.push('FAST_POP_WINDOW_SEC must be 10..600');
+  if (cfg.fastPopGainPct < 1 || cfg.fastPopGainPct > 1000) errs.push('FAST_POP_GAIN_PCT must be 1..1000');
+  if (cfg.fastPopMinBuyShare < 0 || cfg.fastPopMinBuyShare > 1) errs.push('FAST_POP_MIN_BUY_SHARE must be between 0 and 1');
+  if (cfg.fastPopMaxDrop < 0 || cfg.fastPopMaxDrop > 0.9) errs.push('FAST_POP_MAX_DROP must be 0..0.9');
+  if (cfg.fastPopMaxSubs < 1 || cfg.fastPopMaxSubs > 1000) errs.push('FAST_POP_MAX_SUBS must be 1..1000');
   if (cfg.stopLoss <= 0 || cfg.stopLoss >= 1) errs.push('STOP_LOSS must be between 0 and 1');
   if (cfg.stopHardPct <= 0 || cfg.stopHardPct >= 1) errs.push('STOP_HARD_PCT must be between 0 and 1');
   if (cfg.stopHardConfirmChecks < 1 || cfg.stopHardConfirmChecks > 10) errs.push('STOP_HARD_CONFIRM_CHECKS must be between 1 and 10');

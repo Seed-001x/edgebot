@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { detect, eligible } from '../src/detect.js';
+import { detect, eligible, fastPop } from '../src/detect.js';
 import { testCfg, view, sample } from './helpers.mjs';
 
 const cfg = testCfg();
@@ -91,4 +91,48 @@ test('pop: coin down 40%+ over 6h is a crash bounce, even if up on the hour (wIN
   assert.equal(detect(view({ price: 1.5, chgH1: 10, chgH6: -55 }), series(popPrices), cfg, NOW), null);
   assert.equal(detect(view({ price: 1.5, chgH1: 10, chgH6: -20 }), series(popPrices), cfg, NOW).setup, 'pop');
   assert.equal(detect(view({ price: 1.5, chgH1: 10, chgH6: -55 }), series(popPrices), { ...cfg, popMaxDropH6: 0 }, NOW).setup, 'pop'); // off
+});
+
+// ---- fast pop (live trade stream) ----
+const fTrades = (prices, opts = {}) => prices.map((p, i) => ({
+  ts: NOW - (prices.length - 1 - i) * (opts.stepMs || 3000),
+  price: p,
+  sol: opts.solPerTrade ?? 0.2,
+  side: opts.side ? opts.side(i) : 'buy',
+}));
+const ramp = (from, to, n) => Array.from({ length: n }, (_, i) => from + (to - from) * (i / (n - 1)));
+
+test('fastpop: fires on a live +45% ramp with buy-dominated flow', () => {
+  const r = fastPop(fTrades(ramp(1, 1.45, 25), { side: (i) => (i % 5 === 4 ? 'sell' : 'buy') }), cfg, NOW);
+  assert.ok(r, 'expected a signal');
+  assert.equal(r.setup, 'pop');
+  assert.equal(r.metrics.fastStream, 1);
+  assert.ok(r.metrics.gainPct >= 44);
+  assert.ok(r.metrics.buyRatioM5 >= 0.55);
+});
+test('fastpop: a V-recovery off the window low fires (OSPREY shape)', () => {
+  const prices = [...ramp(1, 0.55, 10), ...ramp(0.55, 1.05, 15)]; // dump then recovery: last is +91% off the low
+  const r = fastPop(fTrades(prices, { side: (i) => (i < 10 ? 'sell' : 'buy') }), cfg, NOW);
+  // sells dominate the whole window here (15 buys / 25) = 0.6 share — fires
+  assert.ok(r, 'expected a signal');
+});
+test('fastpop: flat stream is nothing', () => {
+  assert.equal(fastPop(fTrades(Array(25).fill(1)), cfg, NOW), null);
+});
+test('fastpop: rollover from the window peak does not fire', () => {
+  const prices = [...ramp(1, 1.6, 15), ...ramp(1.6, 1.35, 10)]; // last is ~16% under the peak
+  assert.equal(fastPop(fTrades(prices), cfg, NOW), null);
+});
+test('fastpop: sell-dominated live flow does not fire', () => {
+  assert.equal(fastPop(fTrades(ramp(1, 1.5, 25), { side: (i) => (i % 3 === 0 ? 'buy' : 'sell') }), cfg, NOW), null);
+});
+test('fastpop: thin volume does not fire', () => {
+  assert.equal(fastPop(fTrades(ramp(1, 1.5, 25), { solPerTrade: 0.01 }), cfg, NOW), null);
+});
+test('fastpop: a move that stopped printing does not fire', () => {
+  const stale = fTrades(ramp(1, 1.5, 25)).map(t => ({ ...t, ts: t.ts - 40000 })); // last trade 40s ago
+  assert.equal(fastPop(stale, cfg, NOW), null);
+});
+test('fastpop: too few trades does not fire', () => {
+  assert.equal(fastPop(fTrades(ramp(1, 1.5, 6), { stepMs: 10000 }), cfg, NOW), null);
 });

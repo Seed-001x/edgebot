@@ -10,7 +10,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { History } from './history.js';
-import { detect, eligible } from './detect.js';
+import { detect, eligible, fastPop } from './detect.js';
 import { runGates, hasHardFail, tempRuleViolation, blockedNameWord, stalePopCheck } from './gate.js';
 import { evaluateExit } from './exits.js';
 import { bundleRisk, bundleDecision, pickTracked, linkedWeights, CREATOR_KEY } from './bundleWatch.js';
@@ -39,10 +39,13 @@ export class Bot {
     this.watch = new Map();      // mint -> { ts, source }
     this.latest = new Map();     // mint -> latest view
     this.lastSignal = new Map(); // mint -> ts
+    this.latestAt = new Map();   // mint -> ts of the latest view fetch
+    this.streamBuf = new Map();  // mint -> recent stream trades (fast pop detection)
+    this.fastEvalAt = new Map(); // mint -> ts of last fast-pop evaluation
     this.posFile = path.join(cfg.dataDir, 'positions.json');
     this.positions = this.loadPositions();
     this.busy = { discover: false, poll: false, pos: false };
-    this.stats = { discoverTicks: 0, pollTicks: 0, positionTicks: 0, signals: 0, entries: 0, exits: 0, errors: 0, lastError: null, sourceCounts: {}, lastDiscoverTs: 0, lastPollTs: 0, closesSinceReport: 0, lastReportTs: 0, reportIndex: 0, tempRules: null, liveFeed: { connected: false, events: 0, added: 0, reconnects: 0, lastEventTs: 0, lastError: null } };
+    this.stats = { discoverTicks: 0, pollTicks: 0, positionTicks: 0, signals: 0, entries: 0, exits: 0, errors: 0, lastError: null, sourceCounts: {}, lastDiscoverTs: 0, lastPollTs: 0, closesSinceReport: 0, lastReportTs: 0, reportIndex: 0, tempRules: null, fastPop: { fires: 0 }, liveFeed: { connected: false, events: 0, added: 0, reconnects: 0, lastEventTs: 0, lastError: null } };
     this.statsFile = path.join(cfg.dataDir, 'stats.json');
     this.entryTimes = []; // timestamps of entries (for pace keeper)
     this.PACE_TARGET = 120; // target trades per hour (2 per min)
@@ -263,6 +266,60 @@ export class Bot {
     return true;
   }
 
+  /** Mints whose trades the live feed should stream: freshest watch entries + open positions. */
+  tradeWatchMints() {
+    if (!this.cfg.fastPop) return [];
+    const fresh = [...this.watch.entries()].sort((a, b) => b[1].ts - a[1].ts).slice(0, this.cfg.fastPopMaxSubs).map(([m]) => m);
+    const held = this.positions.map(p => p.mint);
+    return [...new Set([...held, ...fresh])];
+  }
+
+  /**
+   * A streamed trade for a watched mint (fast pop detection, user 2026-10-13).
+   * Buffers the print and, throttled per mint, judges it with the pure fastPop
+   * detector. A fire routes into the exact same onSignal pipeline as a classic
+   * pop — name block, gates, risk, round-trip all unchanged. Fail-open throughout:
+   * the stream is an accelerator, never a dependency.
+   */
+  noteTrade(mint, trade) {
+    if (!this.cfg.fastPop || !trade || !(trade.price > 0)) return;
+    let buf = this.streamBuf.get(mint);
+    if (!buf) { buf = []; this.streamBuf.set(mint, buf); }
+    buf.push(trade);
+    const cutoff = trade.ts - (this.cfg.fastPopWindowSec * 1000 + 60000);
+    while (buf.length && buf[0].ts < cutoff) buf.shift();
+    if (buf.length > 600) buf.splice(0, buf.length - 600);
+    const n = this.now();
+    if (n - (this.fastEvalAt.get(mint) || 0) < this.cfg.fastPopEvalMs) return;
+    this.fastEvalAt.set(mint, n);
+    this._evalFastPop(mint, buf, n).catch(e => this.err('fastPop', e));
+  }
+
+  async _evalFastPop(mint, buf, n) {
+    if (this.positions.some(p => p.mint === mint)) return;
+    if (n - (this.lastSignal.get(mint) || 0) < this.cfg.signalCooldownMin * 60000) return;
+    const sig = fastPop(buf, this.cfg, n);
+    if (!sig) return;
+    // The pipeline needs a DexScreener view for gates/sizing. Reuse the poll's
+    // latest; refresh just this mint if it's missing or stale.
+    let v = this.latest.get(mint);
+    if (!v || n - (this.latestAt.get(mint) || 0) > 20000) {
+      const views = await this.d.fetchViews([mint]).catch(() => null);
+      if (views && views.get(mint)) { v = views.get(mint); this.latest.set(mint, v); this.latestAt.set(mint, n); this.history.record(v, n); }
+    }
+    if (!v) return;
+    if (eligible(v, this.cfg, n).length) return; // same tradability floor the classic detectors apply
+    const streamVolSol = sig.metrics.volM5; // fastPop reports window volume in SOL
+    sig.metrics.streamVolSol = streamVolSol;
+    const solUsd = await this.d.fetchSolUsd().catch(() => null);
+    if (solUsd) sig.metrics.volM5 = Math.round(streamVolSol * solUsd); // USD for journal parity with classic pops
+    this.lastSignal.set(mint, this.now());
+    this.stats.fastPop = this.stats.fastPop || { fires: 0 };
+    this.stats.fastPop.fires++;
+    console.log(`[fastpop] ${v.symbol} fired from the trade stream: +${sig.metrics.gainPct}% in ${sig.metrics.windowSec}s, ${sig.metrics.trades} trades, buy share ${sig.metrics.buyRatioM5}`);
+    await this.onSignal(v, sig);
+  }
+
   async discoverTick() {
     if (this.busy.discover) return;
     this.busy.discover = true;
@@ -309,6 +366,7 @@ export class Bot {
       const candidates = [];
       for (const [mint, v] of views) {
         this.latest.set(mint, v);
+        this.latestAt.set(mint, n);
         this.history.record(v, n);
         this.journal.observe(v);
         if (this.positions.some(p => p.mint === mint)) continue;
@@ -319,6 +377,11 @@ export class Bot {
         candidates.push({ v, sig });
       }
       this.stats.pollTicks++; this.stats.lastPollTs = n;
+      // fast-pop hygiene: drop stream buffers for mints no longer watched or held
+      if (this.streamBuf.size) {
+        const keep = new Set([...this.watch.keys(), ...this.positions.map(p => p.mint)]);
+        for (const [m, buf] of this.streamBuf) if (!keep.has(m) && (!buf.length || n - buf[buf.length - 1].ts > 600000)) { this.streamBuf.delete(m); this.fastEvalAt.delete(m); }
+      }
       // post-exit observer: feed the tracker the prices this poll already fetched (no extra calls)
       try { this.postExit.tick(mint => { const v = this.latest.get(mint); return v ? v.price : null; }, n); } catch { /* observer only */ }
       candidates.sort((a, b) => b.sig.strength - a.sig.strength);
@@ -366,8 +429,10 @@ export class Bot {
     // Stale-pop veto (user 2026-10-13): a pop whose own sampled high is old and rolled off is the
     // echo of a move, not the move — SCI's first spike peaked ~90s before the bot's first signal
     // and it bought the second hump rolling over. Pop entries only; judged on the bot's own
-    // recorded samples, fail-open when there are too few to judge.
-    if (sig.setup === 'pop') {
+    // recorded samples, fail-open when there are too few to judge. Fast-stream pops are EXEMPT:
+    // their evidence is the live trade flow itself (rising, buy-dominated, seconds old) — the
+    // veto's premise (we are late, the move is over) is exactly what the stream disproves.
+    if (sig.setup === 'pop' && !(sig.metrics && sig.metrics.fastStream)) {
       const sp = stalePopCheck(this.history.get(v.address), v.price, n, { staleSec: this.cfg.popStaleSec, dropPct: this.cfg.popStaleDropPct });
       if (!sp.pass) {
         console.log(`[stalepop] skip: ${v.symbol} — ${sp.reason}`);
