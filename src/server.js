@@ -22,6 +22,14 @@ function saveRealLists() {
 
 export function startServer(bot, port) {
   const json = (res, code, body) => { res.writeHead(code, { 'content-type': 'application/json', 'access-control-allow-origin': '*' }); res.end(JSON.stringify(body, null, 2)); };
+  // Admin guard (user 2026-10-13: "only I can manage that"): write/control endpoints require
+  // the x-admin-key header to match ADMIN_KEY when one is set. GETs stay public (the dashboard
+  // is view-first and the user shares it for viewing), and POST /reallists stays open — the
+  // hourly browser scrape posts there and its worst case is cosmetic mirror data. With no
+  // ADMIN_KEY set (local/tests), everything behaves as before.
+  const ADMIN_KEY = process.env.ADMIN_KEY || '';
+  if (!ADMIN_KEY) console.log('[server] ADMIN_KEY not set — write endpoints are OPEN');
+  const GUARDED = new Set(['/feedback', '/feedback/clear', '/exittag', '/temprules', '/positions/clear', '/positions/notp', '/halt', '/resume', '/risk/reset']);
   const srv = http.createServer((req, res) => {
     const u = new URL(req.url, 'http://x');
     // CORS preflight
@@ -29,10 +37,13 @@ export function startServer(bot, port) {
       res.writeHead(200, {
         'access-control-allow-origin': '*',
         'access-control-allow-methods': 'GET, POST, OPTIONS',
-        'access-control-allow-headers': 'content-type',
+        'access-control-allow-headers': 'content-type, x-admin-key',
       });
       res.end();
       return;
+    }
+    if (ADMIN_KEY && req.method !== 'GET' && (GUARDED.has(u.pathname) || u.pathname.startsWith('/positions/')) && req.headers['x-admin-key'] !== ADMIN_KEY) {
+      return json(res, 401, { error: 'admin key required' });
     }
     // POST /feedback — human marks a skipped signal as good/bad
     if (req.method === 'POST' && u.pathname === '/feedback') {
