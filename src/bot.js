@@ -18,7 +18,7 @@ import { Journal } from './journal.js';
 import { Risk } from './risk.js';
 import { postCallout } from './callout.js';
 import { snapshotFeatures, externalExit } from './learn.js';
-import { impliedMove } from './exec.js';
+
 import { PostExitTracker } from './postExit.js';
 import { buildTradeReport } from './reports.js';
 
@@ -405,38 +405,14 @@ export class Bot {
     catch (e) { return this.skip(v, sig, [`roundtrip: no sellable route (${e.message})`], g.warnings); }
     if (rt.ratio < this.cfg.minRoundTrip) return this.skip(v, sig, [`roundtrip: sell-back worth ${(rt.ratio * 100).toFixed(0)}% of spend < ${(this.cfg.minRoundTrip * 100).toFixed(0)}% (impact ${rt.impactPct.toFixed(1)}%)`], g.warnings);
 
-    // freshness guard (quote-level): rt.buyQuote IS the live execution price, fetched seconds
-    // ago from the venue itself. The round-trip RATIO is blind to the price LEVEL collapsing
-    // (buy low, sell back low = ratio still fine), and the DexScreener re-pull further down
-    // can lag the pool by minutes — on NEVER (2026-10-12) the bot decided at $49k and filled
-    // at $2.3k while both DexScreener reads still agreed. Compare levels here and abort if
-    // the live price has moved beyond ±freshGuardPct of the price the gates approved.
-    if (this.cfg.freshGuardPct > 0) {
-      const dec = rug && rug.token && Number.isFinite(Number(rug.token.decimals)) ? Number(rug.token.decimals) : 6;
-      const mv = impliedMove({ decisionPriceUsd: v.price, solUsd, outAmountRaw: rt.buyQuote && rt.buyQuote.outAmount, sizeSol: size, decimals: dec });
-      if (mv != null && Math.abs(mv) > this.cfg.freshGuardPct / 100) {
-        const pct = (Math.abs(mv) * 100).toFixed(0);
-        return this.skip(v, sig, [mv < 0
-          ? `stale: live quote ${pct}% below decision price — dumped during checks, aborting`
-          : `stale: live quote ${pct}% above decision price — chasing, aborting`], g.warnings);
-      }
-    }
+    // Price-move vetoes REMOVED 2026-10-12 (user order): both the quote-level freshness
+    // guard (±10% vs decision price) and the older DexScreener re-pull check (-30%/+100%)
+    // rejected any coin that moved while the gates were running — the user wants the buy
+    // to go through at whatever the live price is. Entries are instant from here.
 
     // re-check limits right before spending (state may have changed during the awaits above)
     const gate1 = this.risk.canEnter({ mint: v.address, walletSol: await this.exec.solBalance(), openCount: this.positions.length, sizeSol: size, halted: this.halted() });
     if (!gate1.ok) return this.skip(v, sig, [`risk: ${gate1.reason}`], g.warnings);
-
-    // freshness guard: the signal quote may be stale after the awaits above (gates, round-trip).
-    // Re-pull the price right before spending — abort if it dumped (stale quote) or ripped (chasing).
-    let fv = null;
-    try { const fm = await this.d.fetchViews([v.address]); fv = fm && fm.get(v.address); } catch {}
-    if (fv && fv.price > 0 && v.price > 0) {
-      const r = fv.price / v.price;
-      if (r < 1 - this.cfg.prebuyMaxDumpPct / 100)
-        return this.skip(v, sig, [`stale: dumped ${((1 - r) * 100).toFixed(0)}% since signal (stale quote?) — aborting`], g.warnings);
-      if (r > 1 + this.cfg.prebuyMaxPumpPct / 100)
-        return this.skip(v, sig, [`stale: pumped ${((r - 1) * 100).toFixed(0)}% since signal — chasing, aborting`], g.warnings);
-    }
 
     let fill;
     try { fill = await this.exec.buy(v.address, size, rt.buyQuote); }
