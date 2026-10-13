@@ -115,6 +115,10 @@ export function loadConfig(env = process.env) {
     botflowMaxAvgUsd: num(env, 'BOTFLOW_MAX_AVG_USD', 6),
     // setup blacklist: 0 = off (per-token blocking only). Set to N to block setups with N+ bad marks.
     setupBlacklistMin: num(env, 'SETUP_BLACKLIST_MIN', 0),
+    // name block: any coin whose NAME contains one of these words (whole-word, case-insensitive) is
+    // hard-skipped before gates — user 2026-10-13 after CI ("Crypto Inu", -39%) and SCI ("Super
+    // Crypto Inu", -23%) died back-to-back inside two minutes. Empty NAME_BLOCK_WORDS = off.
+    nameBlockWords: (env.NAME_BLOCK_WORDS ?? 'inu').split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
 
     // ---- exits (judged on REALIZABLE value = Jupiter sell quote, not screen price) ----
     stopLoss: num(env, 'STOP_LOSS', 0.15),                // grace-stop ARM line on realizable value (user 2026-10-13: 0.10 live via env)

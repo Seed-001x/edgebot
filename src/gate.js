@@ -149,6 +149,18 @@ export function cloneCheck(view, others, cfg) {
 }
 
 
+// 7b. Name block: whole-word match against the token's name ("Crypto Inu", "Super Crypto Inu").
+//     Whole words only, so names that merely contain the letters ("Continuum", "Minute") still pass.
+export function blockedNameWord(name, words) {
+  if (!name || !words || !words.length) return null;
+  const parts = String(name).toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  for (const w of words) {
+    const word = String(w || '').toLowerCase();
+    if (word && parts.includes(word)) return word;
+  }
+  return null;
+}
+
 // One-go dump simulation: ALL linked supply (creator + linked networks) sold into the pool at once.
 // drain = share of the pool's SOL they could pull.
 export function linkedDumpCheck({ creatorUi, networks, dec, poolBaseUi, poolQuoteUi }, maxDrain = 0.35) {

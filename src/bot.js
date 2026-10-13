@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { History } from './history.js';
 import { detect, eligible } from './detect.js';
-import { runGates, hasHardFail, tempRuleViolation } from './gate.js';
+import { runGates, hasHardFail, tempRuleViolation, blockedNameWord } from './gate.js';
 import { evaluateExit } from './exits.js';
 import { bundleRisk, bundleDecision, pickTracked, linkedWeights, CREATOR_KEY } from './bundleWatch.js';
 import { Journal } from './journal.js';
@@ -354,6 +354,14 @@ export class Bot {
     if (nn && this.enteredNames.has(nn) && !this.enteredMints.has(v.address)) {
       console.log(`[dedup] skip: already entered a coin named "${v.name || v.symbol}" — skipping copycat`);
       return this.skip(v, sig, [`copycat: already entered "${v.name || v.symbol}"`]);
+    }
+    // User name block (2026-10-13): any coin whose name contains a blocked word (default "inu")
+    // is hard-skipped. Sits before runGates, so no pace boost, mandatory-ape forcing or
+    // contested-gate override can let one through.
+    const blockedWord = blockedNameWord(v.name, this.cfg.nameBlockWords);
+    if (blockedWord) {
+      console.log(`[nameblock] skip: "${v.name}" contains blocked word "${blockedWord}"`);
+      return this.skip(v, sig, [`nameblock: name "${v.name || v.symbol}" contains blocked word "${blockedWord}"`]);
     }
     // Re-entry quality: same coin signaled again — only re-enter on a dip, never the top of a green candle.
     // Require price at least 20% below the recent 15-min high (unless it's a fresh pop breakout).

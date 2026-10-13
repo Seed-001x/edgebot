@@ -79,3 +79,17 @@ test('tempRuleViolation: one-trade MC cap and crash ban', async () => {
   assert.equal(tempRuleViolation({ mc: 999999 }, { drawFromPeak: 0.99 }, null), null);
   assert.equal(tempRuleViolation({ mc: null, chgH6: null }, {}, rules), null);
 });
+
+test('blockedNameWord: whole-word name block (user 2026-10-13, CI/SCI)', async () => {
+  const { blockedNameWord } = await import('../src/gate.js');
+  assert.equal(blockedNameWord('Crypto Inu', ['inu']), 'inu');
+  assert.equal(blockedNameWord('Super Crypto Inu', ['inu']), 'inu');
+  assert.equal(blockedNameWord('SHIBA INU', ['inu']), 'inu');
+  assert.equal(blockedNameWord('Baby-Inu Coin', ['inu']), 'inu');
+  assert.equal(blockedNameWord('Continuum', ['inu']), null);   // letters inside a word don't count
+  assert.equal(blockedNameWord('Minute', ['inu']), null);
+  assert.equal(blockedNameWord('Dogecoin', ['inu']), null);
+  assert.equal(blockedNameWord('Inu', []), null);               // empty list = off
+  assert.equal(blockedNameWord(null, ['inu']), null);
+  assert.equal(blockedNameWord('Crypto Inu', null), null);
+});
