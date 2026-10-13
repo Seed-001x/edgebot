@@ -195,8 +195,10 @@ const FLUFF = /\b(whopping|massive|huge|insane|crazy|just|pure momentum|momentum
 
 /**
  * The fact block: built by code from the entry signal, never by the LLM.
- * Setup-aware — a trend callout leads with the hour, a pop with the 5 minutes —
- * and every number is one the bot actually measured at the decision.
+ * The setup decides which numbers lead (trend → the hour, pop → the 5 minutes)
+ * but is never NAMED (user, 2026-10-12) — the numbers speak bare. With no signal
+ * metrics at all, the numbers fall back to the coin's live view so the callout
+ * is never just an entry line.
  */
 export function factBlock(v, sig) {
   const m = (sig && sig.metrics) || {};
@@ -204,24 +206,29 @@ export function factBlock(v, sig) {
   const head = `in ${sym}` + (v.mc ? ` at ${fmtUsd(v.mc)} mc` : '');
   const pct = (x) => `${Number(x) >= 0 ? '+' : ''}${Math.round(Number(x))}%`;
   const parts = [];
-  let setupWord = sig && sig.setup ? `${sig.setup}: ` : '';
-  if (sig && sig.setup === 'trend') {
+  const hasMetrics = Object.keys(m).length > 0;
+  if (hasMetrics && sig.setup === 'trend') {
     if (m.chgH1 != null) parts.push(`${pct(m.chgH1)} on the hour`);
-    if (m.chgM5 != null) {
-      parts.push(`${pct(m.chgM5)} last 5m`);
-      if (Number(m.chgM5) >= Number(m.chgH1 ?? 0) && Number(m.chgM5) >= 20) setupWord = 'trend still accelerating: ';
-    }
+    if (m.chgM5 != null) parts.push(`${pct(m.chgM5)} last 5m`);
     if (m.volH1) parts.push(`${fmtUsd(Number(m.volH1))}/h volume`);
-  } else {
+  } else if (hasMetrics) {
     if (m.gainPct != null) parts.push(`${pct(m.gainPct)} in 5 min`);
     else if (m.chgM5 != null) parts.push(`${pct(m.chgM5)} in 5 min`);
     if (m.volM5) parts.push(`${fmtUsd(Number(m.volM5))} 5m volume`);
     else if (m.volH1) parts.push(`${fmtUsd(Number(m.volH1))}/h volume`);
     if (m.drawFromPeak != null && Number(m.drawFromPeak) <= 0.02) parts.push('right at its highs');
+  } else {
+    // No setup: build from the live view itself.
+    if (v.chgH1 != null) parts.push(`${pct(v.chgH1)} on the hour`);
+    if (v.chgM5 != null) parts.push(`${pct(v.chgM5)} last 5m`);
+    if (v.volH1) parts.push(`${fmtUsd(Number(v.volH1))}/h volume`);
+    else if (v.volM5) parts.push(`${fmtUsd(Number(v.volM5))} 5m volume`);
+    const tot = (v.buysM5 || 0) + (v.sellsM5 || 0);
+    if (tot > 0) m.buyRatioM5 = (v.buysM5 || 0) / tot;
   }
   if (m.holders) parts.push(`${m.holders} holders`);
   if (m.buyRatioM5 != null && Number(m.buyRatioM5) >= 0.5) parts.push(`${Math.round(Number(m.buyRatioM5) * 100)}% buys`);
-  return (parts.length ? `${head}. ${setupWord}${parts.join(', ')}.` : `${head}.`).slice(0, 280);
+  return (parts.length ? `${head}. ${parts.join(', ')}.` : `${head}.`).slice(0, 280);
 }
 
 /** A narrative clause may only describe what the coin IS — no numbers, no hype, no filler. */
