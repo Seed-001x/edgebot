@@ -26,6 +26,7 @@ export function loadConfig(env = process.env) {
     mandatoryApesPerHour: num(env, 'MANDATORY_APES_PER_HOUR', 5),
     mintCooldownMin: num(env, 'MINT_COOLDOWN_MIN', 20),
     loserCooldownH: num(env, 'LOSER_COOLDOWN_H', 6),    // don't re-buy a coin that closed at a loss within this many hours (0 = off)
+    closedCooldownH: num(env, 'CLOSED_COOLDOWN_H', 3),  // don't re-buy a coin that closed AT ALL (win or loss) within this many hours (0 = off). Added 2026-10-12 (user): the only 2 re-entries in the journal both lost (-0.0319) while first entries were net positive.
     maxPoolFraction: num(env, 'MAX_POOL_FRACTION', 0.05), // position ≤ 5% of pool liquidity
     allowLarge: env.ALLOW_LARGE === '1',                // typo guard: TRADE_SOL > 0.25 refused unless set
     shadowStartSol: num(env, 'SHADOW_START_SOL', 1),

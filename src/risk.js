@@ -13,6 +13,7 @@ export class Risk {
     this.s = { day: dayKey(now()), dayPnlSol: 0, tradeTs: [], cooldown: {}, losers: {}, startEquitySol: null, killed: false, killReason: null, totalCloses: 0, haltArmedAt: null };
     this.load();
     if (!this.s.losers) this.s.losers = {}; // risk.json from before this field existed
+    if (!this.s.closed) this.s.closed = {}; // every close (win or loss) — the re-entry block
     // arm the one-shot auto-halt at startup so "N more closes" counts from now, not from the first close
     if ((this.cfg.haltAfterCloses || 0) > 0 && this.s.haltArmedAt == null) {
       this.s.haltArmedAt = this.s.totalCloses || 0;
@@ -63,11 +64,21 @@ export class Risk {
     const lost = this.s.losers[mint];
     if (lost && this.cfg.loserCooldownH > 0 && n - lost < this.cfg.loserCooldownH * 3600000)
       return { ok: false, reason: `lost on this coin ${((n - lost) / 60000).toFixed(0)}m ago (no re-buy for ${this.cfg.loserCooldownH}h)` };
+    const closedAt = this.s.closed[mint];
+    if (closedAt && this.cfg.closedCooldownH > 0 && n - closedAt < this.cfg.closedCooldownH * 3600000)
+      return { ok: false, reason: `already traded this coin — closed ${((n - closedAt) / 60000).toFixed(0)}m ago (no re-entry for ${this.cfg.closedCooldownH}h)` };
     this.s.tradeTs = this.s.tradeTs.filter(t => n - t < 3600000);
     if (this.s.tradeTs.length >= this.cfg.maxTradesPerHour) return { ok: false, reason: `hourly trade cap (${this.cfg.maxTradesPerHour})` };
     if (walletSol - sizeSol < this.cfg.minReserveSol) return { ok: false, reason: `would leave < ${this.cfg.minReserveSol} SOL reserve` };
     if (!(sizeSol > 0)) return { ok: false, reason: 'size is zero' };
     return { ok: true };
+  }
+
+  /** Seed a close that predates this state (boot: journal closes inside the window). */
+  seedClosed(mint, ts) {
+    if (!mint || !ts) return;
+    if (this.now() - ts > Math.max(this.cfg.closedCooldownH || 0, 1) * 3600000) return;
+    if (!this.s.closed[mint] || ts > this.s.closed[mint]) { this.s.closed[mint] = ts; this.save(); }
   }
 
   /** Position size: configured size, capped at maxPoolFraction of pool liquidity. */
@@ -97,11 +108,16 @@ export class Risk {
         this.s.haltArmedAt = null;
       }
     }
-    if (mint && pnlSol < 0) {
+    if (mint) {
       const n = this.now();
-      this.s.losers[mint] = n;
-      const keepMs = Math.max(this.cfg.loserCooldownH || 0, 1) * 3600000;
-      for (const [k, t] of Object.entries(this.s.losers)) if (n - t > keepMs) delete this.s.losers[k];
+      this.s.closed[mint] = n;
+      const keepMs = Math.max(this.cfg.closedCooldownH || 0, this.cfg.loserCooldownH || 0, 1) * 3600000;
+      for (const [k, t] of Object.entries(this.s.closed)) if (n - t > keepMs) delete this.s.closed[k];
+      if (pnlSol < 0) {
+        this.s.losers[mint] = n;
+        const keepL = Math.max(this.cfg.loserCooldownH || 0, 1) * 3600000;
+        for (const [k, t] of Object.entries(this.s.losers)) if (n - t > keepL) delete this.s.losers[k];
+      }
     }
     this.save();
   }

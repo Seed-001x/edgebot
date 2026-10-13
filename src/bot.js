@@ -34,6 +34,7 @@ export class Bot {
     this.journal = new Journal(cfg.dataDir, { now: this.now });
     this.risk = new Risk(cfg, { dir: cfg.dataDir, now: this.now });
     this.closedIds = new Set(this.journal.trades.filter(t => t.type === 'close').map(t => t.id)); // journaling guarantee (ensureClose)
+    for (const t of this.journal.trades) if (t.type === 'close' && t.mint) this.risk.seedClosed(t.mint, t.ts); // re-entry block survives restarts/deploys
     this.postExit = new PostExitTracker(cfg.dataDir, this.now); // 5-min post-exit price tracker (observer only)
     this.watch = new Map();      // mint -> { ts, source }
     this.latest = new Map();     // mint -> latest view

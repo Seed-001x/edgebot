@@ -43,7 +43,7 @@ test('size is capped by pool depth', () => {
   assert.ok(Math.abs(big.sizeFor(15_000, 150) - 1) < 1e-9);         // 1% of $15k = $150 = 1 SOL
 });
 
-test('loser cooldown: no re-buy of a coin that closed at a loss within 6h; winners can be re-bought', async () => {
+test('cooldowns: no re-buy of a loser within 6h; NO re-entry after ANY close within 3h (user, 2026-10-12)', async () => {
   const { Risk } = await import('../src/risk.js');
   const { testCfg } = await import('./helpers.mjs');
   let t = 1_000_000_000_000;
@@ -51,7 +51,10 @@ test('loser cooldown: no re-buy of a coin that closed at a loss within 6h; winne
   const args = (mint) => ({ mint, walletSol: 1, openCount: 0, sizeSol: 0.1 });
   r.recordClose(-0.017, 'LOSER'); r.recordClose(0.02, 'WINNER');
   assert.match(r.canEnter(args('LOSER')).reason, /lost on this coin/);
-  assert.equal(r.canEnter(args('WINNER')).ok, true);
-  t += 6 * 3600000 + 1000;
+  assert.match(r.canEnter(args('WINNER')).reason, /no re-entry for 3h/); // winners blocked too — the 2 journal re-entries both lost
+  t += 3 * 3600000 + 1000;
+  assert.equal(r.canEnter(args('WINNER')).ok, true);  // winner free after 3h
+  assert.equal(r.canEnter(args('LOSER')).ok, false);  // loser still under the 6h loser cooldown
+  t += 3 * 3600000;
   assert.equal(r.canEnter(args('LOSER')).ok, true);
 });
