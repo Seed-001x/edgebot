@@ -143,6 +143,9 @@ export function loadConfig(env = process.env) {
     // POP_STALE_SEC=0 disables.
     popStaleSec: num(env, 'POP_STALE_SEC', 60),
     popStaleDropPct: num(env, 'POP_STALE_DROP_PCT', 0.08),
+    // extension cap: skip classic entries priced more than this fraction above the trailing-1h
+    // sampled low (the breakout base) — user 2026-10-13 (OTTO). 0 = off.
+    extMaxFromBase: num(env, 'EXT_MAX_FROM_BASE', 1.5),
 
     // ---- exits (judged on REALIZABLE value = Jupiter sell quote, not screen price) ----
     stopLoss: num(env, 'STOP_LOSS', 0.15),                // grace-stop ARM line on realizable value (user 2026-10-13: 0.10 live via env)
@@ -224,6 +227,7 @@ export function validateConfig(cfg) {
   if (cfg.stopXcheckPct < 0.05 || cfg.stopXcheckPct > 0.9) errs.push('STOP_XCHECK_PCT must be between 0.05 and 0.9');
   if (cfg.popStaleSec < 0 || cfg.popStaleSec > 600) errs.push('POP_STALE_SEC must be between 0 and 600 (0 = off)');
   if (cfg.popStaleDropPct < 0 || cfg.popStaleDropPct >= 0.9) errs.push('POP_STALE_DROP_PCT must be between 0 and 0.9');
+  if (cfg.extMaxFromBase < 0 || cfg.extMaxFromBase > 20) errs.push('EXT_MAX_FROM_BASE must be between 0 and 20 (0 = off)');
   if (cfg.dipStopPct < 0 || cfg.dipStopPct >= 1) errs.push('DIP_STOP_PCT must be between 0 and 1 (0 = off)');
   if (cfg.stallSec < 0) errs.push('STALL_SEC must be >= 0 (0 = off)');
   if (cfg.lockKeep < 0 || cfg.lockKeep >= 1) errs.push('PROFIT_LOCK_KEEP must be between 0 and 1 (0 = off)');

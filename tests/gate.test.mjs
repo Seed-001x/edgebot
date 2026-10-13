@@ -114,3 +114,30 @@ test('stalePopCheck: second-hump rollover vetoed, fresh pops pass (user 2026-10-
   // disabled
   assert.equal(stalePopCheck(sci, 94, now, { staleSec: 0, dropPct: 0.08 }).pass, true);
 });
+
+test('extensionCheck: extreme extension above the 1h base vetoed, near-base entries pass (user 2026-10-13, OTTO)', async () => {
+  const { extensionCheck } = await import('../src/gate.js');
+  const now = 1_000_000_000_000;
+  const S = (agoSec, price) => ({ ts: now - agoSec * 1000, price });
+  const opts = { maxExt: 1.5 };
+  // OTTO shape: long base sampled flat at 24, entry print at 86 = +258% over the base low -> vetoed
+  const otto = [];
+  for (let a = 3300; a >= 300; a -= 300) otto.push(S(a, 24 + (a % 3) * 4));
+  otto.push(S(60, 60), S(5, 86));
+  assert.equal(extensionCheck(otto, 86, now, opts).pass, false);
+  // same base, entry at 55 = +129% over the low -> passes
+  assert.equal(extensionCheck(otto, 55, now, opts).pass, true);
+  // steady climber whose base rose with it: trailing-hour low is recent -> modest extension -> pass
+  const grind = [];
+  for (let a = 3300; a >= 60; a -= 300) grind.push(S(a, 100 - (3300 - a) / 60));
+  grind.push(S(5, 100));
+  assert.equal(extensionCheck(grind, 100, now, opts).pass, true);
+  // thin history -> fail-open (no base to judge)
+  assert.equal(extensionCheck([S(60, 50), S(5, 300)], 300, now, opts).pass, true);
+  // short span (all samples inside 2 minutes) -> fail-open
+  const burst = [];
+  for (let i = 0; i < 12; i++) burst.push(S(100 - i * 8, 10 + i));
+  assert.equal(extensionCheck(burst, 200, now, opts).pass, true);
+  // disabled
+  assert.equal(extensionCheck(otto, 86, now, { maxExt: 0 }).pass, true);
+});

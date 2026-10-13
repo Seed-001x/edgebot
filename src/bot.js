@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { History } from './history.js';
 import { detect, eligible, fastPop } from './detect.js';
-import { runGates, hasHardFail, tempRuleViolation, blockedNameWord, stalePopCheck } from './gate.js';
+import { runGates, hasHardFail, tempRuleViolation, blockedNameWord, stalePopCheck, extensionCheck } from './gate.js';
 import { evaluateExit } from './exits.js';
 import { bundleRisk, bundleDecision, pickTracked, linkedWeights, CREATOR_KEY } from './bundleWatch.js';
 import { Journal } from './journal.js';
@@ -437,6 +437,20 @@ export class Bot {
       if (!sp.pass) {
         console.log(`[stalepop] skip: ${v.symbol} — ${sp.reason}`);
         return this.skip(v, sig, [`stalepop: ${sp.reason}`]);
+      }
+    }
+    // Extension cap (user 2026-10-13): how far above the trailing-hour sampled low — the base
+    // the move broke out from — an entry may sit. OTTO was bought at the ceiling of a long
+    // range after a +162%/5m print and stopped 23s later by the range's own chop; at extreme
+    // extension, an ordinary retracement toward the base is a full stop-out. Classic entries
+    // only (pop + trend), judged on the bot's own samples, fail-open on thin history.
+    // Fast-stream pops are EXEMPT: their 90s window IS the breakout measurement — they enter
+    // near the launch by construction.
+    if (!(sig.metrics && sig.metrics.fastStream)) {
+      const ex = extensionCheck(this.history.get(v.address), v.price, n, { maxExt: this.cfg.extMaxFromBase });
+      if (!ex.pass) {
+        console.log(`[extension] skip: ${v.symbol} — ${ex.reason}`);
+        return this.skip(v, sig, [`extension: ${ex.reason}`]);
       }
     }
     // Re-entry quality: same coin signaled again — only re-enter on a dip, never the top of a green candle.

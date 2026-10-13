@@ -182,6 +182,31 @@ export function stalePopCheck(samples, price, now, { staleSec = 60, dropPct = 0.
   };
 }
 
+// 7d. Extension above the breakout base (user 2026-10-13): how far the current price sits
+//     above the lowest price sampled in the trailing hour — the base the move launched from.
+//     An entry at extreme extension (OTTO: bought the top of a long range after a +162%/5m
+//     print, stopped 23s later by the range's own chop) has a full retracement to the base
+//     waiting under it — the same wobble that means nothing at the base is a stop-out at the
+//     top. Judged on the bot's OWN samples; too little history = no base to judge = pass.
+export function extensionCheck(samples, price, now, { maxExt = 1.5, windowMin = 60, minSamples = 10, minSpanSec = 180 } = {}) {
+  if (!(maxExt > 0) || !(price > 0)) return { pass: true, reason: 'extension check off' };
+  const win = (samples || []).filter(s => s && s.price > 0 && now - s.ts <= windowMin * 60000);
+  if (win.length < minSamples) return { pass: true, reason: 'too few samples to judge the base' };
+  const tsList = win.map(s => s.ts);
+  const spanSec = (Math.max(...tsList) - Math.min(...tsList)) / 1000;
+  if (spanSec < minSpanSec) return { pass: true, reason: 'sample span too short to judge the base' };
+  const base = Math.min(...win.map(s => s.price));
+  if (!(base > 0)) return { pass: true, reason: 'no base price in samples' };
+  const ext = price / base - 1;
+  const over = ext > maxExt;
+  return {
+    pass: !over, ext, base,
+    reason: over
+      ? `extended: price is +${Math.round(ext * 100)}% above the trailing ${windowMin}m base (cap +${Math.round(maxExt * 100)}%)`
+      : `extension +${Math.round(ext * 100)}% above the trailing ${windowMin}m base — within the cap`,
+  };
+}
+
 // One-go dump simulation: ALL linked supply (creator + linked networks) sold into the pool at once.
 // drain = share of the pool's SOL they could pull.
 export function linkedDumpCheck({ creatorUi, networks, dec, poolBaseUi, poolQuoteUi }, maxDrain = 0.35) {
