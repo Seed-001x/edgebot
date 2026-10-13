@@ -192,9 +192,9 @@ test('TP2: at +100% net it sells tp2Frac of the ORIGINAL position', () => {
   const d = evaluateExit(p, mark(0.02 * 0.6 * 2.1), cfg, NOW);                // ratio 2.1 on the remaining basis
   assert.equal(d.tp2, true); assert.ok(Math.abs(d.fraction - 0.35 / 0.6) < 1e-9);
 });
-test('moonbag: post-TP2 remainder rides a 35% trail, immune to lock and the 25% trailing stop', () => {
+test('moonbag: post-TP2 remainder rides a 20% trail under its recorded peak, immune to lock and the generic trailing stop', () => {
   const p = pos({ tp1Done: true, tp2Done: true, remainingFrac: 0.25, peakRatio: 2.8, stallSince: NOW });
-  assert.equal(evaluateExit(p, mark(0.02 * 0.25 * 2.0), cfg, NOW).fraction, 0);   // 2.0x: 29% off peak — bag holds (generic trail would fire)
-  const d = evaluateExit(p, mark(0.02 * 0.25 * 1.75), cfg, NOW);                  // 1.75x: 37.5% off peak
+  assert.equal(evaluateExit(p, mark(0.02 * 0.25 * 2.25), cfg, NOW).fraction, 0);   // 2.25x: 19.6% off peak — bag holds
+  const d = evaluateExit(p, mark(0.02 * 0.25 * 2.2), cfg, NOW);                    // 2.2x: 21.4% off peak — past the -20% line
   assert.equal(d.fraction, 1); assert.match(d.reason, /moonbag trail/);
 });

@@ -168,7 +168,7 @@ export function loadConfig(env = process.env) {
     tp1FlowMin: num(env, 'TP1_FLOW_MIN_SHARE', 0.50),     // min buy share of 5m flow for the run to count as supported
     tp2Pct: num(env, 'TP2_PCT', 1.00),                    // second bank at +100% net
     tp2Frac: num(env, 'TP2_FRAC', 0.35),                  // ...sells this fraction of the ORIGINAL position (0 = off)
-    bagTrailPct: num(env, 'BAG_TRAIL_PCT', 0.35),         // moonbag trail below peak
+    bagTrailPct: num(env, 'BAG_TRAIL_PCT', 0.20),         // moonbag trail below peak (was 0.35 from the MFE study; user tightened it to 20% on 2026-10-13 — exit at -20% under the last recorded peak)
     tpTrailPct: num(env, 'TP_TRAIL_PCT', 0.25),           // after TP1, trail the rest this far below its peak (hard floor at entry)
     lockArm: num(env, 'PROFIT_LOCK_ARM', 0.15),           // once up +15% or more after fees...
     lockKeep: num(env, 'PROFIT_LOCK_KEEP', 0.5),          // ...sell the rest if it falls below half of its best gain (0 = off)
