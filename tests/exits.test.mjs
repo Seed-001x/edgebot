@@ -7,7 +7,7 @@ const cfg = testCfg(); const NOW = 1_000_000_000_000;
 const pos = (o = {}) => ({ entrySol: 0.02, remainingFrac: 1, peakRatio: 1, tp1Done: false, entryTs: NOW - 5 * 60000, ...o });
 const mark = (valueSol, o = {}) => ({ valueSol, liqUsd: 200_000, buysM5: 30, sellsM5: 10, solUsd: 150, ...o });
 
-test('holds in the quiet middle', () => assert.equal(evaluateExit(pos(), mark(0.021), cfg, NOW).fraction, 0));
+test('holds in the quiet middle', () => assert.equal(evaluateExit(pos({ entryTs: NOW - 30000 }), mark(0.021), cfg, NOW).fraction, 0));
 test('stop-loss on realizable value (backstop when dip stop is off)', () => { const d = evaluateExit(pos(), mark(0.011, { buysM5: 1, sellsM5: 1 }), { ...cfg, dipStopPct: 0 }, NOW); assert.equal(d.fraction, 1); assert.match(d.reason, /stop-loss/); });
 test('TP1 sells the configured fraction once', () => {
   const d = evaluateExit(pos(), mark(0.04), cfg, NOW); assert.equal(d.fraction, 0.75); assert.equal(d.tp1, true);
@@ -22,7 +22,7 @@ test('trailing stop after arming', () => {
 test('liquidity death beats everything', () => {
   const d = evaluateExit(pos(), mark(0.05, { liqUsd: 1500 }), cfg, NOW); assert.match(d.reason, /liquidity death/);
   assert.match(evaluateExit(pos(), mark(20, { liqUsd: 5000 }), cfg, NOW).reason, /liquidity death/); // $3000 position, pool < 2x position
-  assert.equal(evaluateExit(pos(), mark(0.021, { liqUsd: 5000 }), cfg, NOW).fraction, 0);   // small position in the same pool is fine
+  assert.equal(evaluateExit(pos({ entryTs: NOW - 30000 }), mark(0.021, { liqUsd: 5000 }), cfg, NOW).fraction, 0);   // small position in the same pool is fine
 });
 test('momentum failure: underwater with sellers dominating', () => {
   const d = evaluateExit(pos(), mark(0.0192, { buysM5: 5, sellsM5: 20 }), cfg, NOW); assert.match(d.reason, /momentum/);
@@ -47,18 +47,47 @@ test('dip stop ignores the round-trip cost already paid at entry', () => {
   assert.equal(evaluateExit(p, mark(0.018), cfg, NOW).fraction, 0);
   assert.match(evaluateExit(p, mark(0.0170), cfg, NOW).reason, /dip stop/);                   // price -5.6%
 });
-// ---- entry stall (user 2026-10-13): clock from entry; no breakout above +band in stallSec = sell ----
-const stallCfg = { ...cfg, stallSec: 60, stallBandPct: 0.05 };
-test('entry stall: no breakout in 60s sells; before the deadline it holds', () => {
-  assert.equal(evaluateExit(pos({ entryTs: NOW - 59 * S, peakMove: 1.01 }), mark(0.0201), stallCfg, NOW).fraction, 0);
-  const d = evaluateExit(pos({ entryTs: NOW - 60 * S, peakMove: 1.01 }), mark(0.0201), stallCfg, NOW);
-  assert.equal(d.fraction, 1); assert.match(d.reason, /stall \(no breakout/);
-  assert.match(evaluateExit(pos({ entryTs: NOW - 90 * S, peakMove: 1.02 }), mark(0.0196), stallCfg, NOW).reason, /stall/); // under entry inside the range counts too — the clock never pauses
+// ---- entry stall (user 2026-10-13, endpoint version): at 60s, price inside ±5% of entry = sell ----
+const stallCfg = { ...cfg, stallSec: 60, stallBandPct: 0.05, dipStopPct: 0 };
+test('entry stall: inside the range at the deadline sells; before it, holds', () => {
+  assert.equal(evaluateExit(pos({ entryTs: NOW - 59 * S }), mark(0.0201), stallCfg, NOW).fraction, 0);
+  const d = evaluateExit(pos({ entryTs: NOW - 60 * S }), mark(0.0201), stallCfg, NOW);
+  assert.equal(d.fraction, 1); assert.match(d.reason, /stall \(in entry range/);
+  assert.match(evaluateExit(pos({ entryTs: NOW - 90 * S }), mark(0.0196), stallCfg, NOW).reason, /stall/); // under entry but inside the range sells too
 });
-test('entry stall: a breakout inside the window exempts the trade for good', () => {
-  const p = pos({ entryTs: NOW - 300 * S, peakMove: 1.08 });   // flashed +8% in its first minute, since faded
-  assert.equal(evaluateExit(p, mark(0.0192), stallCfg, NOW).fraction, 0);
-  assert.equal(evaluateExit(pos({ entryTs: NOW - 30 * S }), mark(0.0212), stallCfg, NOW).newPeakMove, 1.06); // peak move tracks the price move, not the floored ratio
+test('entry stall: endpoint judges where the price IS, not where it has been', () => {
+  const faded = pos({ entryTs: NOW - 300 * S, peakMove: 1.30 });  // spiked +30% in its first minute, faded back to +1%
+  assert.match(evaluateExit(faded, mark(0.0202), stallCfg, NOW).reason, /stall/);
+  assert.equal(evaluateExit(pos({ entryTs: NOW - 300 * S, peakMove: 1.12, peakRatio: 1.12 }), mark(0.0216), stallCfg, NOW).fraction, 0); // +8% at the check: still out of the range, holds (peak kept under the profit-lock arm on purpose)
+  assert.equal(evaluateExit(pos({ entryTs: NOW - 300 * S }), mark(0.0184), stallCfg, NOW).fraction, 0);                  // -8%: through the band — the stop's territory, not the stall's
+  // post-TP1 runners are exempt from the stall (in practice the trail/profit lock reach them first,
+  // so isolate the exemption with the lock off): in-range at the deadline, still holds
+  assert.equal(evaluateExit(pos({ entryTs: NOW - 300 * S, tp1Done: true, remainingFrac: 0.35, peakRatio: 1.4 }), mark(0.0074), { ...stallCfg, lockKeep: 0 }, NOW).fraction, 0);
+});
+
+// ---- grace stop (user 2026-10-13): arm -10%, 5s grace, flow confirms, floor -20% ----
+const stopCfg = { ...cfg, stopLoss: 0.10, stopHardPct: 0.20, stopGraceSec: 5, stopFlowVeto: 1, dipStopPct: 0 };
+test('grace stop: breaching the arm line starts the window instead of selling', () => {
+  const d = evaluateExit(pos({ entryTs: NOW - 30 * S }), mark(0.0178), stopCfg, NOW);   // ratio 0.89
+  assert.equal(d.fraction, 0); assert.equal(d.stopArmedTs, NOW);
+});
+test('grace stop: still down after the grace with dead flow sells, confirmed', () => {
+  const d = evaluateExit(pos({ entryTs: NOW - 30 * S, stopArmedTs: NOW - 5 * S }), mark(0.0178, { buysM5: 1, sellsM5: 9 }), stopCfg, NOW);
+  assert.equal(d.fraction, 1); assert.match(d.reason, /stop-loss .*confirmed/);
+  const d2 = evaluateExit(pos({ entryTs: NOW - 30 * S, stopArmedTs: NOW - 6 * S }), mark(0.0178, { buysM5: 20, sellsM5: 25 }), stopCfg, NOW);
+  assert.equal(d2.fraction, 1); // sells outweighing buys confirms too
+});
+test('grace stop: buyers absorbing the dip vetoes the sell and disarms', () => {
+  const d = evaluateExit(pos({ entryTs: NOW - 30 * S, stopArmedTs: NOW - 5 * S }), mark(0.0178, { buysM5: 30, sellsM5: 10 }), stopCfg, NOW);
+  assert.equal(d.fraction, 0); assert.equal(d.stopArmedTs, null);
+});
+test('grace stop: recovery above the arm line cancels the arming', () => {
+  const d = evaluateExit(pos({ entryTs: NOW - 30 * S, stopArmedTs: NOW - 3 * S }), mark(0.0192), stopCfg, NOW); // ratio 0.96
+  assert.equal(d.fraction, 0); assert.equal(d.stopArmedTs, null);
+});
+test('hard floor sells instantly — no grace, no veto', () => {
+  const d = evaluateExit(pos({ entryTs: NOW - 30 * S }), mark(0.0158, { buysM5: 40, sellsM5: 2 }), stopCfg, NOW); // ratio 0.79, strong buys
+  assert.equal(d.fraction, 1); assert.match(d.reason, /hard floor/);
 });
 test('stall and dip stop can be turned off', () => {
   const off = { ...cfg, stallSec: 0, dipStopPct: 0 };
@@ -97,7 +126,7 @@ test('profit lock: gives back half of the best gain → sell the rest', () => {
   assert.equal(d.fraction, 1); assert.match(d.reason, /profit lock/);
 });
 test('profit lock not armed below +15% peak', () => {
-  assert.equal(evaluateExit(pos({ peakRatio: 1.12, stallSince: NOW }), mark(0.0205), cfg, NOW).fraction, 0);
+  assert.equal(evaluateExit(pos({ peakRatio: 1.12, entryTs: NOW - 30 * S }), mark(0.0205), cfg, NOW).fraction, 0);
 });
 test('a big runner keeps running until it gives back a quarter (post-TP1 trail)', () => {
   const p = pos({ tp1Done: true, remainingFrac: 0.5, peakRatio: 3, stallSince: null });      // peak +200%

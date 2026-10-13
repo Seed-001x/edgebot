@@ -29,7 +29,11 @@ export function evaluateExit(pos, mark, cfg, now) {
   // Positions opened before peakMove existed seed from their stored peakRatio — a one-off migration
   // approximation; every position opened since carries the exact peakMove from birth.
   const peakMove = Math.max(pos.peakMove != null ? pos.peakMove : (pos.peakRatio || 1) / base, move);
-  const out = (fraction, reason) => ({ fraction, reason, newPeak: peakRatio, newPeakMove: peakMove, ratio, stallSince: null });
+  // grace-stop state: armed the first tick the realizable value breaches the arm line (section 2b).
+  // Recovery above the arm line cancels the arming outright (user 2026-10-13).
+  let stopArmedTs = pos.stopArmedTs || null;
+  if (ratio > 1 - cfg.stopLoss) stopArmedTs = null;
+  const out = (fraction, reason) => ({ fraction, reason, newPeak: peakRatio, newPeakMove: peakMove, ratio, stallSince: null, stopArmedTs });
 
   // 1. liquidity death: the pool can no longer absorb what we hold
   const valueUsd = mark.valueSol * (mark.solUsd || 150);
@@ -38,8 +42,22 @@ export function evaluateExit(pos, mark, cfg, now) {
   // 2a. dip stop: price fell dipStopPct below entry — sell, no exceptions
   if (cfg.dipStopPct > 0 && move <= 1 - cfg.dipStopPct) return out(1, `dip stop (price ${((move - 1) * 100).toFixed(1)}% from entry)`);
 
-  // 2. hard stop on realizable value — no exceptions
-  if (ratio <= 1 - cfg.stopLoss) return out(1, `stop-loss (${((ratio - 1) * 100).toFixed(0)}%)`);
+  // 2a2. hard floor on realizable value — no grace, no veto, no exceptions
+  if (cfg.stopHardPct > 0 && ratio <= 1 - cfg.stopHardPct) return out(1, `stop-loss (${((ratio - 1) * 100).toFixed(0)}%, hard floor)`);
+
+  // 2b. grace stop (user 2026-10-13): breaching the arm line (cfg.stopLoss) starts a grace window
+  //     instead of selling on the tick. When the window ends, the flow decides with an exact test:
+  //     sells outweighing buys (sellsM5 > buysM5) or almost no buys left (buysM5 <= 2) — or no flow
+  //     data at all — confirms the death and sells. Buyers at least matching sells vetoes the sell
+  //     (they're absorbing the dip) and disarms, so a later breach re-arms fresh.
+  if (cfg.stopLoss > 0 && ratio <= 1 - cfg.stopLoss) {
+    if (stopArmedTs == null) stopArmedTs = now;
+    if (now - stopArmedTs >= (cfg.stopGraceSec || 0) * 1000) {
+      const flowAlive = cfg.stopFlowVeto > 0 && mark.buysM5 != null && mark.buysM5 > 2 && mark.sellsM5 <= mark.buysM5;
+      if (!flowAlive) return out(1, `stop-loss (${((ratio - 1) * 100).toFixed(0)}%, confirmed after ${cfg.stopGraceSec}s grace, flow ${mark.buysM5 ?? '?'}b/${mark.sellsM5 ?? '?'}s)`);
+      stopArmedTs = null;
+    }
+  }
 
   // 3. first take-profit on the jump: bank part, let the rest run (skipped if user disabled TP for this position).
   //    +25% means +25% in your pocket after slippage and SOL fees, not +25% on the chart.
@@ -56,11 +74,11 @@ export function evaluateExit(pos, mark, cfg, now) {
   //     best real gain. Scales with the move: best +40% → sells at +20%; best +200% → sells at +100% (lockKeep 0.5).
   if (cfg.lockKeep > 0 && peakGain >= cfg.lockArm && gain <= peakGain * cfg.lockKeep) return out(1, `profit lock (best +${(peakGain * 100).toFixed(0)}%, now +${(gain * 100).toFixed(0)}% after fees)`);
 
-  // 4b. entry stall (user 2026-10-13): the clock starts AT ENTRY and never pauses. If the price never
-  //     broke out of the entry range — best move stayed under entry + stallBandPct — within stallSec,
-  //     it isn't running: sell. Above or below entry inside the range makes no difference, and a coin
-  //     that did break out inside the window is exempt for the rest of the trade however it fades.
-  if (cfg.stallSec > 0 && heldMin * 60 >= cfg.stallSec && peakMove < 1 + cfg.stallBandPct) return out(1, `stall (no breakout in ${cfg.stallSec}s, best ${((peakMove - 1) * 100).toFixed(1)}%)`);
+  // 4b. entry stall (user 2026-10-13, endpoint version): at stallSec from entry, judge where the
+  //     price IS, not where it has been — inside the ±stallBandPct entry range = stalling = sell,
+  //     however it got there. A spike that faded back into the range sells; a coin still outside
+  //     the range (either direction) is some other rule's problem. Post-TP1 runners are exempt.
+  if (cfg.stallSec > 0 && !pos.tp1Done && heldMin * 60 >= cfg.stallSec && move >= 1 - cfg.stallBandPct && move <= 1 + cfg.stallBandPct) return out(1, `stall (in entry range at ${cfg.stallSec}s, ${((move - 1) * 100).toFixed(1)}%)`);
 
   // 5. momentum failure: underwater, 10 min in, essentially no buyers (only sell when truly dead)
   if (heldMin >= 10 && ratio < 1 && mark.buysM5 != null && mark.buysM5 <= 1 && mark.sellsM5 > mark.buysM5 * 3) return out(1, 'momentum failure (no buyers)');

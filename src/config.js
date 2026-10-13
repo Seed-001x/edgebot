@@ -117,10 +117,13 @@ export function loadConfig(env = process.env) {
     setupBlacklistMin: num(env, 'SETUP_BLACKLIST_MIN', 0),
 
     // ---- exits (judged on REALIZABLE value = Jupiter sell quote, not screen price) ----
-    stopLoss: num(env, 'STOP_LOSS', 0.15),                // backstop on realizable value (incl. fees/slippage)
+    stopLoss: num(env, 'STOP_LOSS', 0.15),                // grace-stop ARM line on realizable value (user 2026-10-13: 0.10 live via env)
+    stopHardPct: num(env, 'STOP_HARD_PCT', 0.20),         // hard floor: sells instantly at this drawdown, no grace/veto
+    stopGraceSec: num(env, 'STOP_GRACE_SEC', 5),          // seconds between arming and the flow-confirmed sell
+    stopFlowVeto: num(env, 'STOP_FLOW_VETO', 1),          // 1 = buyers absorbing the dip vetoes a confirmed stop (0 = off)
     dipStopPct: num(env, 'DIP_STOP_PCT', 0.05),           // sell if PRICE drops this far below entry (0 = off)
     stallSec: num(env, 'STALL_SEC', 60),                  // entry stall: sell if price never breaks out within this many seconds of entry (0 = off)
-    stallBandPct: num(env, 'STALL_BAND_PCT', 0.05),       // breakout bar: best price move must exceed entry + this within stallSec (user 2026-10-13: the -5%..+5% entry range; clock runs from entry, never pauses)
+    stallBandPct: num(env, 'STALL_BAND_PCT', 0.05),       // entry range half-width: at stallSec the price must be OUTSIDE entry ± this or the position sells (user 2026-10-13 endpoint version)
     tp1Pct: num(env, 'TP1_PCT', 0.25),                    // bank part on the jump: +25% in your pocket after slippage + SOL fees
     tp1Frac: num(env, 'TP1_FRAC', 0.65),                  // ...sell 65% of it
     tpTrailPct: num(env, 'TP_TRAIL_PCT', 0.25),           // after TP1, trail the rest this far below its peak (hard floor at entry)
@@ -163,6 +166,8 @@ export function validateConfig(cfg) {
   if (cfg.haltDownSol < 0) errs.push('HALT_DOWN_SOL must be >= 0');
   if (cfg.killEquityFrac <= 0 || cfg.killEquityFrac >= 1) errs.push('KILL_EQUITY_FRAC must be between 0 and 1');
   if (cfg.stopLoss <= 0 || cfg.stopLoss >= 1) errs.push('STOP_LOSS must be between 0 and 1');
+  if (cfg.stopHardPct <= 0 || cfg.stopHardPct >= 1) errs.push('STOP_HARD_PCT must be between 0 and 1');
+  if (cfg.stopGraceSec < 0 || cfg.stopGraceSec > 120) errs.push('STOP_GRACE_SEC must be between 0 and 120');
   if (cfg.dipStopPct < 0 || cfg.dipStopPct >= 1) errs.push('DIP_STOP_PCT must be between 0 and 1 (0 = off)');
   if (cfg.stallSec < 0) errs.push('STALL_SEC must be >= 0 (0 = off)');
   if (cfg.lockKeep < 0 || cfg.lockKeep >= 1) errs.push('PROFIT_LOCK_KEEP must be between 0 and 1 (0 = off)');
