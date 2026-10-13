@@ -81,7 +81,8 @@ export function instantGradCheck(curve, ageH, { maxBuys = 3, maxAgeH = 24 } = {}
   if (ageH > maxAgeH) return { pass: true, reason: 'too old to judge from 24h data' };
   const buys = num(curve.buys);
   if (buys <= 0) return { pass: true, reason: 'curve history unknown' };
-  return { pass: buys > maxBuys, reason: buys > maxBuys ? `${buys} buys on the curve` : `bonding curve filled in ${buys} buy(s) — bought out at launch`, buys };
+  const bundled = num(curve.buyIxs) > buys ? ` (${num(curve.buyIxs)} buys bundled into them)` : '';
+  return { pass: buys > maxBuys, reason: buys > maxBuys ? `${buys} buys on the curve` : `bonding curve filled in ${buys} buy tx(s)${bundled} — bought out at launch`, buys };
 }
 
 // 1e. Bot flow on a young coin: thousands of trades averaging a few dollars = volume bots walking

@@ -10,7 +10,7 @@ const errs = validateConfig(cfg);
 if (errs.length) { console.error('Config errors:\n - ' + errs.join('\n - ')); process.exit(1); }
 
 const exec = new Executor(cfg);
-const bot = new Bot(cfg, { discover, fetchViews, fetchSolUsd, fetchRug, searchByName, fetchCurve, exec });
+const bot = new Bot(cfg, { discover, fetchViews, fetchSolUsd, fetchRug, searchByName, fetchCurve: (mint) => fetchCurve(mint, cfg), exec });
 
 console.log(`[edgebot] mode=${cfg.realMode ? 'REAL' : 'SHADOW'}${cfg.modeWarning ? '  (' + cfg.modeWarning + ')' : ''}`);
 console.log(`[edgebot] limits: ${cfg.tradeSol} SOL/trade, ${cfg.maxPositions} positions, daily loss cap ${cfg.dailyLossSol} SOL, kill at <${cfg.killEquityFrac * 100}% equity`);

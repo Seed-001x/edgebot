@@ -64,15 +64,31 @@ export async function fetchSolUsd(now = Date.now()) {
 /**
  * Trade counts on the coin's pump.fun bonding-curve pair (for the instant-graduation gate).
  * Returns { buys, sells } from the last 24h, or null if the coin has no curve pair / data is missing.
+ *
+ * DexScreener zeroes the curve pair at graduation (always 0/0 afterwards), which used to
+ * make the gate read "history unknown" for exactly the coins it exists to judge. When the
+ * DexScreener counts read empty on a recently graduated coin, fall back to the true curve
+ * history read from chain (src/curveChain.js). Any failure there keeps the old fail-open
+ * result — never block on evidence we couldn't fetch.
  */
-export async function fetchCurve(mint) {
+export async function fetchCurve(mint, cfg) {
   const pairs = await fetchJson(`${DS}/token-pairs/v1/solana/${mint}`);
   const curve = (Array.isArray(pairs) ? pairs : []).find(p => p && p.dexId === 'pumpfun');
   if (!curve) return null;
-  const graduated = pairs.some(p => p && p.dexId && p.dexId !== 'pumpfun');
-  if (!graduated) return null; // still on the curve — nothing to judge yet
+  const amm = (Array.isArray(pairs) ? pairs : []).find(p => p && p.dexId && p.dexId !== 'pumpfun');
+  if (!amm) return null; // still on the curve — nothing to judge yet
   const h24 = (curve.txns && curve.txns.h24) || {};
-  return { buys: Number(h24.buys) || 0, sells: Number(h24.sells) || 0 };
+  const ds = { buys: Number(h24.buys) || 0, sells: Number(h24.sells) || 0 };
+  if (ds.buys > 0) return ds;
+  const gradAgeMs = amm.pairCreatedAt ? Date.now() - Number(amm.pairCreatedAt) : Infinity;
+  if (cfg && cfg.rpcUrls && cfg.rpcUrls.length && gradAgeMs < 36 * 3600 * 1000) {
+    try {
+      const { fetchChainCurveHistory } = await import('./curveChain.js');
+      const hist = await fetchChainCurveHistory(mint, { rpcUrls: cfg.rpcUrls, maxBuys: cfg.instantGradMaxBuys ?? 5 });
+      if (hist && hist.buys > 0) return hist;
+    } catch { /* fall through to the DexScreener result */ }
+  }
+  return ds;
 }
 
 /** Same-name / same-ticker coins, for the clone check. */
