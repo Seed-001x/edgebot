@@ -2,8 +2,14 @@
 //
 // Flow:
 //   1. Auth: sign "Sign in to pump.fun: <ts>" with the wallet key → POST /auth/login → JWT
-//   2. Research: read the coin's pump.fun description, its website, and its X post/profile
-//   3. Thesis: an LLM writes a short thesis from ONLY what step 2 found, plus 1–2 stats
+//   2. Facts: the callout body is built BY CODE from the entry signal — the setup that
+//      fired, the exact entry market cap, and the decisive numbers for that setup.
+//      (Rebuilt 2026-10-12, user: LLM-written callouts were "meh" — facts passed
+//      through the model came out as filler like "pure momentum play"/"whopping".)
+//   3. Narrative clause (optional): if research (description/website/X) finds a real
+//      project story, the LLM may contribute ONE short clause saying what the coin
+//      is. It is validated to contain no numbers and no hype, so it can never
+//      corrupt the facts; absent a real story, the callout is facts only.
 //   4. Post: POST /callout/create { coinMint, thesis, marketCap }
 //
 // The callout posts as the user's pump.fun profile, so callout rewards
@@ -183,54 +189,64 @@ async function research(v) {
 
 const fmtUsd = n => n == null || !isFinite(n) ? null : n >= 1e6 ? `$${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `$${Math.round(n / 1e3)}k` : `$${Math.round(n)}`;
 
-// The stats worth quoting, in plain words. Only includes numbers we actually have.
-function statLines(v, sig) {
-  const m = sig.metrics || {};
-  const s = [];
-  if (v.mc) s.push(`market cap ${fmtUsd(v.mc)}`);
-  if (m.volH1) s.push(`${fmtUsd(Number(m.volH1))} volume in the last hour`);
-  if (m.holders) s.push(`${m.holders} holders`);
-  if (m.buysM5 != null && m.sellsM5 != null) s.push(`${m.buysM5} buys vs ${m.sellsM5} sells in 5 min`);
-  if (m.chgM5 != null) s.push(`${Number(m.chgM5) >= 0 ? '+' : ''}${Math.round(Number(m.chgM5))}% in 5 min`);
-  if (m.gradSec != null) s.push(`graduated in ${m.gradSec}s`);
-  return s;
-}
-
 const BANNED = /\b(moon|mooning|gem|ape[ds]?|lfg|fomo|100x|1000x|send(ing)? it|don'?t miss|sleep(ing)? on|explode|viral|guaranteed|next \w+ coin)\b/i;
 const DISCLAIM = /\b(not (financial )?advice|nfa|dyor|risky|be careful|invalid if)\b/i;
+const FLUFF = /\b(whopping|massive|huge|insane|crazy|just|pure momentum|momentum play|incredible|amazing)\b/i;
 
-async function aiThesis(v, sig) {
-  const r = await research(v);
-  const stats = statLines(v, sig);
-  const sym = (r.symbol || v.symbol || '???').replace(/^\$/, '');
-  const haveContext = !!(r.description || r.site || r.xText);
+/**
+ * The fact block: built by code from the entry signal, never by the LLM.
+ * Setup-aware — a trend callout leads with the hour, a pop with the 5 minutes —
+ * and every number is one the bot actually measured at the decision.
+ */
+export function factBlock(v, sig) {
+  const m = (sig && sig.metrics) || {};
+  const sym = '$' + (v.symbol || '???').replace(/^\$/, '').toLowerCase();
+  const head = `in ${sym}` + (v.mc ? ` at ${fmtUsd(v.mc)} mc` : '');
+  const pct = (x) => `${Number(x) >= 0 ? '+' : ''}${Math.round(Number(x))}%`;
+  const parts = [];
+  let setupWord = sig && sig.setup ? `${sig.setup}: ` : '';
+  if (sig && sig.setup === 'trend') {
+    if (m.chgH1 != null) parts.push(`${pct(m.chgH1)} on the hour`);
+    if (m.chgM5 != null) {
+      parts.push(`${pct(m.chgM5)} last 5m`);
+      if (Number(m.chgM5) >= Number(m.chgH1 ?? 0) && Number(m.chgM5) >= 20) setupWord = 'trend still accelerating: ';
+    }
+    if (m.volH1) parts.push(`${fmtUsd(Number(m.volH1))}/h volume`);
+  } else {
+    if (m.gainPct != null) parts.push(`${pct(m.gainPct)} in 5 min`);
+    else if (m.chgM5 != null) parts.push(`${pct(m.chgM5)} in 5 min`);
+    if (m.volM5) parts.push(`${fmtUsd(Number(m.volM5))} 5m volume`);
+    else if (m.volH1) parts.push(`${fmtUsd(Number(m.volH1))}/h volume`);
+    if (m.drawFromPeak != null && Number(m.drawFromPeak) <= 0.02) parts.push('right at its highs');
+  }
+  if (m.holders) parts.push(`${m.holders} holders`);
+  if (m.buyRatioM5 != null && Number(m.buyRatioM5) >= 0.5) parts.push(`${Math.round(Number(m.buyRatioM5) * 100)}% buys`);
+  return (parts.length ? `${head}. ${setupWord}${parts.join(', ')}.` : `${head}.`).slice(0, 280);
+}
+
+/** A narrative clause may only describe what the coin IS — no numbers, no hype, no filler. */
+export function validClause(txt) {
+  if (!txt) return null;
+  const t = String(txt).trim().replace(/^["'“”]+|["'“”]+$/g, '').replace(/[.!]+$/, '').trim().toLowerCase();
+  if (t.length < 12 || t.length > 90) return null;
+  if (/\d/.test(t)) return null; // facts live in the fact block; the clause carries none
+  if (BANNED.test(t) || DISCLAIM.test(t) || FLUFF.test(t)) return null;
+  if (/\bmeme ?coin\b|\bmemecoin\b|\btoken\b|\bthis coin\b/.test(t)) return null;
+  if (t === 'none') return null;
+  return t;
+}
+
+async function narrativeClause(r) {
   const key = process.env.OPENAI_API_KEY;
-  if (!key) return statsThesis(sym, stats);
+  if (!key) return null;
+  const src = [r.description && `description: ${r.description}`, r.site && `website: ${r.site}`, r.xText && `X: ${r.xText}`].filter(Boolean).join('\n');
+  if (src.replace(/\s/g, '').length < 40) return null; // nothing real to summarize
+  const prompt = `From this text about a crypto project, write ONE clause (max 12 words, lowercase, NO numbers, no hype, no prices) saying what the project IS or claims to do, in its own framing — e.g. "a prediction market for livestream events" or "the mascot dog of the eth merge anniversary". If the text is generic, empty, just links, or says nothing concrete about what the project is, reply with exactly: NONE
 
-  const prompt = `Write a pump.fun callout for $${sym}, a coin I just bought.
+Text:
+${src.slice(0, 1800)}
 
-What the project says about itself (this is the ONLY source for the thesis):
-- Name: ${r.name || v.name || sym}
-- pump.fun description: ${r.description || '(none)'}
-- Website: ${r.site || '(none or unreadable)'}
-- X: ${r.xText || '(none or unreadable)'}
-
-Numbers at entry: ${stats.join('; ') || '(none)'}
-
-Write it like this:
-- Sentence 1 is the thesis: what this project is or claims to do, and why that could catch on right now. Describe it the way the project describes itself. ${haveContext ? '' : 'There is no project info, so say it is a pure momentum play and lead with the numbers.'}
-- Sentence 2: the one or two most striking numbers from the list, stated plainly.
-- Lowercase, casual, like a trader posting from their phone. Under 220 characters total.
-
-Never:
-- call it a memecoin, meme, token, or "this coin"
-- invent features, partners, listings, team members, news or attention that aren't in the text above
-- use hype words (moon, gem, ape, 100x, hidden gem, don't sleep on, lfg) or exclamation marks
-- add warnings, risks, exit levels or disclaimers
-- wrap the callout in quotes
-
-Return only the callout text.`;
-
+Return only the clause or NONE.`;
   try {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -238,31 +254,34 @@ Return only the callout text.`;
       body: JSON.stringify({
         model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
         messages: [{ role: 'user', content: prompt }],
-        max_tokens: 120,
-        temperature: 0.7,
+        max_tokens: 40,
+        temperature: 0.4,
       }),
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(12000),
     });
-    if (!res.ok) throw new Error(`OpenAI ${res.status}`);
+    if (!res.ok) return null;
     const data = await res.json();
-    let txt = (data.choices?.[0]?.message?.content || '').trim().replace(/^["'“”]+|["'“”]+$/g, '').replace(/!+/g, '.');
-    if (!txt) throw new Error('empty reply');
-    if (BANNED.test(txt) || DISCLAIM.test(txt) || /\bmeme ?coin\b/i.test(txt)) throw new Error('reply broke the style rules: ' + txt.slice(0, 80));
-    console.log(`[callout] thesis for ${sym} from ${[r.description && 'description', r.site && 'website', r.xText && 'X'].filter(Boolean).join('+') || 'stats only'}`);
-    return txt.slice(0, 280);
+    return validClause(data.choices?.[0]?.message?.content || '');
+  } catch { return null; }
+}
+
+async function aiThesis(v, sig) {
+  const facts = factBlock(v, sig);
+  try {
+    const r = await research(v);
+    const clause = await narrativeClause(r);
+    if (clause) {
+      console.log(`[callout] thesis for ${v.symbol}: narrative clause + facts`);
+      return `${clause} — ${facts}`.slice(0, 280);
+    }
+    console.log(`[callout] thesis for ${v.symbol}: facts only`);
   } catch (e) {
-    console.log('[callout] AI thesis failed, using stats line:', e.message);
+    console.log('[callout] research/clause failed, facts only:', e.message);
   }
-  return statsThesis(sym, stats);
+  return facts;
 }
 
-// Fallback when there's no LLM or it misbehaves: plain, true, no invented narrative.
-function statsThesis(sym, stats) {
-  const pick = stats.slice(0, 2).join(', ');
-  return (pick ? `in $${sym.toLowerCase()}. ${pick}.` : `in $${sym.toLowerCase()}.`).slice(0, 280);
-}
-
-export function thesis(v, sig) { return statsThesis((v.symbol || '???').replace(/^\$/, ''), statLines(v, sig || {})); }
+export function thesis(v, sig) { return factBlock(v, sig || {}); }
 
 // Follow-up posts. Pass sig.stillHolding = false after the bot sells so the post stays true.
 function progressThesis(v, sig) {
