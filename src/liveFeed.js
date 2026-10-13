@@ -14,6 +14,15 @@ import WebSocket from 'ws';
 const DEFAULT_URL = 'wss://pumpportal.fun/api/data';
 const B58 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
+/** Effective connect URL: the API key rides as ?api-key= (PumpPortal's documented
+ *  form; trade subscriptions are rejected without it). No-op without a key. The
+ *  result is a secret-bearing string — never log it. */
+export function feedUrl(url, apiKey) {
+  if (!apiKey) return url;
+  if (url.includes('api-key=')) return url;
+  return url + (url.includes('?') ? '&' : '?') + 'api-key=' + apiKey;
+}
+
 /** Extract a new-coin mint from a PumpPortal message. Returns null for anything else. */
 export function parseNewCoin(raw) {
   let d;
@@ -52,8 +61,9 @@ export class LiveFeed {
    * @param {() => string[]} [opts.tradeWatch] returns the mints whose trades should be streamed
    * @param {(patch: object) => void} [opts.onStats] receives stat updates
    */
-  constructor({ url = DEFAULT_URL, onMint, onTrade, tradeWatch, onStats } = {}) {
+  constructor({ url = DEFAULT_URL, apiKey = '', onMint, onTrade, tradeWatch, onStats } = {}) {
     this.url = url;
+    this.apiKey = apiKey || '';
     this.onMint = onMint || (() => {});
     this.onTrade = onTrade || null;
     this.tradeWatch = tradeWatch || null;
@@ -117,7 +127,7 @@ export class LiveFeed {
     if (this.stopped) return;
     let ws;
     try {
-      ws = new WebSocket(this.url, {
+      ws = new WebSocket(feedUrl(this.url, this.apiKey), {
         headers: { 'User-Agent': 'Mozilla/5.0 (compatible; EdgebotLiveFeed/1.0)' },
         handshakeTimeout: 15000,
       });

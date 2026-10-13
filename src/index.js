@@ -25,6 +25,7 @@ if (cfg.liveFeed) {
   const { LiveFeed } = await import('./liveFeed.js');
   const feed = new LiveFeed({
     url: cfg.liveFeedUrl,
+    apiKey: cfg.pumpportalApiKey,
     onMint: (mint) => bot.noteMint(mint, 'live-ws'),
     onTrade: cfg.fastPop ? (mint, trade) => bot.noteTrade(mint, trade) : null,
     tradeWatch: cfg.fastPop ? () => bot.tradeWatchMints() : null,

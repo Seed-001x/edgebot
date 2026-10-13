@@ -1,7 +1,7 @@
 // liveFeed.test.mjs — parser tests for the PumpPortal websocket feed.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseNewCoin, parseTrade, LiveFeed } from '../src/liveFeed.js';
+import { parseNewCoin, parseTrade, LiveFeed, feedUrl } from '../src/liveFeed.js';
 
 const MINT = 'HyGtGYUEnnJXzGaN3RdLb261P82nGrApxJj3KsZ3V7Ht';
 
@@ -72,4 +72,11 @@ test('syncTradeSubs subscribes additions and unsubscribes removals', () => {
   assert.deepEqual([...feed.tradeSubs].sort(), [B, C]);
   feed.syncTradeSubs(); // no change = no frames
   assert.equal(sent.length, 3);
+});
+
+test('feedUrl appends the api key only when one is configured', () => {
+  assert.equal(feedUrl('wss://pumpportal.fun/api/data', ''), 'wss://pumpportal.fun/api/data');
+  assert.equal(feedUrl('wss://pumpportal.fun/api/data', 'KEY123'), 'wss://pumpportal.fun/api/data?api-key=KEY123');
+  assert.equal(feedUrl('wss://example.test/feed?x=1', 'KEY123'), 'wss://example.test/feed?x=1&api-key=KEY123');
+  assert.equal(feedUrl('wss://example.test/feed?api-key=OLD', 'KEY123'), 'wss://example.test/feed?api-key=OLD');
 });

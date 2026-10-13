@@ -191,6 +191,7 @@ export function loadConfig(env = process.env) {
     // ---- live feed (PumpPortal websocket: new launches in seconds) ----
     liveFeed: env.LIVE_FEED !== '0',
     liveFeedUrl: env.PUMPPORTAL_WS_URL || 'wss://pumpportal.fun/api/data',
+    pumpportalApiKey: env.PUMPPORTAL_API_KEY || '',   // unlocks PumpPortal trade streaming (subscribeTokenTrade is key-gated: the linked wallet must hold >= 0.02 SOL). Appended as ?api-key= at connect; never logged.
 
     dataDir: env.DATA_DIR || './data',
     port: num(env, 'PORT', 3000),
