@@ -20,7 +20,7 @@ export function loadConfig(env = process.env) {
     maxPositions: num(env, 'MAX_POSITIONS', 5),
     dailyLossSol: num(env, 'DAILY_LOSS_SOL', 0),        // realized loss in a UTC day that halts new entries; 0 = disabled
     haltAfterCloses: num(env, 'HALT_AFTER_CLOSES', 0),  // one-shot: halt new entries after this many more closes; 0 = off
-    haltDownSol: num(env, 'HALT_DOWN_SOL', 0),          // drawdown halt: once armed (baseline = day P&L at first check), halt if day P&L falls this much below the baseline; 0 = off. Set 0.09 by user 2026-10-13 for overnight.
+    haltDownSol: num(env, 'HALT_DOWN_SOL', 0),          // balance halt: once armed (baseline = wallet equity at first check), halt if equity falls this much below the baseline; 0 = off. Set 0.09 by user 2026-10-13 for overnight — user corrected: BALANCE, not day P&L.
     killEquityFrac: num(env, 'KILL_EQUITY_FRAC', 0.5),  // wallet SOL below this fraction of starting → permanent halt
     minReserveSol: num(env, 'MIN_RESERVE_SOL', 0.02),   // never spend the last of the fees
     maxTradesPerHour: num(env, 'MAX_TRADES_PER_HOUR', 120),

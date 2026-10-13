@@ -369,6 +369,7 @@ export class Bot {
     const [solUsd, walletSol] = await Promise.all([this.d.fetchSolUsd(), this.exec.solBalance()]);
     const open = this.positions.reduce((a, p) => a + p.entrySol * p.remainingFrac, 0);
     this.risk.checkKill(walletSol, open);
+    this.risk.checkBalanceHalt(walletSol, open);
 
     const size = this.risk.sizeFor(v.liq, solUsd);
     const gate0 = this.risk.canEnter({ mint: v.address, walletSol, openCount: this.positions.length, sizeSol: size, halted: this.halted() });
@@ -485,7 +486,7 @@ export class Bot {
         try { await this.managePosition(pos, solUsd); } catch (e) { this.err(`position ${pos.symbol}`, e); }
       }
       const walletSol = await this.exec.solBalance().catch(() => null);
-      if (walletSol != null) this.risk.checkKill(walletSol, this.positions.reduce((a, p) => a + p.entrySol * p.remainingFrac, 0));
+      if (walletSol != null) { const oc = this.positions.reduce((a, p) => a + p.entrySol * p.remainingFrac, 0); this.risk.checkKill(walletSol, oc); this.risk.checkBalanceHalt(walletSol, oc); }
       this.stats.positionTicks++;
     } finally { this.busy.pos = false; this.saveStats(); }
   }

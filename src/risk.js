@@ -14,7 +14,7 @@ export class Risk {
     this.load();
     if (!this.s.losers) this.s.losers = {}; // risk.json from before this field existed
     if (!this.s.closed) this.s.closed = {}; // every close (win or loss) — the re-entry block
-    if (this.s.haltDownBaseline === undefined) this.s.haltDownBaseline = null; // drawdown-halt anchor
+    if (this.s.haltBalBaseline === undefined) this.s.haltBalBaseline = null; // balance-halt anchor (equity SOL)
     if (this.s.downHalted === undefined) this.s.downHalted = false;
     // arm the one-shot auto-halt at startup so "N more closes" counts from now, not from the first close
     if ((this.cfg.haltAfterCloses || 0) > 0 && this.s.haltArmedAt == null) {
@@ -34,22 +34,20 @@ export class Risk {
 
   rollDay() {
     const k = dayKey(this.now());
-    if (k !== this.s.day) {
-      this.s.day = k; this.s.dayPnlSol = 0;
-      if (this.s.haltDownBaseline != null) this.s.haltDownBaseline = 0; // re-anchor: down-limit now guards the new day from its start
-      this.save();
-    }
+    if (k !== this.s.day) { this.s.day = k; this.s.dayPnlSol = 0; this.save(); }
   }
 
-  /** Drawdown halt (user, overnight 2026-10-13): the first check after arming anchors the
-   *  baseline at the current day P&L; if day P&L later falls HALT_DOWN_SOL below it, write
-   *  the HALT file and latch downHalted. Persists in risk.json; never auto-releases —
-   *  only a manual /resume + risk reset clears it, same as every other halt. */
-  checkDrawdownHalt() {
+  /** Balance halt (user, overnight 2026-10-13, corrected by user to BALANCE not day P&L):
+   *  the first check after arming anchors the baseline at current equity (wallet SOL +
+   *  open positions at cost, so opening a position doesn't fake a drop); if equity later
+   *  falls HALT_DOWN_SOL below the anchor, write the HALT file and latch downHalted.
+   *  Persists in risk.json; never auto-releases — only a deliberate /resume clears it. */
+  checkBalanceHalt(walletSol, openCostSol = 0) {
     const lim = this.cfg.haltDownSol || 0;
-    if (!(lim > 0) || this.s.downHalted) return;
-    if (this.s.haltDownBaseline == null) { this.s.haltDownBaseline = this.s.dayPnlSol; this.save(); return; }
-    if (this.s.dayPnlSol <= this.s.haltDownBaseline - lim) {
+    if (!(lim > 0) || this.s.downHalted || walletSol == null) return;
+    const equity = walletSol + (openCostSol || 0);
+    if (this.s.haltBalBaseline == null) { this.s.haltBalBaseline = equity; this.save(); return; }
+    if (equity <= this.s.haltBalBaseline - lim) {
       this.s.downHalted = true;
       try { fs.writeFileSync(path.join(path.dirname(this.file || '.'), 'HALT'), String(this.now())); } catch {}
       this.save();
@@ -72,10 +70,10 @@ export class Risk {
     }
   }
 
-  /** Deliberate human resume: release the drawdown latch and re-anchor at current P&L. */
+  /** Deliberate human resume: release the balance-halt latch; the next equity check re-anchors. */
   clearDownHalt() {
     this.s.downHalted = false;
-    this.s.haltDownBaseline = this.s.dayPnlSol;
+    this.s.haltBalBaseline = null;
     this.save();
   }
 
@@ -83,8 +81,7 @@ export class Risk {
   canEnter({ mint, walletSol, openCount, sizeSol, halted = false }) {
     this.rollDay();
     const n = this.now();
-    this.checkDrawdownHalt();
-    if (this.s.downHalted) return { ok: false, reason: `down-stop hit (day P&L fell ${this.cfg.haltDownSol} below the armed baseline) — halted` };
+    if (this.s.downHalted) return { ok: false, reason: `balance down-stop hit (equity fell ${this.cfg.haltDownSol} SOL below the armed balance) — halted` };
     if (halted) return { ok: false, reason: 'HALT file present' };
     if (this.s.killed) return { ok: false, reason: `kill switch: ${this.s.killReason}` };
     if (this.cfg.dailyLossSol > 0 && this.s.dayPnlSol <= -this.cfg.dailyLossSol) return { ok: false, reason: `daily loss cap hit (${this.s.dayPnlSol.toFixed(4)} SOL)` };
@@ -128,7 +125,6 @@ export class Risk {
   recordClose(pnlSol, mint = null) {
     this.rollDay();
     this.s.dayPnlSol += pnlSol;
-    this.checkDrawdownHalt();
     this.s.totalCloses = (this.s.totalCloses || 0) + 1;
     // one-shot auto-halt: after N more closes, write the HALT file (survives restarts; /resume re-arms)
     const hac = this.cfg.haltAfterCloses || 0;
@@ -155,6 +151,6 @@ export class Risk {
 
   snapshot() {
     this.rollDay();
-    return { day: this.s.day, dayPnlSol: +this.s.dayPnlSol.toFixed(5), dailyLossSol: this.cfg.dailyLossSol, tradesLastHour: this.s.tradeTs.filter(t => this.now() - t < 3600000).length, startEquitySol: this.s.startEquitySol, killed: this.s.killed, killReason: this.s.killReason, haltDownSol: this.cfg.haltDownSol || 0, haltDownBaseline: this.s.haltDownBaseline, downHalted: this.s.downHalted };
+    return { day: this.s.day, dayPnlSol: +this.s.dayPnlSol.toFixed(5), dailyLossSol: this.cfg.dailyLossSol, tradesLastHour: this.s.tradeTs.filter(t => this.now() - t < 3600000).length, startEquitySol: this.s.startEquitySol, killed: this.s.killed, killReason: this.s.killReason, haltDownSol: this.cfg.haltDownSol || 0, haltBalBaseline: this.s.haltBalBaseline, downHalted: this.s.downHalted };
   }
 }
