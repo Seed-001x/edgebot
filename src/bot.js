@@ -457,7 +457,7 @@ export class Bot {
 
     const pos = {
       id: `${v.address.slice(0, 6)}-${n}`, mint: v.address, symbol: v.symbol, setup: sig.setup,
-      entryTs: n, entrySol: fill.solSpent, tokensRaw: fill.tokensRaw, remainingFrac: 1, peakRatio: 1, tp1Done: false, tp2Done: false, tp1Arm: null, flowHist: [],
+      entryTs: n, entrySol: fill.solSpent, tokensRaw: fill.tokensRaw, entryTokensRaw: fill.tokensRaw, remainingFrac: 1, peakRatio: 1, tp1Done: false, tp2Done: false, tp1Arm: null, flowHist: [], suspectUnbookedSell: false,
       entryPrice: v.price, entryMc: v.mc, realizedSol: 0, simulated: fill.simulated, sigBuy: fill.sig, markFails: 0,
       entryVolH1: v.volH1 || 0,
       entryRoundTrip: rt.ratio, peakMove: 1, stopArmedTs: null, floorChecks: 0, feesSol: this.cfg.txFeeSol || 0, // buy tx fee // entry stall: price is at entry (move 1.0) by definition; the 60s clock runs from entryTs
@@ -534,6 +534,43 @@ export class Bot {
     try { valueSol = await this.exec.markValue(pos.mint, pos.tokensRaw); pos.markFails = 0; pos.lastValueSol = valueSol; }
     catch { pos.markFails = (pos.markFails || 0) + 1; }
 
+    // Books-vs-chain reconciliation (fix zero): if one of OUR sells reported failure
+    // after its swap was sent (suspectUnbookedSell), the tokens may be gone while the
+    // books still count them — every later ratio, stop and report would be computed
+    // on tokens we no longer hold (DOGCART 2026-10-13: an unbooked TP1 left the
+    // remainder reading -56% and the hard floor dumped it at a real +33%). Resync to
+    // chain truth before judging exits. Only runs on the suspect flag, so genuine
+    // manual exits still flow to the manual-exit detector below, untouched.
+    if (this.cfg.realMode && !pos.simulated && pos.suspectUnbookedSell && valueSol != null) {
+      const chain = await this.exec.tokenBalance(pos.mint).catch(() => null);
+      if (chain != null) {
+        if (!pos.entryTokensRaw) pos.entryTokensRaw = String(Math.max(1, Math.round(Number(pos.tokensRaw) / Math.max(1e-9, pos.remainingFrac))));
+        const books = BigInt(pos.tokensRaw);
+        if (chain < books && books > 0n && (books - chain) * 50n >= books) {
+          const missing = books - chain;
+          const estSol = valueSol * (Number(missing) / Number(books)); // mark-priced estimate of the unbooked proceeds
+          pos.realizedSol += estSol;
+          this.journal.trade({ type: 'sell', id: pos.id, mint: pos.mint, symbol: pos.symbol, fraction: +(Number(missing) / Number(pos.entryTokensRaw)).toFixed(4), solOut: +estSol.toFixed(6), reason: 'reconciled unbooked sell (chain resync)', sig: null, simulated: false, ts: n });
+          console.log(`[reconcile] ${pos.symbol}: books ${books} vs chain ${chain} — booked the missing sell (~${estSol.toFixed(4)} SOL)`);
+          pos.tokensRaw = chain.toString();
+          pos.remainingFrac = Number(chain) / Number(pos.entryTokensRaw);
+          if (!pos.tp1Done && Number(missing) / Number(pos.entryTokensRaw) >= (this.cfg.tp1Frac || 0.4) * 0.75) pos.tp1Done = true;
+          pos.suspectUnbookedSell = false;
+          if (chain <= 0n) {
+            const pnl = pos.realizedSol - pos.entrySol - (pos.feesSol || 0);
+            this.positions = this.positions.filter(p => p.id !== pos.id);
+            this.risk.recordClose(pnl, pos.mint);
+            this.ensureClose(pos, { id: pos.id, mint: pos.mint, symbol: pos.symbol, setup: pos.setup, entrySol: pos.entrySol, exitSol: pos.realizedSol, pnlSol: +pnl.toFixed(6), heldMin: +((n - pos.entryTs) / 60000).toFixed(1), reason: 'reconciled unbooked sell (chain resync)', simulated: pos.simulated, ts: n });
+            this.savePositions();
+            return;
+          }
+          try { valueSol = await this.exec.markValue(pos.mint, pos.tokensRaw); pos.lastValueSol = valueSol; } catch { /* keep the pre-resync mark */ }
+        } else if (chain >= books) {
+          pos.suspectUnbookedSell = false; // the suspect sell truly never landed; books are right
+        }
+      }
+    }
+
     let decision;
     if (valueSol == null) {
       // no sell quote at all: after repeated failures, try to exit anyway — a coin we can't price is a coin we can't leave
@@ -589,12 +626,36 @@ export class Bot {
       const bd = await this.bundleCheck(pos, valueSol, n).catch(() => null);
       if (bd && bd.fraction > (decision.fraction || 0)) decision = { ...bd, newPeak: pos.peakRatio };
     }
+    // Full-exit corroboration (remainder protection): one bad quote print must never
+    // be able to dump a whole position. Before a full exit fires, re-quote NOW — a
+    // real crash still reads crashed half a second later, while a glitch (DOGCART:
+    // Jupiter quoted through the coin's dead bonding-curve pair, printing -56%
+    // while the live pool sat at +33%) flips back. Disagreement beyond
+    // STOP_XCHECK_PCT vetoes the exit for this tick only; the next tick re-judges,
+    // so a real crash is delayed by seconds, not denied.
+    if (decision.fraction >= 1 && this.cfg.stopXcheck && valueSol != null) {
+      const basis = Math.max(1e-9, pos.entrySol * pos.remainingFrac);
+      const ratioNow = valueSol / basis;
+      const reValue = await this.exec.markValue(pos.mint, pos.tokensRaw).catch(() => null);
+      if (reValue != null) {
+        const reRatio = reValue / basis;
+        if (reRatio > ratioNow * (1 + this.cfg.stopXcheckPct) || reRatio < ratioNow * (1 - this.cfg.stopXcheckPct)) {
+          console.log(`[xcheck] ${pos.symbol}: vetoed full exit '${decision.reason}' — mark ${ratioNow.toFixed(3)} vs instant re-quote ${reRatio.toFixed(3)} disagree`);
+          pos.xcheckVetoes = (pos.xcheckVetoes || 0) + 1;
+          this.savePositions();
+          return;
+        }
+      }
+    }
     if (!(decision.fraction > 0)) { this.savePositions(); return; }
 
     const sellRaw = decision.fraction >= 1 ? BigInt(pos.tokensRaw) : (BigInt(pos.tokensRaw) * BigInt(Math.round(decision.fraction * 1000))) / 1000n;
-    const res = await this.exec.sell(pos.mint, sellRaw.toString());
+    let res;
+    try { res = await this.exec.sell(pos.mint, sellRaw.toString()); }
+    catch (e) { pos.suspectUnbookedSell = true; this.savePositions(); throw e; } // the swap may have landed anyway — reconcile next tick
     const sold = BigInt(res.tokensSold || '0');
-    if (sold <= 0n) { pos.markFails = (pos.markFails || 0) + 1; return; }
+    if (sold <= 0n) { pos.suspectUnbookedSell = true; pos.markFails = (pos.markFails || 0) + 1; this.savePositions(); return; }
+    pos.suspectUnbookedSell = false;
     pos.tokensRaw = (BigInt(pos.tokensRaw) - sold).toString();
     pos.realizedSol += res.solOut;
     pos.feesSol = (pos.feesSol || 0) + (this.cfg.txFeeSol || 0);

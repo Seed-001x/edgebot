@@ -290,9 +290,10 @@ export class Executor {
   /** Sell up to `tokensRaw` (clamped to wallet balance in real mode). */
   async sell(mint, tokensRaw) {
     let amt = BigInt(tokensRaw);
+    let before = null;
     if (this.real) {
-      const bal = (await this.tokenBalance(mint)) || 0n;
-      if (bal < amt) amt = bal;
+      before = (await this.tokenBalance(mint)) || 0n;
+      if (before < amt) amt = before;
     }
     if (amt <= 0n) return { tokensSold: '0', solOut: 0, sig: null, simulated: !this.real };
     const quote = await this.quoteFn(mint, SOL_MINT, amt.toString(), this.cfg.sellBps);
@@ -302,8 +303,18 @@ export class Executor {
       return { tokensSold: amt.toString(), solOut, sig: null, simulated: true };
     }
     const { sig } = await this.signAndSend(quote);
-    const after = (await this.tokenBalance(mint)) || 0n;
-    const sold = BigInt(tokensRaw) > after ? BigInt(tokensRaw) - after : 0n; // trust chain over quote
+    // Confirmation = the wallet balance actually fell (mirrors buy()). The old code
+    // compared the REQUESTED amount against a single immediate post-balance read,
+    // which reads as "nothing sold" for almost every partial sell — the swap had
+    // landed but the caller booked nothing, leaving position state desynced from
+    // the chain (DOGCART 2026-10-13: an unbooked TP1 fired twice). Poll like buy().
+    let after = before;
+    for (let i = 0; i < 5; i++) {
+      after = (await this.tokenBalance(mint)) || 0n;
+      if (after < before) break;
+      await sleep(1500);
+    }
+    const sold = before > after ? before - after : 0n; // trust chain over quote
     if (sold <= 0n) throw new Error(`sell not confirmed (sig ${sig})`);
     return { tokensSold: (sold < amt ? sold : amt).toString(), solOut, sig, simulated: false };
   }

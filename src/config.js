@@ -131,6 +131,8 @@ export function loadConfig(env = process.env) {
     stopHardConfirmChecks: num(env, 'STOP_HARD_CONFIRM_CHECKS', 2), // consecutive checks at/below the floor before it fires (1 = instant, pre-2026-10-13 behavior)
     stopGraceSec: num(env, 'STOP_GRACE_SEC', 5),          // seconds between arming and the flow-confirmed sell
     stopFlowVeto: num(env, 'STOP_FLOW_VETO', 1),          // 1 = buyers absorbing the dip vetoes a confirmed stop (0 = off)
+    stopXcheck: num(env, 'STOP_XCHECK', 1),               // 1 = a full exit needs a corroborating instant re-quote (bad-print guard)
+    stopXcheckPct: num(env, 'STOP_XCHECK_PCT', 0.20),     // re-quote may differ from the triggering mark by at most this fraction
     dipStopPct: num(env, 'DIP_STOP_PCT', 0.05),           // sell if PRICE drops this far below entry (0 = off)
     stallSec: num(env, 'STALL_SEC', 60),                  // entry stall: sell if price never breaks out within this many seconds of entry (0 = off)
     stallBandPct: num(env, 'STALL_BAND_PCT', 0.05),       // entry range half-width: at stallSec the price must be OUTSIDE entry ± this or the position sells (user 2026-10-13 endpoint version)
@@ -190,6 +192,7 @@ export function validateConfig(cfg) {
   if (cfg.stopHardPct <= 0 || cfg.stopHardPct >= 1) errs.push('STOP_HARD_PCT must be between 0 and 1');
   if (cfg.stopHardConfirmChecks < 1 || cfg.stopHardConfirmChecks > 10) errs.push('STOP_HARD_CONFIRM_CHECKS must be between 1 and 10');
   if (cfg.stopGraceSec < 0 || cfg.stopGraceSec > 120) errs.push('STOP_GRACE_SEC must be between 0 and 120');
+  if (cfg.stopXcheckPct < 0.05 || cfg.stopXcheckPct > 0.9) errs.push('STOP_XCHECK_PCT must be between 0.05 and 0.9');
   if (cfg.popStaleSec < 0 || cfg.popStaleSec > 600) errs.push('POP_STALE_SEC must be between 0 and 600 (0 = off)');
   if (cfg.popStaleDropPct < 0 || cfg.popStaleDropPct >= 0.9) errs.push('POP_STALE_DROP_PCT must be between 0 and 0.9');
   if (cfg.dipStopPct < 0 || cfg.dipStopPct >= 1) errs.push('DIP_STOP_PCT must be between 0 and 1 (0 = off)');

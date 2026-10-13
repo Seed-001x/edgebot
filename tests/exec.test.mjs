@@ -105,3 +105,39 @@ test('sellProceeds: sums SOL deltas of out-of-bot sells, excludes bot signatures
   assert.ok(Math.abs(r.proceedsSol - 0.4) < 1e-9, `proceeds ${r.proceedsSol}`);
   assert.equal(seenTxParams.maxSupportedTransactionVersion, 1); // v1 txs (wallet apps) must be parseable
 });
+
+// --- fix zero (2026-10-13): sell() must book the TRUE balance delta for partial
+// sells. The old formula compared the requested amount to a single immediate
+// post-balance read and reported "not confirmed" for almost every partial sell
+// even though the swap had landed (DOGCART: unbooked TP1 fired twice).
+const realSellRig = async (onSend) => {
+  const { Keypair } = await import('@solana/web3.js');
+  const bs58 = (await import('bs58')).default;
+  const kp = Keypair.generate();
+  const rig = { bal: 122854n, reads: 0 };
+  const rpc = async (method) => {
+    if (method === 'getTokenAccountsByOwner') { rig.reads++; return { value: [{ account: { data: { parsed: { info: { tokenAmount: { amount: rig.bal.toString() } } } } } }] }; }
+    throw new Error('unexpected ' + method);
+  };
+  const ex = new Executor(testCfg({ realMode: true }), { env: { WALLET_PRIVATE_KEY: bs58.encode(kp.secretKey) }, rpc, quote: quote(0, 45_000_000) });
+  ex.signAndSend = async () => { onSend(rig); return { sig: 'SIG1', confirmed: true }; };
+  return { ex, rig };
+};
+test('real sell: partial sell books the true balance delta (DOGCART regression)', { skip: !hasSolana }, async () => {
+  const { ex } = await realSellRig((rig) => { rig.bal = 73712n; });
+  const s = await ex.sell('M', '49142');
+  assert.equal(s.tokensSold, '49142');
+  assert.ok(Math.abs(s.solOut - 0.045) < 1e-9);
+});
+test('real sell: a balance read that lags the swap still confirms via polling', { skip: !hasSolana }, async () => {
+  const { ex, rig } = await realSellRig(() => {});
+  const orig = ex.tokenBalance.bind(ex);
+  let postReads = 0;
+  ex.tokenBalance = async (m) => { const v = await orig(m); postReads++; if (postReads >= 4) rig.bal = 73712n; return postReads >= 4 ? 73712n : v; };
+  const s = await ex.sell('M', '49142');
+  assert.equal(s.tokensSold, '49142');
+});
+test('real sell: balance that never moves throws not-confirmed', { skip: !hasSolana }, async () => {
+  const { ex } = await realSellRig(() => {});
+  await assert.rejects(ex.sell('M', '49142'), /sell not confirmed/);
+});
