@@ -74,30 +74,43 @@ export async function fetchSolUsd(now = Date.now()) {
  * Trade counts on the coin's pump.fun bonding-curve pair (for the instant-graduation gate).
  * Returns { buys, sells } from the last 24h, or null if the coin has no curve pair / data is missing.
  *
- * DexScreener zeroes the curve pair at graduation (always 0/0 afterwards), which used to
- * make the gate read "history unknown" for exactly the coins it exists to judge. When the
- * DexScreener counts read empty on a recently graduated coin, fall back to the true curve
- * history read from chain (src/curveChain.js). Any failure there keeps the old fail-open
- * result — never block on evidence we couldn't fetch.
+ * DexScreener's curve-pair counts cannot be trusted around graduation: it zeroes the pair
+ * (0/0) some minutes AFTER the coin graduates, and before that its count is computed its
+ * own way (CATBOT, 2026-10-12: curve filled in 3 buy txs / 12 bundled instructions and
+ * the gate passed it). So for a FRESH graduation (<36h) the true curve history is read
+ * from chain FIRST (src/curveChain.js) and DexScreener is only the fallback; older coins
+ * keep the DexScreener read (the gate passes them on age anyway). The chain is also
+ * consulted when the AMM pair hasn't been indexed yet — indexer lag must not read as
+ * "history unknown". Any chain failure falls back — never block on unfetched evidence.
  */
-export async function fetchCurve(mint, cfg) {
-  const pairs = await fetchJson(`${DS}/token-pairs/v1/solana/${mint}`);
-  const curve = (Array.isArray(pairs) ? pairs : []).find(p => p && p.dexId === 'pumpfun');
-  if (!curve) return null;
-  const amm = (Array.isArray(pairs) ? pairs : []).find(p => p && p.dexId && p.dexId !== 'pumpfun');
-  if (!amm) return null; // still on the curve — nothing to judge yet
-  const h24 = (curve.txns && curve.txns.h24) || {};
-  const ds = { buys: Number(h24.buys) || 0, sells: Number(h24.sells) || 0 };
-  if (ds.buys > 0) return ds;
-  const gradAgeMs = amm.pairCreatedAt ? Date.now() - Number(amm.pairCreatedAt) : Infinity;
-  if (cfg && cfg.rpcUrls && cfg.rpcUrls.length && gradAgeMs < 36 * 3600 * 1000) {
+export async function resolveCurve(pairs, cfg, chainFn, nowMs = Date.now()) {
+  const list = Array.isArray(pairs) ? pairs : [];
+  const curve = list.find(p => p && p.dexId === 'pumpfun');
+  const amm = list.find(p => p && p.dexId && p.dexId !== 'pumpfun');
+  if (!curve && !amm) return null;
+  const h24 = (curve && curve.txns && curve.txns.h24) || {};
+  const ds = curve ? { buys: Number(h24.buys) || 0, sells: Number(h24.sells) || 0 } : null;
+  const gradAgeMs = amm && amm.pairCreatedAt ? nowMs - Number(amm.pairCreatedAt) : Infinity;
+  const fresh = gradAgeMs < 36 * 3600 * 1000;
+  const canChain = !!(cfg && cfg.rpcUrls && cfg.rpcUrls.length && chainFn);
+  if (canChain && (fresh || !amm)) {
     try {
-      const { fetchChainCurveHistory } = await import('./curveChain.js');
-      const hist = await fetchChainCurveHistory(mint, { rpcUrls: cfg.rpcUrls, maxBuys: cfg.instantGradMaxBuys ?? 5 });
+      const hist = await chainFn({ rpcUrls: cfg.rpcUrls, maxBuys: cfg.instantGradMaxBuys ?? 5 });
       if (hist && hist.buys > 0) return hist;
     } catch { /* fall through to the DexScreener result */ }
   }
+  if (!amm) return null; // still on the curve (or unindexed) and chain had nothing — nothing to judge
   return ds;
+}
+
+export async function fetchCurve(mint, cfg) {
+  const pairs = await fetchJson(`${DS}/token-pairs/v1/solana/${mint}`);
+  let chainFn = null;
+  try {
+    const { fetchChainCurveHistory } = await import('./curveChain.js');
+    chainFn = (opts) => fetchChainCurveHistory(mint, opts);
+  } catch { /* chain reader unavailable — DexScreener only */ }
+  return resolveCurve(pairs, cfg, chainFn);
 }
 
 /** Same-name / same-ticker coins, for the clone check. */
