@@ -35,20 +35,29 @@ export function viewOf(pair) {
   };
 }
 
-/** Latest view per mint (best-liquidity pair). Chunks of 30. */
+/** Latest view per mint (best-liquidity pair). Chunks of 30, fetched with bounded
+ *  concurrency — the sequential version made a full watchlist sweep take ~30s at
+ *  700+ mints, so the "5s poll" was really a slow crawl and widening the watchlist
+ *  made each scan SLOWER (user report 2026-10-12). 6 workers keep a sweep ~2s. */
 export async function fetchViews(mints) {
   const uniq = [...new Set(mints)].filter(Boolean);
   const best = new Map();
-  for (let i = 0; i < uniq.length; i += 30) {
-    const chunk = uniq.slice(i, i + 30);
-    const pairs = await fetchJson(`${DS}/tokens/v1/solana/${chunk.join(',')}`);
-    for (const p of pairs || []) {
-      const v = viewOf(p);
-      if (!v) continue;
-      const cur = best.get(v.address);
-      if (!cur || v.liq > cur.liq) best.set(v.address, v);
+  const chunks = [];
+  for (let i = 0; i < uniq.length; i += 30) chunks.push(uniq.slice(i, i + 30));
+  let idx = 0;
+  const worker = async () => {
+    while (idx < chunks.length) {
+      const chunk = chunks[idx++];
+      const pairs = await fetchJson(`${DS}/tokens/v1/solana/${chunk.join(',')}`);
+      for (const p of pairs || []) {
+        const v = viewOf(p);
+        if (!v) continue;
+        const cur = best.get(v.address);
+        if (!cur || v.liq > cur.liq) best.set(v.address, v);
+      }
     }
-  }
+  };
+  await Promise.all(Array.from({ length: Math.min(6, Math.max(chunks.length, 1)) }, worker));
   return best;
 }
 

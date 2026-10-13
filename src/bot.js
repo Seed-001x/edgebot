@@ -233,8 +233,21 @@ export class Bot {
   // live-feed mint once the slice is full, and may evict the single oldest
   // watch entry overall when the watchlist is at its hard cap. Curated
   // sources keep the rest. Returns true if added.
+  // Blacklist eviction (user, 2026-10-12): a user-marked mint leaves the watchlist
+  // entirely and can never re-enter — before this, marked coins kept firing signals,
+  // eating evaluation slots and spamming the signals feed every cooldown cycle.
+  evictBlacklisted() {
+    const bl = this.journal.blacklistedMints();
+    if (!bl.size) return 0;
+    const held = new Set(this.positions.map(p => p.mint));
+    let n = 0;
+    for (const mint of bl) if (!held.has(mint) && this.watch.delete(mint)) n++;
+    return n;
+  }
+
   noteMint(mint, source = 'live-ws') {
     if (!mint || this.watch.has(mint)) return false;
+    if (this.journal.blacklistedMints().has(mint)) return false;
     if (this.positions.some(p => p.mint === mint)) return false;
     const n = this.now();
     const sliceCap = Math.max(10, Math.floor(this.cfg.watchMax * 0.25));
@@ -255,15 +268,17 @@ export class Bot {
     try {
       const found = await this.d.discover(this.cfg);
       const n = this.now();
-      for (const [mint, source] of found) this.watch.set(mint, { ts: n, source });
+      const bl = this.journal.blacklistedMints();
+      for (const [mint, source] of found) if (!bl.has(mint)) this.watch.set(mint, { ts: n, source });
       // Feed scraped pump.fun lists into the watchlist
       try {
         const rl = JSON.parse(fs.readFileSync(path.join(this.cfg.dataDir, 'reallists.json'), 'utf8'));
         for (const row of [...(rl.trending || []), ...(rl.movers || []), ...(rl.graduated || []), ...(rl.new || [])]) {
           const mint = row.mint || row.address;
-          if (mint && !this.watch.has(mint)) this.watch.set(mint, { ts: n, source: 'reallists' });
+          if (mint && !bl.has(mint) && !this.watch.has(mint)) this.watch.set(mint, { ts: n, source: 'reallists' });
         }
       } catch {}
+      this.evictBlacklisted();
       this.stats.sourceCounts = found.counts || {};
       this.stats.discoverTicks++; this.stats.lastDiscoverTs = n;
       // prune: stale entries first; hard cap keeps the freshest, never drops open positions
@@ -283,6 +298,7 @@ export class Bot {
     if (this.busy.poll) return;
     this.busy.poll = true;
     try {
+      this.evictBlacklisted(); // marked coins never even get priced, let alone signal
       const mints = [...new Set([...this.watch.keys(), ...this.positions.map(p => p.mint)])];
       if (!mints.length) return;
       const views = await this.d.fetchViews(mints);
