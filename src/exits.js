@@ -148,10 +148,14 @@ export function evaluateExit(pos, mark, cfg, now) {
   if (!pos.tp2Done && cfg.lockKeep > 0 && peakGain >= cfg.lockArm && gain <= peakGain * cfg.lockKeep) return out(1, `profit lock (best +${(peakGain * 100).toFixed(0)}%, now +${(gain * 100).toFixed(0)}% after fees)`);
 
   // 4b. entry stall (user 2026-10-13, endpoint version): at stallSec from entry, judge where the
-  //     price IS, not where it has been — inside the ±stallBandPct entry range = stalling = sell,
-  //     however it got there. A spike that faded back into the range sells; a coin still outside
-  //     the range (either direction) is some other rule's problem. Post-TP1 runners are exempt.
-  if (cfg.stallSec > 0 && !pos.tp1Done && heldMin * 60 >= cfg.stallSec && move >= 1 - cfg.stallBandPct && move <= 1 + cfg.stallBandPct) return out(1, `stall (in entry range at ${cfg.stallSec}s, ${((move - 1) * 100).toFixed(1)}%)`);
+  //     price IS, not where it has been — inside the entry range = stalling = sell, however it
+  //     got there. The range is asymmetric (user 2026-10-14): −stallBandPct below entry but only
+  //     +stallBandUpPct above it — up more than +3% at the deadline is working, not stalled
+  //     (UNTXED sold at +2.2% then ripped). A spike that faded back into the range sells; a coin
+  //     still outside the range (either direction) is some other rule's problem. Post-TP1
+  //     runners are exempt.
+  const stallBandUp = cfg.stallBandUpPct ?? cfg.stallBandPct;
+  if (cfg.stallSec > 0 && !pos.tp1Done && heldMin * 60 >= cfg.stallSec && move >= 1 - cfg.stallBandPct && move <= 1 + stallBandUp) return out(1, `stall (in entry range at ${cfg.stallSec}s, ${((move - 1) * 100).toFixed(1)}%)`);
 
   // 5. momentum failure: underwater, 10 min in, essentially no buyers (only sell when truly dead)
   if (heldMin >= 10 && ratio < 1 && mark.buysM5 != null && mark.buysM5 <= 1 && mark.sellsM5 > mark.buysM5 * 3) return out(1, 'momentum failure (no buyers)');

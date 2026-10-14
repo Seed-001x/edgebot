@@ -251,6 +251,7 @@ export function loadConfig(env = process.env) {
     dipStopPct: num(env, 'DIP_STOP_PCT', 0.05),           // sell if PRICE drops this far below entry (0 = off)
     stallSec: num(env, 'STALL_SEC', 60),                  // entry stall: sell if price never breaks out within this many seconds of entry (0 = off)
     stallBandPct: num(env, 'STALL_BAND_PCT', 0.05),       // entry range half-width: at stallSec the price must be OUTSIDE entry ± this or the position sells (user 2026-10-13 endpoint version)
+    stallBandUpPct: num(env, 'STALL_BAND_UP_PCT', 0.03),  // stall dead-zone UPPER edge only — tighter than the downside: at stallSec, up more than +3% is working, not stalled; the lower edge stays stallBandPct (user 2026-10-14: UNTXED stalled out at +2.2% and then ripped)
     tp1Pct: num(env, 'TP1_PCT', 0.25),                    // bank part on the jump: +25% in your pocket after slippage + SOL fees
     tp1Frac: num(env, 'TP1_FRAC', 0.65),                  // ...sell 65% of it
     // TP ladder (user 2026-10-13): TP1 is adaptive — it ARMS at tp1Pct and the bank target slides up
@@ -370,6 +371,7 @@ export function validateConfig(cfg) {
   if (cfg.tp2RejectZone < 0 || cfg.tp2RejectZone > 5) errs.push('TP2_REJECT_ZONE must be between 0 and 5');
   if (cfg.tp2RejectDrop < 0 || cfg.tp2RejectDrop >= 0.9) errs.push('TP2_REJECT_DROP must be between 0 and 0.9');
   if (cfg.stallBandPct < -0.5 || cfg.stallBandPct > 1) errs.push('STALL_BAND_PCT must be between -0.5 and 1 (breakout bar above entry for the entry stall)');
+  if (cfg.stallBandUpPct < 0 || cfg.stallBandUpPct > 1) errs.push('STALL_BAND_UP_PCT must be between 0 and 1 (upside edge of the entry-stall dead zone)');
   if (cfg.realMode && cfg.rpcUrls.length === 0) errs.push('RPC_URLS required in real mode');
   return errs;
 }

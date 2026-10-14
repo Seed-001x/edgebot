@@ -47,7 +47,8 @@ test('dip stop ignores the round-trip cost already paid at entry', () => {
   assert.equal(evaluateExit(p, mark(0.018), cfg, NOW).fraction, 0);
   assert.match(evaluateExit(p, mark(0.0170), cfg, NOW).reason, /dip stop/);                   // price -5.6%
 });
-// ---- entry stall (user 2026-10-13, endpoint version): at 60s, price inside ±5% of entry = sell ----
+// ---- entry stall (user 2026-10-13, endpoint version): at 60s, price inside the entry range = sell
+//      (range asymmetric since 2026-10-14: −5% / +3% — see the stallBandUpPct test below) ----
 const stallCfg = { ...cfg, stallSec: 60, stallBandPct: 0.05, dipStopPct: 0 };
 test('entry stall: inside the range at the deadline sells; before it, holds', () => {
   assert.equal(evaluateExit(pos({ entryTs: NOW - 59 * S }), mark(0.0201), stallCfg, NOW).fraction, 0);
@@ -63,6 +64,17 @@ test('entry stall: endpoint judges where the price IS, not where it has been', (
   // post-TP1 runners are exempt from the stall (in practice the trail/profit lock reach them first,
   // so isolate the exemption with the lock off): in-range at the deadline, still holds
   assert.equal(evaluateExit(pos({ entryTs: NOW - 300 * S, tp1Done: true, remainingFrac: 0.35, peakRatio: 1.4 }), mark(0.0074), { ...stallCfg, lockKeep: 0 }, NOW).fraction, 0);
+});
+// ---- entry stall upside tightened to +3% (user 2026-10-14): −5% / +3% band; UNTXED sold at +2.2% then ripped ----
+const stallUpCfg = { ...cfg, stallSec: 60, stallBandPct: 0.05, stallBandUpPct: 0.03, dipStopPct: 0 };
+test('entry stall: upside edge is +3% — +2.2% still sells, +4% holds, downside unchanged', () => {
+  const untxed = evaluateExit(pos({ entryTs: NOW - 60 * S }), mark(0.02044), stallUpCfg, NOW);   // move 1.022 — the UNTXED print
+  assert.equal(untxed.fraction, 1); assert.equal(untxed.reason, 'stall (in entry range at 60s, 2.2%)');
+  assert.equal(evaluateExit(pos({ entryTs: NOW - 60 * S }), mark(0.0208), stallUpCfg, NOW).fraction, 0); // move 1.04: outside the +3% upside, holds
+  // ...whereas the old symmetric +5% band would have sold that same +4% print
+  assert.match(evaluateExit(pos({ entryTs: NOW - 60 * S }), mark(0.0208), { ...stallUpCfg, stallBandUpPct: 0.05 }, NOW).reason, /stall/);
+  assert.match(evaluateExit(pos({ entryTs: NOW - 60 * S }), mark(0.0192), stallUpCfg, NOW).reason, /stall/); // move 0.96: downside −5% unchanged, inside sells
+  assert.equal(evaluateExit(pos({ entryTs: NOW - 60 * S }), mark(0.0188), stallUpCfg, NOW).fraction, 0);    // move 0.94: through the downside band — not the stall's
 });
 
 // ---- grace stop (user 2026-10-13): arm -10%, 5s grace, flow confirms, floor -20% ----
