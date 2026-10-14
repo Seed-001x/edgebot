@@ -66,8 +66,10 @@ export function detect(v, samples, cfg, now) {
   }
 
   // ---- TREND ----
-  // Fresh momentum only: most of the hourly move must be happening NOW (chgM5 a real share of chgH1),
-  // not a spike from 40 minutes ago that's just drifting at the top.
+  // Freshness is judged on VOLUME, not price (user 2026-10-14): the runner must still be
+  // trading heavily right now (5m volume), not a spike from 40 minutes ago that's just
+  // drifting at the top on dead volume. A price-burst share-of-the-hour rule made steady
+  // grinds with huge 5m volume invisible — volume is the freshness proof now.
   // PAUSED by default (B1, user 2026-10-13): tonight's trend went 0-for-9 (−0.091) while pop
   // produced the day's wins. TREND_ENABLED=1 revives it — with the B2–B5 guards below standing.
   if (cfg.trendEnabled) {
@@ -76,6 +78,9 @@ export function detect(v, samples, cfg, now) {
     const ratioH1 = buyRatio(v.buysH1, v.sellsH1);
     const hourDemand = !(cfg.trendMinBuyRatioH1 > 0) || (ratioH1 != null && ratioH1 >= cfg.trendMinBuyRatioH1);
     const enoughTxns = !(cfg.trendMinTxnsM5 > 0) || ((v.buysM5 || 0) + (v.sellsM5 || 0) >= cfg.trendMinTxnsM5);
+    // Volume freshness (user 2026-10-14, UNTXED): replaces the old price-share rule
+    // (chgM5 >= chgH1 * ratio), which a grind could never pass. Missing volume = not fresh.
+    const freshVol = !(cfg.trendFreshMinVolM5 > 0) || (v.volM5 || 0) >= cfg.trendFreshMinVolM5;
     // B5: dead-coin revival — an old pool suddenly up huge over 6h is a zombie pump, not a runner.
     const ageD = v.createdAt ? (now - v.createdAt) / 86400000 : 0;
     const revival = cfg.revivalMinAgeD > 0 && ageD >= cfg.revivalMinAgeD && v.chgH6 != null && v.chgH6 >= cfg.revivalMaxChgH6;
@@ -83,7 +88,7 @@ export function detect(v, samples, cfg, now) {
       v.chgH1 != null && v.chgM5 != null &&
       v.chgH1 >= cfg.trendMinH1 && v.chgH1 <= cfg.trendMaxH1 &&
       v.chgM5 >= cfg.trendMinM5 &&
-      v.chgM5 >= v.chgH1 * cfg.trendFreshM5Ratio &&
+      freshVol &&
       v.volH1 >= cfg.trendMinVolH1 &&
       v.buysM5 >= cfg.trendMinBuysM5 &&
       ratio5 != null && ratio5 >= cfg.trendMinBuyRatio &&

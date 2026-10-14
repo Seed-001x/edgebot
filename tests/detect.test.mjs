@@ -45,9 +45,11 @@ test('trend: already-ranked runner still green, no history needed', () => {
   const r = detect(view({ chgH1: 80, chgM5: 30, volH1: 300_000 }), [], tcfg, NOW);
   assert.equal(r.setup, 'trend');
 });
-test('trend: stale move is chasing — most of the 1h move must be in the last 5m', () => {
-  assert.equal(detect(view({ chgH1: 80, chgM5: 10, volH1: 300_000 }), [], tcfg, NOW), null);
-  const r = detect(view({ chgH1: 80, chgM5: 30, volH1: 300_000 }), [], tcfg, NOW);
+test('trend: stale move is chasing — freshness is 5m volume now, not the 5m share of the hour', () => {
+  // the 5m price step is small (10 on an 80 hour) — what makes this stale is dead 5m volume.
+  assert.equal(detect(view({ chgH1: 80, chgM5: 10, volH1: 300_000, volM5: 8_000 }), [], tcfg, NOW), null);
+  // the same small step on live 5m volume fires: price share of the hour no longer matters.
+  const r = detect(view({ chgH1: 80, chgM5: 10, volH1: 300_000, volM5: 50_000 }), [], tcfg, NOW);
   assert.equal(r.setup, 'trend');
 });
 test('trend: skipped if it already rolled over >15% from a recent high', () => {
@@ -203,4 +205,30 @@ test('D1: fast pop share at 0.90 is blocked; the OSPREY 0.60 share still fires',
   }));
   assert.equal(fastPop(mk(18), cfg, NOW), null); // share 0.90
   assert.ok(fastPop(mk(12), cfg, NOW)); // share 0.60
+});
+
+// ---- trend freshness = 5m VOLUME (user 2026-10-14, UNTXED) ----
+// Live-env trend knobs (Render): TREND_MIN_M5=1, TREND_MIN_BUY_RATIO=0.51, TREND_MIN_VOL_H1=50000.
+const ucfg = testCfg({ trendEnabled: 1, trendMinM5: 1, trendMinBuyRatio: 0.51, trendMinVolH1: 50_000 });
+// UNTXED replay (2026-10-14 ~01:43 EDT): graduated, then GROUND +121% on the hour in small
+// price steps — +1.49% on the 5m over $67.9k of 5m volume, hour share 0.557, 5m ratio 0.561.
+// The old price-share freshness rule needed ~+18% inside the 5m (0.15 × 121): impossible for a grind.
+const untxed = (o = {}) => view({
+  chgH1: 121, chgM5: 1.49, volM5: 67_889, volH1: 251_700, mc: 97_634, liq: 25_745,
+  buysH1: 557, sellsH1: 443, buysM5: 561, sellsM5: 439, createdAt: NOW - 3600e3, ...o,
+});
+test('UNTXED replay: grind with huge 5m volume fires trend (impossible under the price-share rule)', () => {
+  assert.equal(detect(untxed(), [], ucfg, NOW).setup, 'trend');
+});
+test('UNTXED dead drift: same hourly numbers, 5m volume gone — no fire', () => {
+  assert.equal(detect(untxed({ volM5: 8_000 }), [], ucfg, NOW), null);
+});
+test('price burst alone no longer suffices: +30% in 5m on thin 5m volume — no fire', () => {
+  assert.equal(detect(untxed({ chgM5: 30, volM5: 12_000 }), [], ucfg, NOW), null);
+});
+test('TREND_FRESH_MIN_VOL_M5=0 disables the volume freshness check', () => {
+  const v = view({ chgH1: 80, chgM5: 30, volH1: 300_000, volM5: 0 });
+  assert.equal(detect(v, [], tcfg, NOW), null); // default knob: zero 5m volume is not fresh
+  const off = testCfg({ trendEnabled: 1, trendFreshMinVolM5: 0 });
+  assert.equal(detect(v, [], off, NOW).setup, 'trend');
 });

@@ -112,9 +112,12 @@ export function loadConfig(env = process.env) {
     revivalMinAgeD: num(env, 'REVIVAL_MIN_AGE_D', 7),    // B5: pool at least this many days old…
     revivalMaxChgH6: num(env, 'REVIVAL_MAX_CHG_H6', 300), // …and up this much in 6h = dead-coin revival, skip (Urara's pool was ~67 days old, +550% h6); 0 = off
     trendMinBuysM5: num(env, 'TREND_MIN_BUYS_M5', 5),
-    // Fresh momentum only: the 5m move must be a real share of the 1h move.
-    // A coin up 50% on the hour but only +5% in the last 5m already made its move — that's chasing.
-    trendFreshM5Ratio: num(env, 'TREND_FRESH_M5_RATIO', 0.3),
+    // Freshness is VOLUME, not price (user 2026-10-14, UNTXED): a grind can run +121% on the
+    // hour in small price steps, so the old rule (last-5m price gain ≥ a share of the hourly
+    // move) made grinds structurally invisible. What must be fresh is the trading itself: 5m
+    // volume at/above this floor proves the coin is alive NOW. The coin must still be at least
+    // slightly green on the 5m (trendMinM5). 0 = off (no freshness check).
+    trendFreshMinVolM5: num(env, 'TREND_FRESH_MIN_VOL_M5', 25000),
     // ---- 'churn' detector (user 2026-10-14): a dumped coin BASING at its lows with a trade
     // count that refuses to die — accumulation BEFORE any pop (the Vwhale shape: −53% peak→low,
     // then ~180 tx/5m of two-way flow at support while its buy ratio sat ~0.50, so pop never
@@ -319,6 +322,7 @@ export function validateConfig(cfg) {
   if (cfg.trendMinBuyRatioH1 < 0 || cfg.trendMinBuyRatioH1 > 1) errs.push('TREND_MIN_BUY_RATIO_H1 must be between 0 and 1 (0 = off)');
   if (cfg.trendMinTxnsM5 < 0) errs.push('TREND_MIN_TXNS_M5 must be >= 0 (0 = off)');
   if (cfg.trendMaxVolToMc < 0) errs.push('TREND_MAX_VOL_TO_MC must be >= 0 (0 = off)');
+  if (cfg.trendFreshMinVolM5 < 0) errs.push('TREND_FRESH_MIN_VOL_M5 must be >= 0 (0 = off)');
   if (cfg.revivalMinAgeD < 0) errs.push('REVIVAL_MIN_AGE_D must be >= 0 (0 = off)');
   if (cfg.revivalMaxChgH6 < 0) errs.push('REVIVAL_MAX_CHG_H6 must be >= 0');
   if (cfg.freshMaxChgM5 < 0) errs.push('FRESH_MAX_CHG_M5 must be >= 0 (0 = off)');
