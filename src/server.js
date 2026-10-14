@@ -5,7 +5,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { listState } from './pumpLists.js';
-import { EXIT_REASONS, learnReport } from './learn.js';
+import { EXIT_REASONS, EXIT_REASON_LABELS, learnReport } from './learn.js';
 
 // Browser-scraped "real" pump.fun lists (from hourly browser task, not the API relay).
 // Stored in DATA_DIR so it persists across deploys.
@@ -119,6 +119,8 @@ export function startServer(bot, port) {
     // unchanged shape plus the two additive fields).
     if (req.method === 'GET' && u.pathname === '/learn') {
       const report = learnReport(bot.journal.manual, bot.journal.trades);
+      // D1 follow-up: the live settable reason set, inspectable from the API
+      report.exitReasons = EXIT_REASONS.map(key => ({ key, label: EXIT_REASON_LABELS[key] }));
       const mapExit = (m) => ({ id: m.id, symbol: m.symbol, mint: m.mint, ts: m.ts, heldMin: m.heldMin, peakRatio: m.peakRatio, pnlSolEstimate: m.pnlSolEstimate, reason: m.reason || null, note: m.note || null, how: m.how, entry: m.entry || null, snapshot: m.snapshot || null });
       const pg = paging(u);
       if (pg) {

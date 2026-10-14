@@ -211,6 +211,43 @@ export class Bot {
     } catch { return null; }
   }
 
+  // D1 follow-up (user 2026-10-14): the real fill of the user's own sell(s),
+  // read from the sell transaction(s) — SOL and token balance deltas plus the
+  // fee the wallet paid (see exec.sellFill for the exact convention). Null
+  // when the txs can't be found or parsed: the close then keeps today's
+  // mark-based record, unchanged. Never throws into a close path.
+  async chainSellFill(pos) {
+    try {
+      if (!this.exec.sellFill) return null;
+      const excludeSigs = new Set(this.journal.trades.filter(t => t.id === pos.id && t.sig).map(t => t.sig));
+      const r = await this.exec.sellFill(pos.mint, { sinceSec: Math.floor(pos.entryTs / 1000), excludeSigs });
+      return r && r.fillSol > 0 ? r : null;
+    } catch { return null; }
+  }
+
+  // Record fields a chain-read manual fill contributes — to the close record
+  // and to the manual-exit record: the real per-token fill (chainTx-sourced),
+  // the real sell fee folded into feesSol alongside the buy-side estimate
+  // (feesSource says exactly that mix), and manualValueSol: what the manual
+  // remainder actually realized — net (after-fee) proceeds scaled to the
+  // books' full remainder at the realized per-token net price, so the paired
+  // shadow comparison prices the SAME remainder its virtual position holds.
+  // {} when there is no fill.
+  _manualFill(pos, fill) {
+    if (!fill) return {};
+    const booksWhole = Number(pos.tokensRaw) > 0 && fill.decimals != null ? Number(pos.tokensRaw) / 10 ** fill.decimals : null;
+    return {
+      exitFillSol: +fill.fillSol.toFixed(10),
+      exitFillUsd: this.lastSolUsd > 0 ? +(fill.fillSol * this.lastSolUsd).toFixed(10) : null,
+      fillSource: 'chainTx',
+      sellTxFeeSol: +(fill.feeSol || 0).toFixed(6),
+      sellSigs: fill.sigs || [],
+      feesSol: +(((pos.feesSol || 0)) + (fill.feeSol || 0)).toFixed(6),
+      feesSource: 'chainTxSellFee+txFeeEstimate',
+      manualValueSol: booksWhole > 0 && fill.tokensWhole > 0 ? +((fill.proceedsNetSol * booksWhole) / fill.tokensWhole).toFixed(6) : fill.proceedsNetSol,
+    };
+  }
+
   // Admin removals go THROUGH the funnel too — a removed position gets its close record
   // (estimated P&L) instead of vanishing silently.
   adminDrop(p, reason) {
@@ -252,10 +289,14 @@ export class Bot {
     if (pnl != null) this.risk.recordClose(pnl, p.mint);
     const heldMin = +((n - p.entryTs) / 60000).toFixed(1);
     const snapshot = await this._manualSnapshot(p, p.lastValueSol ?? null, n, pnl);
-    this.journal.manualExit({ id: p.id, mint: p.mint, symbol: p.symbol, ts: n, how: 'sold outside bot (reconcile)', entry: p.entry || null, heldMin, peakRatio: p.peakRatio, bundleScore: p.bundleScore || 0, pnlSolEstimate: pnl != null ? +pnl.toFixed(6) : null, pnlSol: source === 'chain' ? +pnl.toFixed(6) : null, pnlSource: source || 'unknown', reason: null, snapshot });
-    this.ensureClose(p, { manual: true, id: p.id, mint: p.mint, symbol: p.symbol, setup: p.setup, entrySol: p.entrySol, pnlSol: pnl != null ? +pnl.toFixed(6) : null, estimated: source !== 'chain', pnlSource: source, heldMin, reason: pnl != null ? `${reason} — P&L ${source === 'chain' ? 'from chain' : 'est. from last quote'}` : `${reason} (P&L unknown — no quote yet)`, simulated: p.simulated, ts: n });
+    // D1 follow-up: the real fill from the sell tx, when it can be read
+    const ff = this._manualFill(p, await this.chainSellFill(p));
+    const hasFill = ff.exitFillSol != null;
+    this.journal.manualExit({ id: p.id, mint: p.mint, symbol: p.symbol, ts: n, how: 'sold outside bot (reconcile)', entry: p.entry || null, heldMin, peakRatio: p.peakRatio, bundleScore: p.bundleScore || 0, pnlSolEstimate: pnl != null ? +pnl.toFixed(6) : null, pnlSol: source === 'chain' ? +pnl.toFixed(6) : null, pnlSource: source || 'unknown', reason: null, snapshot, exitFillSol: hasFill ? ff.exitFillSol : null, fillSource: hasFill ? ff.fillSource : null });
+    this.ensureClose(p, { manual: true, id: p.id, mint: p.mint, symbol: p.symbol, setup: p.setup, entrySol: p.entrySol, pnlSol: pnl != null ? +pnl.toFixed(6) : null, estimated: source !== 'chain', pnlSource: source, heldMin, reason: pnl != null ? `${reason} — P&L ${source === 'chain' ? 'from chain' : 'est. from last quote'}` : `${reason} (P&L unknown — no quote yet)`, simulated: p.simulated, ts: n, ...(hasFill ? { exitFillSol: ff.exitFillSol, exitFillUsd: ff.exitFillUsd, fillSource: ff.fillSource, sellTxFeeSol: ff.sellTxFeeSol, sellSigs: ff.sellSigs, feesSol: ff.feesSol, feesSource: ff.feesSource } : {}) });
     // D1 paired shadow exit: keep judging this position's remainder virtually
-    try { this.paired.watch(this._pairedState(p, n, { pnlSol: pnl != null ? +pnl.toFixed(6) : null, valueSol: p.lastValueSol ?? null })); } catch { /* observer only */ }
+    // (its manual side prices off the REAL fill when one was read)
+    try { this.paired.watch(this._pairedState(p, n, { pnlSol: pnl != null ? +pnl.toFixed(6) : null, valueSol: hasFill ? ff.manualValueSol : (p.lastValueSol ?? null), fillSource: hasFill ? ff.fillSource : null, fillSol: hasFill ? ff.exitFillSol : null })); } catch { /* observer only */ }
     return true;
   }
 
@@ -1107,6 +1148,9 @@ export class Bot {
       probationSince: pos.probationSince ?? null, moveHist: pos.moveHist || [], exitPending: {},
       flowHist: (pos.flowHist || []).slice(-45),
       manualTs: n, manualPnlSol: manual.pnlSol, manualMarkSol: manual.valueSol ?? null,
+      // D1 follow-up: when the manual side was priced from the real sell tx,
+      // the paired record says so (and carries the per-token fill)
+      manualFillSource: manual.fillSource || null, manualFillSol: manual.fillSol ?? null,
       basisSol: pos.entrySol * pos.remainingFrac,
     };
   }
@@ -1118,13 +1162,18 @@ export class Bot {
     const estPnl = pos.realizedSol + est - pos.entrySol - (pos.feesSol || 0);
     const chain = await this.chainPnl(pos);
     const pnl = chain ? chain.pnl : estPnl;
+    // D1 follow-up: the real fill from the detected sell tx, when readable —
+    // async gravy on the recorded close; unreadable keeps today's nulls.
+    const ff = this._manualFill(pos, await this.chainSellFill(pos));
+    const hasFill = ff.exitFillSol != null;
     const snapshot = await this._manualSnapshot(pos, valueSol, n, pnl);
-    const rec = this.journal.manualExit({ id: pos.id, mint: pos.mint, symbol: pos.symbol, ts: n, how, entry: pos.entry || null, heldMin: +((n - pos.entryTs) / 60000).toFixed(1), peakRatio: pos.peakRatio, bundleScore: pos.bundleScore || 0, pnlSolEstimate: +estPnl.toFixed(6), pnlSol: chain ? +pnl.toFixed(6) : null, pnlSource: chain ? 'chain' : 'estimate', reason: null, snapshot });
+    const rec = this.journal.manualExit({ id: pos.id, mint: pos.mint, symbol: pos.symbol, ts: n, how, entry: pos.entry || null, heldMin: +((n - pos.entryTs) / 60000).toFixed(1), peakRatio: pos.peakRatio, bundleScore: pos.bundleScore || 0, pnlSolEstimate: +estPnl.toFixed(6), pnlSol: chain ? +pnl.toFixed(6) : null, pnlSource: chain ? 'chain' : 'estimate', reason: null, snapshot, exitFillSol: hasFill ? ff.exitFillSol : null, fillSource: hasFill ? ff.fillSource : null });
     this.positions = this.positions.filter(p => p.id !== pos.id);
     this.risk.recordClose(pnl, pos.mint);
-    this.ensureClose(pos, { manual: true, id: pos.id, mint: pos.mint, symbol: pos.symbol, setup: pos.setup, entrySol: pos.entrySol, pnlSol: +pnl.toFixed(6), estimated: !chain, pnlSource: chain ? 'chain' : 'estimate', heldMin: rec.heldMin, reason: `manual exit (${how})`, simulated: pos.simulated, entry: pos.entry, ts: n });
+    this.ensureClose(pos, { manual: true, id: pos.id, mint: pos.mint, symbol: pos.symbol, setup: pos.setup, entrySol: pos.entrySol, pnlSol: +pnl.toFixed(6), estimated: !chain, pnlSource: chain ? 'chain' : 'estimate', heldMin: rec.heldMin, reason: `manual exit (${how})`, simulated: pos.simulated, entry: pos.entry, ts: n, ...(hasFill ? { exitFillSol: ff.exitFillSol, exitFillUsd: ff.exitFillUsd, fillSource: ff.fillSource, sellTxFeeSol: ff.sellTxFeeSol, sellSigs: ff.sellSigs, feesSol: ff.feesSol, feesSource: ff.feesSource } : {}) });
     // D1 paired shadow exit: keep judging this position's remainder virtually
-    try { this.paired.watch(this._pairedState(pos, n, { pnlSol: +pnl.toFixed(6), valueSol })); } catch { /* observer only */ }
+    // (its manual side prices off the REAL fill when one was read)
+    try { this.paired.watch(this._pairedState(pos, n, { pnlSol: +pnl.toFixed(6), valueSol: hasFill ? ff.manualValueSol : valueSol, fillSource: hasFill ? ff.fillSource : null, fillSol: hasFill ? ff.exitFillSol : null })); } catch { /* observer only */ }
     this.savePositions();
     return rec;
   }

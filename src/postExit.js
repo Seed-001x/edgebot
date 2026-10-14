@@ -190,6 +190,12 @@ export class PairedShadowExits {
       id: s.id, mint: s.mint, symbol: s.symbol, setup: s.setup || null,
       manualTs: s.manualTs, manualPnlSol: s.manualPnlSol ?? null,
       manualMarkSol: s.manualMarkSol != null ? +s.manualMarkSol.toFixed(6) : null,
+      // D1 follow-up: 'chainTx' when the manual side was priced from the real
+      // sell transaction's deltas (see bot._manualFill) — the comparison is
+      // then real-vs-would-be, not mark-vs-would-be. manualFillSol is the
+      // realized per-token fill (gross of the sell fee, per the convention).
+      manualMarkSource: s.manualFillSource ? 'chainTx' : 'viewPrice',
+      manualFillSol: s.manualFillSol != null ? +s.manualFillSol.toFixed(10) : null,
       basisSol: +s.basisSol.toFixed(6),
       manualRemainderPnlSol: s.manualMarkSol != null ? +(s.manualMarkSol - s.basisSol).toFixed(6) : null,
       status, wouldReason: reason, wouldTs: nowTs,

@@ -260,6 +260,76 @@ export class Executor {
     } catch { return null; }
   }
 
+  /**
+   * D1 follow-up (user 2026-10-14): the REAL fill of the user's own out-of-bot
+   * sells of `mint`, read from the sell transactions themselves. Same scan as
+   * sellProceeds (the wallet's recent signatures, token balance DROPPED, the
+   * bot's own signatures excluded), but per transaction it also captures the
+   * raw token delta and the fee the wallet paid, so a per-token fill price
+   * falls out:
+   *
+   *   gross proceeds  = wallet SOL delta (native + WSOL) + tx fee paid
+   *   fill (SOL/token) = total gross proceeds / total tokens sold (whole)
+   *
+   * CONVENTION: a sell tx's SOL balance delta is NET of that tx's fee (the fee
+   * leaves the same account), so gross proceeds add the fee back — the fill is
+   * the price the pool actually paid per token before the network took its
+   * cut. proceedsNetSol keeps the after-fee truth (what actually landed in
+   * the wallet), which is what P&L and the paired shadow comparison use.
+   * Returns { sigs, txCount, tokensRawSold (string, positive), decimals,
+   * tokensWhole, proceedsNetSol, feeSol, grossSol, fillSol } or null when no
+   * parseable sell is found. Real mode only; never throws.
+   */
+  async sellFill(mint, { sinceSec = 0, excludeSigs = new Set(), limit = 40, maxTx = 20 } = {}) {
+    try {
+      if (!this.real) return null;
+      const addr = await this.address();
+      if (!addr || addr === 'shadow') return null;
+      const sigs = await this.rpcFn('getSignaturesForAddress', [addr, { limit }]);
+      let tokensRawSold = 0n, decimals = null, net = 0, feeSol = 0, txCount = 0, fetched = 0;
+      const soldSigs = [];
+      for (const s of sigs || []) {
+        if (fetched >= maxTx) break;
+        if (!s || s.err || !s.signature || excludeSigs.has(s.signature)) continue;
+        if (sinceSec && s.blockTime && s.blockTime < sinceSec) continue;
+        fetched++;
+        // maxSupportedTransactionVersion 1 — same wallet-app v1 caveat as sellProceeds.
+        const tx = await this.rpcFn('getTransaction', [s.signature, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 1, commitment: 'confirmed' }]).catch(() => null);
+        if (!tx || !tx.meta || tx.meta.err) continue;
+        const rawDelta = (list) => (list || []).filter(b => b.mint === mint && b.owner === addr)
+          .reduce((a, b) => {
+            if (decimals == null && b.uiTokenAmount && b.uiTokenAmount.decimals != null) decimals = Number(b.uiTokenAmount.decimals);
+            return a + BigInt((b.uiTokenAmount && b.uiTokenAmount.amount) || '0');
+          }, 0n);
+        const dRaw = rawDelta(tx.meta.postTokenBalances) - rawDelta(tx.meta.preTokenBalances);
+        if (!(dRaw < 0n)) continue; // not a sell of this mint
+        const keys = (tx.transaction.message.accountKeys || []).map(k => (typeof k === 'string' ? k : k.pubkey));
+        const idx = keys.indexOf(addr);
+        let dSol = idx >= 0 ? (Number(tx.meta.postBalances[idx]) - Number(tx.meta.preBalances[idx])) / LAMPORTS : 0;
+        const wDelta = (list) => (list || []).filter(b => b.mint === SOL_MINT && b.owner === addr)
+          .reduce((a, b) => a + (Number(b.uiTokenAmount && b.uiTokenAmount.uiAmount) || 0), 0);
+        dSol += wDelta(tx.meta.postTokenBalances) - wDelta(tx.meta.preTokenBalances);
+        // meta.fee is charged to the fee payer only — accountKeys[0]. If the
+        // wallet didn't pay it, its SOL delta carries no fee to add back.
+        const fee = idx === 0 && Number(tx.meta.fee) > 0 ? Number(tx.meta.fee) / LAMPORTS : 0;
+        tokensRawSold += -dRaw;
+        net += dSol;
+        feeSol += fee;
+        txCount++;
+        soldSigs.push(s.signature);
+      }
+      if (!txCount || tokensRawSold <= 0n || decimals == null) return null;
+      const tokensWhole = Number(tokensRawSold) / 10 ** decimals;
+      if (!(tokensWhole > 0)) return null;
+      const grossSol = net + feeSol;
+      return {
+        sigs: soldSigs, txCount, tokensRawSold: tokensRawSold.toString(), decimals,
+        tokensWhole, proceedsNetSol: +net.toFixed(9), feeSol: +feeSol.toFixed(9),
+        grossSol: +grossSol.toFixed(9), fillSol: grossSol / tokensWhole,
+      };
+    } catch { return null; }
+  }
+
   /** Live realizable value (SOL) of `tokensRaw` tokens. */
   async markValue(mint, tokensRaw) {
     const amt = BigInt(tokensRaw);

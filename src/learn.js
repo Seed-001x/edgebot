@@ -3,7 +3,13 @@
 
 import { summarizeGateChecks } from './gate.js';
 
-export const EXIT_REASONS = ['dev_bundle', 'stalled', 'farm_wallets', 'chart_off', 'other'];
+// Settable manual-exit reasons — the user's six (2026-10-14), superseding the
+// v1.9 set (dev_bundle / farm_wallets dropped, volume_died / wick / gut added).
+// Historical records keep their old tags untouched and still count in
+// learnReport's byReason; only the SETTABLE set changes — /exittag rejects
+// anything not listed here. Labels are exactly the user's words.
+export const EXIT_REASONS = ['stalled', 'volume_died', 'wick', 'chart_off', 'gut', 'other'];
+export const EXIT_REASON_LABELS = { stalled: 'stalled', volume_died: 'volume died', wick: 'wick', chart_off: 'chart off', gut: 'gut', other: 'other' };
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
 
 /** compact, flat feature snapshot (all numbers) so groups of trades can be compared later */
