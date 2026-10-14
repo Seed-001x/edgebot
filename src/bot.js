@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { History } from './history.js';
 import { detect, detectChurn, detectLiftoff, eligible, fastPop } from './detect.js';
-import { runGates, hasHardFail, tempRuleViolation, blockedNameWord, extensionCheck, freshHistoryCheck } from './gate.js';
+import { runGates, hasHardFail, tempRuleViolation, blockedNameWord, extensionCheck, freshHistoryCheck, shallowDipCheck } from './gate.js';
 import { evaluateExit } from './exits.js';
 import { bundleRisk, bundleDecision, pickTracked, linkedWeights, CREATOR_KEY } from './bundleWatch.js';
 import { Journal } from './journal.js';
@@ -545,6 +545,22 @@ export class Bot {
       if (!fc.pass) {
         console.log(`[fresh] skip: ${v.symbol} — ${fc.reason}`);
         return this.skip(v, sig, [`fresh: ${fc.reason}`]);
+      }
+    }
+    // Shallow-dip veto (user 2026-10-14): classic entries (pop + trend + liftoff) may be
+    // taken at the trailing-hour sampled top, breaking above it, or on a real dip
+    // (SHALLOW_DIP_MAX_PCT or more under the top, deep dips included) — but not a few
+    // percent under the top, which is the rollover spot (his example: -5% under).
+    // Judged on the bot's own samples, fail-open on thin history. This replaces the
+    // stale-pop veto (removed earlier today for CODE): a signal 10%+ under its sampled
+    // high is NOT distance-vetoed by anything anymore — each setup's own volume /
+    // buy-inflow legs judge deep dips. Fast-stream pops are EXEMPT: they judge their
+    // own 90s window, and their max-drop rule already pins entries near the stream peak.
+    if (!(sig.metrics && sig.metrics.fastStream) && (sig.setup === 'pop' || sig.setup === 'trend' || sig.setup === 'liftoff')) {
+      const sd = shallowDipCheck(this.history.get(v.address), v.price, n, { maxPct: this.cfg.shallowDipMaxPct, windowMin: this.cfg.shallowDipWindowMin });
+      if (!sd.pass) {
+        console.log(`[shallowdip] skip: ${v.symbol} — ${sd.reason}`);
+        return this.skip(v, sig, [`shallow dip: ${sd.reason}`]);
       }
     }
     // Re-entry quality: same coin signaled again — only re-enter on a dip, never the top of a green candle.

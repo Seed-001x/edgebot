@@ -170,6 +170,36 @@ export function extensionCheck(samples, price, now, { maxExt = 1.5, windowMin = 
   };
 }
 
+// 7f. Shallow dip under the recent top (user 2026-10-14): a classic entry may be taken at
+//     the trailing window's sampled top, breaking above it, or on a REAL dip (maxPct or
+//     more under the top — deep dips included) — but NOT a few percent under the top
+//     (his example: -5%), which is the rollover spot: the top just failed and the entry
+//     catches the first leg down. Deep dips pass THIS check untouched; each setup's own
+//     volume / buy-inflow legs still judge them. This replaces the stale-pop veto
+//     (removed earlier today, 2026-10-14, CODE): no age/distance path may veto a signal
+//     maxPct+ under its sampled top anymore. Judged on the bot's OWN samples; too little
+//     history = no real top to judge = pass.
+export function shallowDipCheck(samples, price, now, { maxPct = 0.10, windowMin = 60, minSamples = 3, minSpanSec = 60 } = {}) {
+  if (!(maxPct > 0) || !(price > 0)) return { pass: true, reason: 'shallow-dip check off' };
+  const win = (samples || []).filter(s => s && s.price > 0 && now - s.ts <= windowMin * 60000);
+  if (win.length < minSamples) return { pass: true, reason: 'too few samples to judge the top' };
+  const tsList = win.map(s => s.ts);
+  const spanSec = (Math.max(...tsList) - Math.min(...tsList)) / 1000;
+  if (spanSec < minSpanSec) return { pass: true, reason: 'sample span too short to judge the top' };
+  const top = Math.max(...win.map(s => s.price));
+  if (!(top > 0)) return { pass: true, reason: 'no top price in samples' };
+  const dist = (top - price) / top;
+  const inZone = dist > 0 && dist < maxPct;
+  return {
+    pass: !inZone, dist, top,
+    reason: inZone
+      ? `-${(dist * 100).toFixed(1)}% under the trailing ${windowMin}m top — the rollover zone (0 to ${Math.round(maxPct * 100)}% under); buy the top, a new high, or a real dip`
+      : dist <= 0
+        ? 'at or above the recent top — no shallow dip'
+        : `-${(dist * 100).toFixed(1)}% under the trailing ${windowMin}m top — a real dip, judged by the setup's demand legs`,
+  };
+}
+
 // 7e. Fresh-history fail-closed (user 2026-10-13, entry-fixes A3): coins discovered mid-run
 //     from the trending/movers lists arrive with little or no sampled history, and the
 //     sample-judged guard above (extension) fails OPEN on thin data — it waved

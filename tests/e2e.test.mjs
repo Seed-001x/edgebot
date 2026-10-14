@@ -152,6 +152,62 @@ test('second-hump pop is taken, not stale-vetoed (user 2026-10-14, CODE): sample
   assert.ok(!r.bot.journal.signals.some(s => (s.reasons || []).some(x => x.startsWith('stalepop:'))), 'no stalepop skip may be recorded');
 });
 
+test('shallow-dip veto (user 2026-10-14): a pop at -5% under the sampled top is skipped; at the top and on a real dip the same history is taken', async () => {
+  // Sampled top 100 printed 10 min ago over a 19-minute span; the signal's own demand
+  // legs (the rig's healthy view/gates) pass throughout — distance alone decides.
+  const seedTop = (bot) => {
+    const S = (agoSec, price) => bot.history.record(view({ price }), T0 - agoSec * 1000);
+    S(1200, 92); S(900, 96); S(600, 100); S(300, 97); S(60, 96);
+  };
+  // -5% under the top: the rollover spot — vetoed before gates
+  const shallow = rig({ cfgOver: { tradeSol: 0.02 } });
+  await shallow.bot.start(); seedTop(shallow.bot);
+  await shallow.bot.onSignal(view({ price: 95 }), { setup: 'pop', strength: 1, metrics: {} });
+  assert.equal(shallow.bot.positions.length, 0, 'a shallow dip under the top must not be bought');
+  const sk = shallow.bot.journal.signals.find(s => s.mint === 'MINT1');
+  assert.equal(sk.decision, 'skipped');
+  assert.ok(sk.reasons.some(x => x.startsWith('shallow dip:')), JSON.stringify(sk.reasons));
+
+  // back at the top: strength — taken
+  const atTop = rig({ cfgOver: { tradeSol: 0.02 } });
+  await atTop.bot.start(); seedTop(atTop.bot);
+  await atTop.bot.onSignal(view({ price: 100 }), { setup: 'pop', strength: 1, metrics: {} });
+  assert.equal(atTop.bot.positions.length, 1, 'an entry at the recent top must be bought');
+
+  // -15% under the same top: a real dip — taken (the setup's own legs judged it)
+  const dip = rig({ cfgOver: { tradeSol: 0.02 } });
+  await dip.bot.start(); seedTop(dip.bot);
+  await dip.bot.onSignal(view({ price: 85 }), { setup: 'pop', strength: 1, metrics: {} });
+  assert.equal(dip.bot.positions.length, 1, 'a real dip under the top must be bought');
+  assert.ok(!dip.bot.journal.signals.some(s => (s.reasons || []).some(x => x.startsWith('shallow dip:'))), 'no shallow-dip skip may be recorded for a real dip');
+});
+
+test('shallow-dip veto covers trend and liftoff; fast-stream pops are exempt; thin history fails open (user 2026-10-14)', async () => {
+  const seedTop = (bot) => {
+    const S = (agoSec, price) => bot.history.record(view({ price }), T0 - agoSec * 1000);
+    S(1200, 92); S(900, 96); S(600, 100); S(300, 97); S(60, 96);
+  };
+  for (const setup of ['trend', 'liftoff']) {
+    const r = rig({ cfgOver: { tradeSol: 0.02 } });
+    await r.bot.start(); seedTop(r.bot);
+    await r.bot.onSignal(view({ price: 95 }), { setup, strength: 1, metrics: {} });
+    assert.equal(r.bot.positions.length, 0, `${setup} at -5% under the top must be vetoed`);
+    assert.ok(r.bot.journal.signals.some(s => (s.reasons || []).some(x => x.startsWith('shallow dip:'))), `${setup} skip must carry the shallow-dip reason`);
+  }
+  // fast pop: same shallow shape, but the stream judges its own 90s window — exempt
+  const fast = rig({ cfgOver: { tradeSol: 0.02 } });
+  await fast.bot.start(); seedTop(fast.bot);
+  await fast.bot.onSignal(view({ price: 95 }), { setup: 'pop', strength: 1, metrics: { fastStream: 1 } });
+  assert.equal(fast.bot.positions.length, 1, 'a fast-stream pop must not be shallow-dip vetoed');
+  // thin history (2 samples): no real top to judge — fails open even at -5% under
+  const thin = rig({ cfgOver: { tradeSol: 0.02 } });
+  await thin.bot.start();
+  thin.bot.history.record(view({ price: 100 }), T0 - 60000);
+  thin.bot.history.record(view({ price: 96 }), T0);
+  await thin.bot.onSignal(view({ price: 95 }), { setup: 'pop', strength: 1, metrics: {} });
+  assert.equal(thin.bot.positions.length, 1, 'thin history must fail open');
+});
+
 test('A1+A2: paceCfg no longer loosens gates (PACE_RELAX off) and mandatory ape defaults off', () => {
   const bot = new Bot(testCfg(), { now: () => T0, exec: {}, discover: async () => new Map(), fetchViews: async () => new Map(), fetchSolUsd: async () => 150, fetchRug: async () => null, searchByName: async () => [] });
   const out = bot.paceCfg(T0);

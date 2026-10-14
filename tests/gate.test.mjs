@@ -153,6 +153,44 @@ test('extensionCheck: extreme extension above the 1h base vetoed, near-base entr
   assert.equal(extensionCheck(otto, 86, now, { maxExt: 0 }).pass, true);
 });
 
+test('shallowDipCheck: the rollover zone just under the top is vetoed; the top, new highs and real dips pass (user 2026-10-14)', async () => {
+  const { shallowDipCheck } = await import('../src/gate.js');
+  const now = NOW;
+  const S = (agoSec, price) => ({ ts: now - agoSec * 1000, price });
+  const opts = { maxPct: 0.10, windowMin: 60 };
+  // sampled top 100 printed 10 minutes ago, solid history around it (span 19 min)
+  const hist = [S(1200, 92), S(900, 96), S(600, 100), S(300, 97), S(60, 96)];
+  // at the top and breaking above it: no veto (strength is buyable)
+  assert.equal(shallowDipCheck(hist, 100, now, opts).pass, true);
+  assert.equal(shallowDipCheck(hist, 104, now, opts).pass, true);
+  // his example: -5% under the top — the rollover spot — vetoed
+  const v = shallowDipCheck(hist, 95, now, opts);
+  assert.equal(v.pass, false);
+  assert.match(v.reason, /-5\.0% under the trailing 60m top/);
+  // just inside the zone (-9% under) is still vetoed
+  assert.equal(shallowDipCheck(hist, 91, now, opts).pass, false);
+  // the boundary: exactly -10% under falls on the ALLOWED side — the veto zone is
+  // strictly 0 < distance < 0.10, so 0.10 exactly is a real dip, not a rollover
+  assert.equal(shallowDipCheck(hist, 90, now, opts).pass, true);
+  // deeper dips pass on distance (each setup's volume / buy-inflow legs judge them)
+  assert.equal(shallowDipCheck(hist, 85, now, opts).pass, true);
+  assert.equal(shallowDipCheck(hist, 50, now, opts).pass, true);
+  // the SCI/CODE second-hump shape — a fresh signal 28% under its sampled high, the old
+  // stale-pop veto's exact target — is NOT vetoed by the replacement rule
+  const code = [S(360, 1.20), S(330, 1.39), S(300, 1.32), S(270, 1.26), S(240, 1.20), S(210, 1.15), S(180, 1.10), S(150, 1.07), S(120, 1.04), S(90, 1.02), S(60, 1.01), S(30, 1.00), S(0, 1.00)];
+  const c = shallowDipCheck(code, 1.00, now, opts);
+  assert.equal(c.pass, true);
+  assert.ok(Math.abs(c.dist - 0.28) < 0.01, `dist ${c.dist}`);
+  // a top sampled outside the trailing window does not count as the recent top
+  const oldTop = [S(3700, 100), S(600, 57), S(300, 56), S(60, 57)];
+  assert.equal(shallowDipCheck(oldTop, 57, now, opts).pass, true);
+  // thin history fails open: fewer than 3 samples, and a sampled span under 60s
+  assert.equal(shallowDipCheck([S(60, 100), S(0, 95)], 95, now, opts).pass, true);
+  assert.equal(shallowDipCheck([S(50, 100), S(25, 98), S(0, 95)], 95, now, opts).pass, true);
+  // disabled
+  assert.equal(shallowDipCheck(hist, 95, now, { maxPct: 0 }).pass, true);
+});
+
 // ---- A3 fresh-history fail-closed (entry fixes 2026-10-13) ----
 test('A3: BORING replay — no samples, +41.6% in 5m vs +13.8% on the hour at $14.5k — is rejected', async () => {
   const { freshHistoryCheck } = await import('../src/gate.js');

@@ -250,6 +250,16 @@ export function loadConfig(env = process.env) {
     freshMaxChgM5: num(env, 'FRESH_MAX_CHG_M5', 25),     // 0 = off
     freshSmallMc: num(env, 'FRESH_SMALL_MC', 30000),     // "small cap" line for the fresh check and the B3 wash reject
     freshM5ShareH1: num(env, 'FRESH_M5_SHARE_H1', 0.7),  // 0 = off
+    // shallow-dip veto (user 2026-10-14): a classic entry (pop/trend/liftoff) may be taken at
+    // the trailing SHALLOW_DIP_WINDOW_MIN sampled top, breaking above it, or on a real dip
+    // (SHALLOW_DIP_MAX_PCT or more under the top — deep dips included) — but not in the
+    // shallow zone just under the top (his example: -5%), which is the rollover spot. Deep
+    // dips stay buyable on every classic setup because each setup's own volume / buy-inflow
+    // legs still judge them. This REPLACES the stale-pop veto (removed earlier today for
+    // CODE): the stale veto is gone either way — 0 here turns THIS rule off, it does not
+    // bring the stale veto back.
+    shallowDipMaxPct: num(env, 'SHALLOW_DIP_MAX_PCT', 0.10), // 0 = off
+    shallowDipWindowMin: num(env, 'SHALLOW_DIP_WINDOW_MIN', 60),
 
     // ---- exits (judged on REALIZABLE value = Jupiter sell quote, not screen price) ----
     stopLoss: num(env, 'STOP_LOSS', 0.15),                // grace-stop ARM line on realizable value (user 2026-10-13: 0.10 live via env)
@@ -346,6 +356,8 @@ export function validateConfig(cfg) {
   if (cfg.freshMaxChgM5 < 0) errs.push('FRESH_MAX_CHG_M5 must be >= 0 (0 = off)');
   if (cfg.freshSmallMc < 0) errs.push('FRESH_SMALL_MC must be >= 0');
   if (cfg.freshM5ShareH1 < 0 || cfg.freshM5ShareH1 > 1) errs.push('FRESH_M5_SHARE_H1 must be between 0 and 1 (0 = off)');
+  if (cfg.shallowDipMaxPct < 0 || cfg.shallowDipMaxPct > 0.9) errs.push('SHALLOW_DIP_MAX_PCT must be between 0 and 0.9 (0 = off)');
+  if (cfg.shallowDipWindowMin < 1 || cfg.shallowDipWindowMin > 720) errs.push('SHALLOW_DIP_WINDOW_MIN must be between 1 and 720');
   if (cfg.maxBuyRatioM5 < 0 || cfg.maxBuyRatioM5 > 1) errs.push('MAX_BUY_RATIO_M5 must be between 0 and 1 (0 = off)');
   if (cfg.churnMinDropPct < 0 || cfg.churnMinDropPct > 100) errs.push('CHURN_MIN_DROP_PCT must be between 0 and 100');
   if (cfg.churnLowBandPct < 0 || cfg.churnLowBandPct > 100) errs.push('CHURN_LOW_BAND_PCT must be between 0 and 100');

@@ -34,6 +34,19 @@ test('entry fixes 2026-10-13: safer defaults — mandatory ape off, pace relax o
   assert.equal(validateConfig(c).length, 0);
 });
 
+test('shallow-dip veto 2026-10-14: defaults 0.10 / 60 min, 0 = off accepted, bad values rejected', () => {
+  const c = loadConfig({});
+  assert.equal(c.shallowDipMaxPct, 0.10);
+  assert.equal(c.shallowDipWindowMin, 60);
+  assert.equal(loadConfig({ SHALLOW_DIP_MAX_PCT: '0.05' }).shallowDipMaxPct, 0.05);
+  assert.equal(loadConfig({ SHALLOW_DIP_WINDOW_MIN: '30' }).shallowDipWindowMin, 30);
+  assert.equal(validateConfig(loadConfig({ SHALLOW_DIP_MAX_PCT: '0' })).length, 0); // 0 = rule off, valid (and the stale veto stays gone)
+  assert.ok(validateConfig(loadConfig({ SHALLOW_DIP_MAX_PCT: '-0.1' })).some(e => e.includes('SHALLOW_DIP_MAX_PCT')));
+  assert.ok(validateConfig(loadConfig({ SHALLOW_DIP_MAX_PCT: '0.95' })).some(e => e.includes('SHALLOW_DIP_MAX_PCT')));
+  assert.ok(validateConfig(loadConfig({ SHALLOW_DIP_WINDOW_MIN: '0' })).some(e => e.includes('SHALLOW_DIP_WINDOW_MIN')));
+  assert.ok(validateConfig(loadConfig({ SHALLOW_DIP_WINDOW_MIN: '721' })).some(e => e.includes('SHALLOW_DIP_WINDOW_MIN')));
+});
+
 test('probation leash 2026-10-14: defaults 300s probation / 7% leash, 0 accepted as off, bad values rejected', () => {
   const c = loadConfig({});
   assert.equal(c.stallProbationSec, 300);
