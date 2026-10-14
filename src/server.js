@@ -202,6 +202,15 @@ export function startServer(bot, port) {
     if (req.method === 'GET' && u.pathname === '/reports') {
       return json(res, 200, (bot.journal.tradeReports || []).slice().reverse());
     }
+    if (req.method === 'GET' && u.pathname === '/scans') {
+      // Freeze work 1b: per-discovery-cycle scan records (watchlist size +
+      // per-source intake), newest first. Default: the in-memory tail as a
+      // bare array; limit/offset switches to the paging envelope, /trades-style.
+      const all = (bot.journal.scans || []).slice().reverse();
+      const pg = paging(u);
+      if (!pg) return json(res, 200, all);
+      return json(res, 200, { total: all.length, offset: pg.offset, limit: pg.limit, items: all.slice(pg.offset, pg.offset + pg.limit) });
+    }
     if (req.method === 'POST' && u.pathname === '/positions/notp') {
       let body = '';
       req.on('data', c => { body += c; if (body.length > 2000) req.destroy(); });

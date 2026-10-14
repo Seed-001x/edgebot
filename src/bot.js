@@ -43,6 +43,7 @@ export class Bot {
     this.cfgStamp = configStamp(cfg); // D1: config version stamp carried by entries + closes (record-only)
     this.lastSolUsd = null; // last SOL/USD the position loop saw (feeds observer marks)
     this.watch = new Map();      // mint -> { ts, source }
+    this.intakeCounts = {};      // source -> mints added via noteMint since the last discovery cycle (scan-record bookkeeping, record-only)
     this.outcomeSeenAt = new Map(); // mint -> ts the outcome tracker last got a view (observer bookkeeping only)
     this.lastOutcomeTickTs = 0;
     this.latest = new Map();     // mint -> latest view
@@ -350,6 +351,7 @@ export class Bot {
     if (wsCount >= sliceCap && oldestWs) this.watch.delete(oldestWs);
     else if (this.watch.size >= this.cfg.watchMax && oldestAny) this.watch.delete(oldestAny);
     this.watch.set(mint, { ts: n, source });
+    this.intakeCounts[source] = (this.intakeCounts[source] || 0) + 1; // scan record (record-only)
     return true;
   }
 
@@ -453,11 +455,12 @@ export class Bot {
       const bl = this.journal.blacklistedMints();
       for (const [mint, source] of found) if (!bl.has(mint)) this.watch.set(mint, { ts: n, source });
       // Feed scraped pump.fun lists into the watchlist
+      let reallistsAdded = 0;
       try {
         const rl = JSON.parse(fs.readFileSync(path.join(this.cfg.dataDir, 'reallists.json'), 'utf8'));
         for (const row of [...(rl.trending || []), ...(rl.movers || []), ...(rl.graduated || []), ...(rl.new || [])]) {
           const mint = row.mint || row.address;
-          if (mint && !bl.has(mint) && !this.watch.has(mint)) this.watch.set(mint, { ts: n, source: 'reallists' });
+          if (mint && !bl.has(mint) && !this.watch.has(mint)) { this.watch.set(mint, { ts: n, source: 'reallists' }); reallistsAdded++; }
         }
       } catch {}
       this.evictBlacklisted();
@@ -476,6 +479,22 @@ export class Bot {
       this.history.prune(n, new Set([...this.watch.keys(), ...held]));
       // graduation-handoff bookkeeping only tracks mints we still watch or hold
       if (this.curveSeen.size) { const keep = new Set([...this.watch.keys(), ...held]); for (const m of this.curveSeen) if (!keep.has(m)) this.curveSeen.delete(m); }
+      // Scan record (record-only, freeze work 1b — user 2026-10-14): persist
+      // ONE compact line per discovery cycle — post-prune watchlist size +
+      // per-source intake — so "coins scanned per hour" is recoverable later
+      // (the funnel analysis found it wasn't: nothing persisted scan counts).
+      // Intake = distinct mints each source contributed this cycle: discover()
+      // sources by their quota `taken`, reallists by actual adds above, and the
+      // async noteMint sources (live-ws / graduated / flow) by the adds counted
+      // since the previous cycle. Fail-silent: journaling never breaks discovery.
+      try {
+        const intake = {};
+        for (const [name, c] of Object.entries(found.counts || {})) intake[name] = (c && c.taken) || 0;
+        if (reallistsAdded) intake.reallists = reallistsAdded;
+        for (const [name, c] of Object.entries(this.intakeCounts)) intake[name] = (intake[name] || 0) + c;
+        this.intakeCounts = {};
+        this.journal.scan({ ts: n, watchSize: this.watch.size, intake });
+      } catch { /* record-only */ }
     } catch (e) { this.err('discover', e); } finally { this.busy.discover = false; this.saveStats(); }
   }
 
@@ -599,8 +618,8 @@ export class Bot {
     catch { return null; }
   }
 
-  skip(v, sig, reasons, warnings = [], gates = null, gatePass = null) {
-    this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'skipped', reasons, price: v.price, mc: v.mc, metrics: sig.metrics, warnings, label: sig.label || null, gates, gatePass, fields: this._signalFields(v) });
+  skip(v, sig, reasons, warnings = [], gates = null, gatePass = null, shadowGates = null, shadowGatePass = null) {
+    this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'skipped', reasons, price: v.price, mc: v.mc, metrics: sig.metrics, warnings, label: sig.label || null, gates, gatePass, fields: this._signalFields(v), shadowGates, shadowGatePass });
   }
 
   // Setups currently in shadow-only mode (user 2026-10-14, forward plan step 1b):
@@ -836,7 +855,22 @@ export class Bot {
 
     const size = this.risk.sizeFor(v.liq, solUsd);
     const gate0 = this.risk.canEnter({ mint: v.address, walletSol, openCount: this.positions.length, sizeSol: size, halted: this.halted() });
-    if (!gate0.ok) { checks.risk = { pass: false, reason: gate0.reason || null }; return this.skip(v, sig, [`risk: ${gate0.reason}`], [], checks); }
+    if (!gate0.ok) {
+      checks.risk = { pass: false, reason: gate0.reason || null };
+      // Freeze work 1b (record-only, user 2026-10-14): a risk-layer preemption
+      // used to end the pipeline here, so the record never showed whether the
+      // GATE STACK would have passed the coin — the gate-pricing question was
+      // unanswerable for exactly the halted/streak-paused stretches. Evaluate
+      // the same checks + gate stack in shadow (the D1 shadowGateRecord
+      // mechanism) and journal the would-be verdict as shadowGates /
+      // shadowGatePass. The live outcome is byte-identical: same decision,
+      // same `risk: ...` reason, no buy path entered, no slot touched — the
+      // shadow result is never branched on. (The later gate1 re-check needs
+      // no shadow verdict: the real gates already ran by then and their
+      // results are on that record.)
+      const sg = await this.shadowGateRecord(v, sig, n);
+      return this.skip(v, sig, [`risk: ${gate0.reason}`], [], checks, null, sg.gates, sg.gatePass);
+    }
 
     // one-trade temporary rules (user-set via POST /temprules; cleared on the next executed entry)
     if (this.stats.tempRules) {

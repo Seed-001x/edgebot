@@ -41,7 +41,7 @@ export class Journal {
   constructor(dir, { now = Date.now } = {}) {
     this.now = now;
     this.dir = dir;
-    this.f = { sig: path.join(dir, 'signals.jsonl'), out: path.join(dir, 'outcomes.jsonl'), trades: path.join(dir, 'trades.jsonl'), fb: path.join(dir, 'feedback.jsonl'), ticks: path.join(dir, 'ticks.jsonl'), manual: path.join(dir, 'manual_exits.jsonl'), reports: path.join(dir, 'trade_reports.jsonl'), rshadow: path.join(dir, 'ratchet_shadow.jsonl'), pend: path.join(dir, 'outcome_pending.json') };
+    this.f = { sig: path.join(dir, 'signals.jsonl'), out: path.join(dir, 'outcomes.jsonl'), trades: path.join(dir, 'trades.jsonl'), fb: path.join(dir, 'feedback.jsonl'), ticks: path.join(dir, 'ticks.jsonl'), manual: path.join(dir, 'manual_exits.jsonl'), reports: path.join(dir, 'trade_reports.jsonl'), rshadow: path.join(dir, 'ratchet_shadow.jsonl'), pend: path.join(dir, 'outcome_pending.json'), scan: path.join(dir, 'scans.jsonl') };
     this._pendDirty = false;   // outcome-tracking progress changed since the last save
     this._pendSavedAt = 0;
     try { fs.mkdirSync(dir, { recursive: true }); } catch { /* ignore */ }
@@ -53,6 +53,8 @@ export class Journal {
     this.manual = [];         // positions the HUMAN closed (with entry snapshot + optional reason tag)
     this.tradeReports = [];   // full report after every N closes (see reports.js)
     this.seq = 0;
+    this.scans = [];     // one compact record per discovery cycle (freeze work 1b)
+    for (const sc of readTail(this.f.scan, 200)) this.scans.push(sc);
     this.boot();
   }
 
@@ -228,7 +230,19 @@ export class Journal {
     return gates;
   }
 
-  signal({ mint, symbol, setup, decision, reasons = [], price, mc, metrics = null, warnings = [], label = null, gates = null, gatePass = null, fields = null }) {
+  /** One scan record per discovery cycle (record-only, freeze work 1b,
+   *  user 2026-10-14): { ts, watchSize, intake: { source: mintsAdded } }. The
+   *  funnel analysis found "coins scanned per hour" unrecoverable because no
+   *  scan counts were ever persisted — this JSONL is that record. Kept to a
+   *  small in-memory tail for the read-only /scans endpoint; the file is the
+   *  durable copy. Append is best-effort (Journal.append never throws). */
+  scan(rec) {
+    this.scans.push(rec);
+    if (this.scans.length > 200) this.scans.shift();
+    this.append(this.f.scan, rec);
+  }
+
+  signal({ mint, symbol, setup, decision, reasons = [], price, mc, metrics = null, warnings = [], label = null, gates = null, gatePass = null, fields = null, shadowGates = null, shadowGatePass = null }) {
     const ts = this.now();
     const id = `${ts}-${++this.seq}`;
     const rec = { id, ts, mint, symbol, setup, decision, reasons, price, mc, metrics, warnings, label };
@@ -238,6 +252,13 @@ export class Journal {
     // exact old shape.
     if (gates != null) rec.gates = gates;
     if (gatePass != null) rec.gatePass = gatePass;
+    // Freeze work 1b (record-only): the would-be gate verdict for a signal the
+    // RISK layer preempted before the gate stack could run — evaluated in
+    // shadow (Bot.shadowGateRecord) purely for the record. Namespaced apart
+    // from `gates`/`gatePass` so it can never be read as a live verdict; the
+    // live decision and reasons are untouched by it. Omitted when null.
+    if (shadowGates != null) rec.shadowGates = shadowGates;
+    if (shadowGatePass != null) rec.shadowGatePass = shadowGatePass;
     // Signal fields (record-only, 2026-10-14): sampled-history context computed
     // at signal time by src/signalFields.js (holder growth, curve fill speed,
     // buy velocity). Omitted only when the caller computed none.
