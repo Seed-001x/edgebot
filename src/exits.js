@@ -66,7 +66,12 @@ export function evaluateExit(pos, mark, cfg, now) {
   // probation-leash state (user 2026-10-14): the tick the position was first caught inside
   // the entry-stall range at/after the stall deadline (section 4b). Null = not on probation.
   let probationSince = pos.probationSince ?? null;
-  const out = (fraction, reason) => ({ fraction, reason, newPeak: peakRatio, newPeakMove: peakMove, ratio, stallSince: null, stopArmedTs, floorChecks, floorSince, probationSince, tp1Arm });
+  // bleed-exit move history (user 2026-10-14): the position's own per-check `move` prints —
+  // appended here, persisted by the caller with the rest of the exit state, bounded to the
+  // last 40 checks (~160s at the 4s cadence, comfortably past the bleed lookback). The bleed
+  // section (4d) judges "still falling" against this series and nothing else.
+  const moveHist = [...(pos.moveHist || []), { ts: now, move }].slice(-40);
+  const out = (fraction, reason) => ({ fraction, reason, newPeak: peakRatio, newPeakMove: peakMove, ratio, stallSince: null, stopArmedTs, floorChecks, floorSince, probationSince, tp1Arm, moveHist });
 
   // 1. liquidity death: the pool can no longer absorb what we hold
   const valueUsd = mark.valueSol * (mark.solUsd || 150);
@@ -214,6 +219,29 @@ export function evaluateExit(pos, mark, cfg, now) {
   if (!pos.tp1Done && cfg.beArmPct > 0 && pos.peakMove != null && peakMove >= 1 + cfg.beArmPct && move <= 1 + cfg.beTriggerPct) {
     const pctFmt = (x) => `${x >= 0 ? '+' : ''}${(x * 100).toFixed(1)}%`;
     return out(1, `break-even ratchet (peaked ${pctFmt(peakMove - 1)}, back to ${pctFmt(move - 1)})`);
+  }
+
+  // 4d. bleed exit (user 2026-10-14, "Still-falling test — down 7%+ and not recovering"):
+  //     the probation leash (4b) only exists for a coin that sat inside the entry band at the
+  //     stall deadline — TAILOOR never did, and bled to -52% over ~6 minutes with no exit
+  //     owning it (the user cut it by hand). This frees the leash from the band: past the
+  //     prove-itself window (bleedMinAgeSec — before it, the older exits judge alone), ANY
+  //     position down bleedPct or more on `move` sells in full IF it is still falling — the
+  //     current move at/below the move bleedLookbackSec ago, on the position's own per-check
+  //     move history. A coin that dipped and is recovering (current move back above the
+  //     lookback print) is left alone — that is the whole test. No reference reading at
+  //     least ~45s old (e.g. just after a restart) = no fire yet. No tp1Done exclusion:
+  //     post-TP1 the trails judge first and these prints are rarely reachable there.
+  //     It sits after 4b/4c, so a probationed dive keeps the leash's own label and an
+  //     armed ratchet fade keeps the ratchet's. bleedPct = 0 disables the exit.
+  if (cfg.bleedPct > 0 && heldSec >= (cfg.bleedMinAgeSec || 0) && move <= 1 - cfg.bleedPct) {
+    const target = now - (cfg.bleedLookbackSec || 60) * 1000;
+    let ref = null;
+    for (const h of pos.moveHist || []) {
+      if (!h || now - h.ts < 45000) continue; // the reference must be a real lookback, not the last few checks
+      if (ref == null || Math.abs(h.ts - target) < Math.abs(ref.ts - target)) ref = h;
+    }
+    if (ref && move <= ref.move) return out(1, `bleed exit (${((move - 1) * 100).toFixed(1)}% and still falling)`);
   }
 
   // 5. momentum failure: underwater, 10 min in, essentially no buyers (only sell when truly dead)

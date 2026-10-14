@@ -208,7 +208,7 @@ export function shallowDipCheck(samples, price, now, { maxPct = 0.10, windowMin 
 //     aggregates decide instead: a 5-minute move that has ALREADY printed beyond the cap is
 //     a chase, and a small cap whose entire hourly move is one 5-minute candle is a blip.
 //     With enough samples this check passes untouched — the sampled guard does the judging.
-export function freshHistoryCheck(samples, view, now, { maxChgM5 = 25, smallMc = 30000, m5ShareH1 = 0.7, windowMin = 60, minSamples = 10, minSpanSec = 180 } = {}) {
+export function freshHistoryCheck(samples, view, now, { maxChgM5 = 25, smallMc = 30000, m5ShareH1 = 0.7, windowMin = 60, minSamples = 10, minSpanSec = 180, bypassMinVolM5 = 0, bypassMinBuyRatio = 0.65, bypassMaxBuyRatio = 0.85 } = {}) {
   if (!(maxChgM5 > 0) && !(m5ShareH1 > 0)) return { pass: true, reason: 'fresh check off' };
   const win = (samples || []).filter(s => s && s.price > 0 && now - s.ts <= windowMin * 60000);
   if (win.length >= minSamples) {
@@ -220,11 +220,31 @@ export function freshHistoryCheck(samples, view, now, { maxChgM5 = 25, smallMc =
   const chgM5 = view ? view.chgM5 : null;
   const chgH1 = view ? view.chgH1 : null;
   const mc = view ? view.mc : null;
-  if (maxChgM5 > 0 && chgM5 != null && chgM5 > maxChgM5) {
+  // FLOW BYPASS (user 2026-10-14, "Flow — heavy 5m volume, buyers dominating"): the move-cap
+  // leg below exists to stop blind chases of coins the bot cannot judge yet — but a fresh coin
+  // printing heavy 5m volume with buyers clearly dominating is not a blind chase: its flow IS
+  // the evidence the missing history would have given. When BOTH flow legs hold on the coin's
+  // own numbers (the same fields the detectors judge: volM5, and the 5m buy share — read off
+  // the view, or derived from its buy/sell counts), the move-cap skip lifts. The small-cap
+  // blip leg further down is NEVER bypassed (a small cap's "flow" is the wash itself), and
+  // at/above the D1 bundle-bait ceiling there is no bypass either — that share is one bundled
+  // buyer, not a crowd. Missing flow numbers = no bypass; the skip stands.
+  const volM5 = view && view.volM5 != null ? view.volM5 : null;
+  const buyRatioM5 = view
+    ? (view.buyRatioM5 != null ? view.buyRatioM5
+      : (view.buysM5 != null && view.sellsM5 != null && view.buysM5 + view.sellsM5 > 0 ? view.buysM5 / (view.buysM5 + view.sellsM5) : null))
+    : null;
+  const bypass = bypassMinVolM5 > 0 && volM5 != null && volM5 >= bypassMinVolM5
+    && buyRatioM5 != null && buyRatioM5 >= bypassMinBuyRatio && buyRatioM5 < bypassMaxBuyRatio ? 'flow' : null;
+  const moveCapHit = maxChgM5 > 0 && chgM5 != null && chgM5 > maxChgM5;
+  if (moveCapHit && !bypass) {
     return { pass: false, reason: `fresh coin, no sampled history, and already +${Math.round(chgM5)}% in 5m (cap +${Math.round(maxChgM5)}%) — the move already happened` };
   }
   if (m5ShareH1 > 0 && mc != null && mc < smallMc && chgM5 != null && chgH1 != null && chgH1 > 0 && chgM5 >= m5ShareH1 * chgH1) {
     return { pass: false, reason: `fresh small cap ($${Math.round(mc)}): the whole hourly move (+${Math.round(chgH1)}%) is one 5m candle (+${Math.round(chgM5)}%) — a blip, not a trend` };
+  }
+  if (moveCapHit && bypass) {
+    return { pass: true, judged: false, bypass, reason: `fresh coin already +${Math.round(chgM5)}% in 5m (cap +${Math.round(maxChgM5)}%) — flow bypass: $${Math.round(volM5)} 5m volume, ${Math.round(buyRatioM5 * 100)}% buys — heavy flow, buyers dominating` };
   }
   return { pass: true, judged: false, reason: 'thin history, but aggregates are not extended' };
 }

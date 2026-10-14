@@ -541,10 +541,17 @@ export class Bot {
     // no samples at +41.6% in 5m on a $14.5k cap and the sample guard passed it by default.
     // Fast-stream pops exempt (the stream IS the history).
     if (!(sig.metrics && sig.metrics.fastStream)) {
-      const fc = freshHistoryCheck(this.history.get(v.address), v, n, { maxChgM5: this.cfg.freshMaxChgM5, smallMc: this.cfg.freshSmallMc, m5ShareH1: this.cfg.freshM5ShareH1 });
+      const fc = freshHistoryCheck(this.history.get(v.address), v, n, { maxChgM5: this.cfg.freshMaxChgM5, smallMc: this.cfg.freshSmallMc, m5ShareH1: this.cfg.freshM5ShareH1, bypassMinVolM5: this.cfg.freshBypassMinVolM5, bypassMinBuyRatio: this.cfg.freshBypassMinBuyRatio, bypassMaxBuyRatio: this.cfg.maxBuyRatioM5 > 0 ? this.cfg.maxBuyRatioM5 : 0.85 });
       if (!fc.pass) {
         console.log(`[fresh] skip: ${v.symbol} — ${fc.reason}`);
         return this.skip(v, sig, [`fresh: ${fc.reason}`]);
+      }
+      if (fc.bypass) {
+        // the flow bypass lifted the fresh move cap (user 2026-10-14) — leave the mark on the
+        // signal's journaled metrics so the entry's record shows why it was let in
+        sig.metrics = sig.metrics || {};
+        sig.metrics.freshBypass = fc.bypass;
+        console.log(`[fresh] bypass: ${v.symbol} — ${fc.reason}`);
       }
     }
     // Shallow-dip veto (user 2026-10-14): classic entries (pop + trend + liftoff) may be
@@ -646,7 +653,7 @@ export class Bot {
       entryTs: n, entrySol: fill.solSpent, tokensRaw: fill.tokensRaw, entryTokensRaw: fill.tokensRaw, remainingFrac: 1, peakRatio: 1, tp1Done: false, tp2Done: false, tp1Arm: null, flowHist: [], suspectUnbookedSell: false,
       entryPrice: v.price, entryMc: v.mc, realizedSol: 0, simulated: fill.simulated, sigBuy: fill.sig, markFails: 0,
       entryVolH1: v.volH1 || 0,
-      entryRoundTrip: rt.ratio, peakMove: 1, stopArmedTs: null, floorChecks: 0, floorSince: null, probationSince: null, feesSol: this.cfg.txFeeSol || 0, // buy tx fee // entry stall: price is at entry (move 1.0) by definition; the 60s clock runs from entryTs
+      entryRoundTrip: rt.ratio, peakMove: 1, stopArmedTs: null, floorChecks: 0, floorSince: null, probationSince: null, moveHist: [], feesSol: this.cfg.txFeeSol || 0, // buy tx fee // entry stall: price is at entry (move 1.0) by definition; the 60s clock runs from entryTs
       bw: { tracked: null, supply: rug && rug.token ? Number(rug.token.supply) || 0 : 0, creator: rug && rug.creator ? String(rug.creator) : null, weights: linkedWeights(rug), snaps: [], vals: [], lastTs: 0, trimmed: false },
       entry: snapshotFeatures({ v, sig, rug, g, now: n }), lastTickTs: 0, lastChainTs: 0, chainDropStrikes: 0,
     };
@@ -775,6 +782,7 @@ export class Bot {
     if ('floorChecks' in decision) pos.floorChecks = decision.floorChecks;
     if ('floorSince' in decision) pos.floorSince = decision.floorSince;
     if ('probationSince' in decision) pos.probationSince = decision.probationSince;
+    if ('moveHist' in decision) pos.moveHist = decision.moveHist;
     if ('tp1Arm' in decision) pos.tp1Arm = decision.tp1Arm;
     // +20% progress callout: let the timeline know it's climbing (once per position)
     if (valueSol != null && !pos.climbCalloutDone) {

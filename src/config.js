@@ -250,6 +250,13 @@ export function loadConfig(env = process.env) {
     freshMaxChgM5: num(env, 'FRESH_MAX_CHG_M5', 25),     // 0 = off
     freshSmallMc: num(env, 'FRESH_SMALL_MC', 30000),     // "small cap" line for the fresh check and the B3 wash reject
     freshM5ShareH1: num(env, 'FRESH_M5_SHARE_H1', 0.7),  // 0 = off
+    // fresh-coin FLOW bypass (user 2026-10-14, "Flow — heavy 5m volume, buyers dominating"):
+    // the move-cap leg of the fresh check lifts when the coin's own 5m flow is heavy AND
+    // buyer-dominated — the flow is the evidence the missing sampled history would have
+    // given. The small-cap blip leg is NEVER bypassed (a small cap's flow is the wash
+    // itself), and at/above the D1 bundle-bait ceiling there is no bypass either.
+    freshBypassMinVolM5: num(env, 'FRESH_BYPASS_MIN_VOL_M5', 50000), // 0 = bypass off
+    freshBypassMinBuyRatio: num(env, 'FRESH_BYPASS_MIN_BUY_RATIO', 0.65), // buy share the bypass demands (the ceiling is MAX_BUY_RATIO_M5, wired in bot.js)
     // shallow-dip veto (user 2026-10-14): a classic entry (pop/trend/liftoff) may be taken at
     // the trailing SHALLOW_DIP_WINDOW_MIN sampled top, breaking above it, or on a real dip
     // (SHALLOW_DIP_MAX_PCT or more under the top — deep dips included) — but not in the
@@ -278,6 +285,9 @@ export function loadConfig(env = process.env) {
     stallLeashPct: num(env, 'STALL_LEASH_PCT', 0.07),     // while on probation, a price move to/below −this from entry sells instantly — the tight leash stands in for the distant −17% hard floor, which was the only other owner of a band-sitter (Musclecat: flat past the 180s deadline, dove to the floor in ~20s, −0.0169); 0 = no leash, expiry only
     beArmPct: num(env, 'BE_ARM_PCT', 0.05),               // break-even ratchet ARM (user 2026-10-14, "Build it — arm at +5%"): once a pre-TP1 position's peak realizable move reaches +this, the trade can no longer become a loser; 0 = ratchet off
     beTriggerPct: num(env, 'BE_TRIGGER_PCT', 0.02),       // ...an armed position sells in full when the move falls back to +this — the cushion above break-even exists so the executed fill lands at true scratch after the sell's own slippage (user approved +1-2%)
+    bleedPct: num(env, 'BLEED_PCT', 0.07),                 // bleed exit (user 2026-10-14, "Still-falling test — down 7%+ and not recovering"): past the prove-itself window, a position down at least this much on `move` AND still falling sells in full — the probation leash freed from the band (TAILOOR bled to -52% in ~6 min because nothing owned a falling coin that never sat inside the band at the stall deadline); 0 = off
+    bleedMinAgeSec: num(env, 'BLEED_MIN_AGE_SEC', 180),    // ...the prove-itself window: before this age the older exits judge alone
+    bleedLookbackSec: num(env, 'BLEED_LOOKBACK_SEC', 60),  // ..."still falling" = the current move at/below the move this long ago, judged on the position's own per-check move history; no reading at least ~45s old = no fire yet
     tp1Pct: num(env, 'TP1_PCT', 0.25),                    // bank part on the jump: +25% in your pocket after slippage + SOL fees
     tp1Frac: num(env, 'TP1_FRAC', 0.65),                  // ...sell 65% of it
     // TP ladder (user 2026-10-13): TP1 is adaptive — it ARMS at tp1Pct and the bank target slides up
@@ -358,6 +368,8 @@ export function validateConfig(cfg) {
   if (cfg.freshMaxChgM5 < 0) errs.push('FRESH_MAX_CHG_M5 must be >= 0 (0 = off)');
   if (cfg.freshSmallMc < 0) errs.push('FRESH_SMALL_MC must be >= 0');
   if (cfg.freshM5ShareH1 < 0 || cfg.freshM5ShareH1 > 1) errs.push('FRESH_M5_SHARE_H1 must be between 0 and 1 (0 = off)');
+  if (cfg.freshBypassMinVolM5 < 0) errs.push('FRESH_BYPASS_MIN_VOL_M5 must be >= 0 (0 = bypass off)');
+  if (cfg.freshBypassMinBuyRatio < 0 || cfg.freshBypassMinBuyRatio > 1) errs.push('FRESH_BYPASS_MIN_BUY_RATIO must be between 0 and 1');
   if (cfg.shallowDipMaxPct < 0 || cfg.shallowDipMaxPct > 0.9) errs.push('SHALLOW_DIP_MAX_PCT must be between 0 and 0.9 (0 = off)');
   if (cfg.shallowDipWindowMin < 1 || cfg.shallowDipWindowMin > 720) errs.push('SHALLOW_DIP_WINDOW_MIN must be between 1 and 720');
   if (cfg.maxBuyRatioM5 < 0 || cfg.maxBuyRatioM5 > 1) errs.push('MAX_BUY_RATIO_M5 must be between 0 and 1 (0 = off)');
@@ -412,6 +424,9 @@ export function validateConfig(cfg) {
   if (cfg.beArmPct < 0 || cfg.beArmPct >= 1) errs.push('BE_ARM_PCT must be 0 (off) or between 0 and 1');
   if (cfg.beTriggerPct < 0 || cfg.beTriggerPct >= 1) errs.push('BE_TRIGGER_PCT must be between 0 and 1');
   if (cfg.beArmPct > 0 && cfg.beTriggerPct >= cfg.beArmPct) errs.push('BE_TRIGGER_PCT must be below BE_ARM_PCT when the break-even ratchet is on');
+  if (cfg.bleedPct < 0 || cfg.bleedPct >= 1) errs.push('BLEED_PCT must be 0 (off) or between 0 and 1');
+  if (cfg.bleedMinAgeSec < 0) errs.push('BLEED_MIN_AGE_SEC must be >= 0');
+  if (cfg.bleedLookbackSec < 0) errs.push('BLEED_LOOKBACK_SEC must be >= 0');
   if (cfg.realMode && cfg.rpcUrls.length === 0) errs.push('RPC_URLS required in real mode');
   return errs;
 }

@@ -70,3 +70,24 @@ test('probation leash 2026-10-14: defaults 300s probation / 7% leash, 0 accepted
   assert.ok(validateConfig(loadConfig({ STALL_LEASH_PCT: '0.95' })).some(e => e.includes('STALL_LEASH_PCT')));
   assert.ok(validateConfig(loadConfig({ STALL_LEASH_PCT: '-0.1' })).some(e => e.includes('STALL_LEASH_PCT')));
 });
+
+test('fresh flow bypass + bleed exit 2026-10-14: defaults, designed off states validate cleanly, bad values rejected', () => {
+  const c = loadConfig({});
+  assert.equal(c.freshBypassMinVolM5, 50000);
+  assert.equal(c.freshBypassMinBuyRatio, 0.65);
+  assert.equal(c.bleedPct, 0.07);
+  assert.equal(c.bleedMinAgeSec, 180);
+  assert.equal(c.bleedLookbackSec, 60);
+  assert.equal(validateConfig(c).length, 0);
+  // designed off states must NEVER be boot poison (the STOP_HARD_PCT lesson)
+  assert.equal(validateConfig(loadConfig({ FRESH_BYPASS_MIN_VOL_M5: '0' })).length, 0); // 0 = bypass off, valid
+  assert.equal(validateConfig(loadConfig({ BLEED_PCT: '0' })).length, 0);                // 0 = bleed exit off, valid
+  assert.equal(loadConfig({ FRESH_BYPASS_MIN_VOL_M5: '75000' }).freshBypassMinVolM5, 75000);
+  assert.equal(loadConfig({ BLEED_PCT: '0.1' }).bleedPct, 0.1);
+  assert.ok(validateConfig(loadConfig({ FRESH_BYPASS_MIN_VOL_M5: '-1' })).some(e => e.includes('FRESH_BYPASS_MIN_VOL_M5')));
+  assert.ok(validateConfig(loadConfig({ FRESH_BYPASS_MIN_BUY_RATIO: '1.2' })).some(e => e.includes('FRESH_BYPASS_MIN_BUY_RATIO')));
+  assert.ok(validateConfig(loadConfig({ BLEED_PCT: '-0.05' })).some(e => e.includes('BLEED_PCT')));
+  assert.ok(validateConfig(loadConfig({ BLEED_PCT: '1' })).some(e => e.includes('BLEED_PCT')));
+  assert.ok(validateConfig(loadConfig({ BLEED_MIN_AGE_SEC: '-1' })).some(e => e.includes('BLEED_MIN_AGE_SEC')));
+  assert.ok(validateConfig(loadConfig({ BLEED_LOOKBACK_SEC: '-1' })).some(e => e.includes('BLEED_LOOKBACK_SEC')));
+});

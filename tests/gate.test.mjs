@@ -210,6 +210,36 @@ test('A3: thin history with calm aggregates passes; ample history is judged by t
   assert.equal(r.pass, true); assert.equal(r.judged, true);
 });
 
+// ---- Fresh FLOW bypass (user 2026-10-14, "Flow — heavy 5m volume, buyers dominating") ----
+// The move-cap leg lifts only when BOTH flow legs hold on the coin's own numbers; the
+// small-cap blip leg is never bypassed, and the D1 bundle-bait ceiling (0.85) closes it.
+const freshBypassOpts = { maxChgM5: 25, smallMc: 30000, m5ShareH1: 0.7, bypassMinVolM5: 50000, bypassMinBuyRatio: 0.65, bypassMaxBuyRatio: 0.85 };
+test('fresh flow bypass: +60% in 5m with $80k volume and 70% buys is NOT skipped — the flow is the evidence', async () => {
+  const { freshHistoryCheck } = await import('../src/gate.js');
+  const r = freshHistoryCheck([], { chgM5: 60, chgH1: 120, mc: 200_000, volM5: 80_000, buyRatioM5: 0.70 }, NOW, freshBypassOpts);
+  assert.equal(r.pass, true);
+  assert.equal(r.bypass, 'flow');
+  assert.match(r.reason, /flow bypass/);
+  // the same share derived from the view's raw buy/sell counts (the detectors' own math) also qualifies
+  const d = freshHistoryCheck([], { chgM5: 60, chgH1: 120, mc: 200_000, volM5: 80_000, buysM5: 70, sellsM5: 30 }, NOW, freshBypassOpts);
+  assert.equal(d.pass, true); assert.equal(d.bypass, 'flow');
+});
+test('fresh flow bypass: thin volume, a soft buy share, the bundle ceiling, or missing flow all keep the skip', async () => {
+  const { freshHistoryCheck } = await import('../src/gate.js');
+  const base = { chgM5: 60, chgH1: 120, mc: 200_000, volM5: 80_000, buyRatioM5: 0.70 };
+  assert.equal(freshHistoryCheck([], { ...base, volM5: 30_000 }, NOW, freshBypassOpts).pass, false);   // volume not heavy
+  assert.equal(freshHistoryCheck([], { ...base, buyRatioM5: 0.62 }, NOW, freshBypassOpts).pass, false); // buyers not dominating
+  assert.equal(freshHistoryCheck([], { ...base, buyRatioM5: 0.90 }, NOW, freshBypassOpts).pass, false); // bundle-bait ceiling: one buyer, not a crowd
+  assert.equal(freshHistoryCheck([], { chgM5: 60, chgH1: 120, mc: 200_000 }, NOW, freshBypassOpts).pass, false); // no flow numbers at all
+  assert.equal(freshHistoryCheck([], base, NOW, { ...freshBypassOpts, bypassMinVolM5: 0 }).pass, false); // bypass off: the cap stands
+});
+test('fresh flow bypass: the small-cap blip leg is NEVER bypassed — a small cap\'s flow is the wash itself', async () => {
+  const { freshHistoryCheck } = await import('../src/gate.js');
+  const r = freshHistoryCheck([], { chgM5: 60, chgH1: 70, mc: 20_000, volM5: 500_000, buyRatioM5: 0.70 }, NOW, freshBypassOpts);
+  assert.equal(r.pass, false);
+  assert.match(r.reason, /blip/);
+});
+
 // ---- Creator-veto volume bypass (user 2026-10-14, Eikon) ----
 // Eikon was skipped at $53K purely on the creator gate (15.7% of supply, could pull
 // 44.9% of pool SOL) while doing $39,103 of volume in 5 minutes; it then ran ~5.8x

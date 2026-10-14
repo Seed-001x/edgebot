@@ -324,3 +324,49 @@ test('break-even ratchet: no recorded peakMove (legacy position) never arms — 
   const p = pos({ entryTs: NOW - 30 * S, entryRoundTrip: 0.9 });
   assert.equal(evaluateExit(p, mark(0.018), beCfg, NOW).fraction, 0); // flat: move 1.00
 });
+
+// ---- bleed exit (user 2026-10-14, "Still-falling test — down 7%+ and not recovering"): the
+//      probation leash freed from the band. Past the prove-itself window (180s), any position
+//      down 7%+ on `move` sells in full IF it is still falling — the current move at/below the
+//      move ~60s ago on the position's own per-check move history. TAILOOR bled to -52% in
+//      ~6 min because it never sat in the band at the deadline and nothing owned it.
+//      bleedCfg isolates the exit: dip stop and stall off (shared cfg already has probation
+//      off); positions carry no peakMove, so the ratchet cannot arm here. ----
+const bleedCfg = { ...cfg, dipStopPct: 0, stallSec: 0 };
+const hist = (...prints) => prints.map(([agoSec, move]) => ({ ts: NOW - agoSec * S, move }));
+test('bleed exit: 200s old, -9% and lower than the -8% print of a minute ago — fires in full', () => {
+  const p = pos({ entryTs: NOW - 200 * S, moveHist: hist([120, 0.95], [60, 0.92], [4, 0.915]) });
+  const d = evaluateExit(p, mark(0.0182), bleedCfg, NOW);   // move 0.91
+  assert.equal(d.fraction, 1);
+  assert.equal(d.reason, 'bleed exit (-9.0% and still falling)');
+  // the current print is appended to the returned history, bounded and threadable by the caller
+  assert.equal(d.moveHist.at(-1).move, 0.91);
+  assert.ok(d.moveHist.length <= 40);
+});
+test('bleed exit: down -9% but recovering off the -12% print of a minute ago — no fire', () => {
+  const p = pos({ entryTs: NOW - 200 * S, moveHist: hist([60, 0.88]) });
+  assert.equal(evaluateExit(p, mark(0.0182), bleedCfg, NOW).fraction, 0);   // move 0.91 > 0.88: climbing back
+});
+test('bleed exit: 100s old at -15% and falling — inside the prove-itself window, no fire', () => {
+  const p = pos({ entryTs: NOW - 100 * S, moveHist: hist([60, 0.90]) });
+  assert.equal(evaluateExit(p, mark(0.017), bleedCfg, NOW).fraction, 0);   // move 0.85, age < 180s
+});
+test('bleed exit: -5% and falling at 300s — above the -7% line, no fire', () => {
+  const p = pos({ entryTs: NOW - 300 * S, moveHist: hist([60, 0.94]) });
+  assert.equal(evaluateExit(p, mark(0.019), bleedCfg, NOW).fraction, 0);   // move 0.95
+});
+test('bleed exit: no lookback reading at least ~45s old — no fire yet (the post-restart shape)', () => {
+  assert.equal(evaluateExit(pos({ entryTs: NOW - 300 * S, moveHist: [] }), mark(0.018), bleedCfg, NOW).fraction, 0);
+  assert.equal(evaluateExit(pos({ entryTs: NOW - 300 * S, moveHist: hist([10, 0.90]) }), mark(0.018), bleedCfg, NOW).fraction, 0);
+});
+test('bleed exit: BLEED_PCT=0 disables it — the same falling print holds', () => {
+  const p = pos({ entryTs: NOW - 200 * S, moveHist: hist([60, 0.92]) });
+  assert.equal(evaluateExit(p, mark(0.0182), { ...bleedCfg, bleedPct: 0 }, NOW).fraction, 0);
+});
+test('bleed exit vs probation: a probationed dive keeps the leash label — the leash is judged first, inside 4b', () => {
+  const probBleedCfg = { ...cfg, stallSec: 180, stallProbationSec: 300, stallLeashPct: 0.07, stallBandPct: 0.05, stallBandUpPct: 0.03, dipStopPct: 0 };
+  const p = pos({ entryTs: NOW - 204 * S, probationSince: NOW - 24 * S, moveHist: hist([60, 0.95]) });
+  const d = evaluateExit(p, mark(0.0183), probBleedCfg, NOW);   // move 0.915: bleed conditions also met, leash wins the label
+  assert.equal(d.fraction, 1);
+  assert.match(d.reason, /probation leash/);
+});
