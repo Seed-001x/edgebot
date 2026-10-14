@@ -111,6 +111,22 @@ test('positions persist across restarts', async () => {
   assert.equal(again.positions.length, 1); assert.equal(again.positions[0].mint, 'MINT1');
 });
 
+test('second-hump pop is taken, not stale-vetoed (user 2026-10-14, CODE): sampled high 330s old, price 28% below it', async () => {
+  const r = rig({ cfgOver: { tradeSol: 0.02 } }); // the rig's scripted sell-back value is calibrated to a 0.02 spend (as in the lifecycle fixture)
+  await r.bot.start();
+  // Seed the bot's own sampled history with the CODE shape: peak 1.39 printed 330s ago,
+  // price since rolled to 1.00 (-28%). The removed stale-pop veto (60s / 8%) skipped
+  // exactly this; with it gone the pop must flow through gates to a buy.
+  const seed = (agoSec, price) => r.bot.history.record(view({ price }), T0 - agoSec * 1000);
+  seed(360, 1.20); seed(330, 1.39); seed(300, 1.32); seed(270, 1.26); seed(240, 1.20); seed(210, 1.15);
+  seed(180, 1.10); seed(150, 1.07); seed(120, 1.04); seed(90, 1.02); seed(60, 1.01); seed(30, 1.00); seed(0, 1.00);
+  await r.bot.onSignal(view({ price: 1.00 }), { setup: 'pop', strength: 1, metrics: {} });
+  assert.equal(r.bot.positions.length, 1, 'the second-hump pop must be bought — the stale-pop veto is gone');
+  const sig = r.bot.journal.signals.find(s => s.mint === 'MINT1');
+  assert.equal(sig.decision, 'taken');
+  assert.ok(!r.bot.journal.signals.some(s => (s.reasons || []).some(x => x.startsWith('stalepop:'))), 'no stalepop skip may be recorded');
+});
+
 test('A1+A2: paceCfg no longer loosens gates (PACE_RELAX off) and mandatory ape defaults off', () => {
   const bot = new Bot(testCfg(), { now: () => T0, exec: {}, discover: async () => new Map(), fetchViews: async () => new Map(), fetchSolUsd: async () => 150, fetchRug: async () => null, searchByName: async () => [] });
   const out = bot.paceCfg(T0);

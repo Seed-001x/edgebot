@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { History } from './history.js';
 import { detect, detectChurn, eligible, fastPop } from './detect.js';
-import { runGates, hasHardFail, tempRuleViolation, blockedNameWord, stalePopCheck, extensionCheck, freshHistoryCheck } from './gate.js';
+import { runGates, hasHardFail, tempRuleViolation, blockedNameWord, extensionCheck, freshHistoryCheck } from './gate.js';
 import { evaluateExit } from './exits.js';
 import { bundleRisk, bundleDecision, pickTracked, linkedWeights, CREATOR_KEY } from './bundleWatch.js';
 import { Journal } from './journal.js';
@@ -528,19 +528,6 @@ export class Bot {
       console.log(`[nameblock] skip: "${v.name}" contains blocked word "${blockedWord}"`);
       return this.skip(v, sig, [`nameblock: name "${v.name || v.symbol}" contains blocked word "${blockedWord}"`]);
     }
-    // Stale-pop veto (user 2026-10-13): a pop whose own sampled high is old and rolled off is the
-    // echo of a move, not the move — SCI's first spike peaked ~90s before the bot's first signal
-    // and it bought the second hump rolling over. Pop entries only; judged on the bot's own
-    // recorded samples, fail-open when there are too few to judge. Fast-stream pops are EXEMPT:
-    // their evidence is the live trade flow itself (rising, buy-dominated, seconds old) — the
-    // veto's premise (we are late, the move is over) is exactly what the stream disproves.
-    if (sig.setup === 'pop' && !(sig.metrics && sig.metrics.fastStream)) {
-      const sp = stalePopCheck(this.history.get(v.address), v.price, n, { staleSec: this.cfg.popStaleSec, dropPct: this.cfg.popStaleDropPct });
-      if (!sp.pass) {
-        console.log(`[stalepop] skip: ${v.symbol} — ${sp.reason}`);
-        return this.skip(v, sig, [`stalepop: ${sp.reason}`]);
-      }
-    }
     // Extension cap (user 2026-10-13): how far above the trailing-hour sampled low — the base
     // the move broke out from — an entry may sit. OTTO was bought at the ceiling of a long
     // range after a +162%/5m print and stopped 23s later by the range's own chop; at extreme
@@ -558,8 +545,8 @@ export class Bot {
     // Fresh-history fail-closed (user 2026-10-13, entry-fixes A3): a coin discovered mid-run
     // (trending/movers lists) with too little sampled history for the guards above to judge
     // gets judged on DexScreener's aggregates instead of waved through — BORING arrived with
-    // no samples at +41.6% in 5m on a $14.5k cap and both sample guards passed it by default.
-    // Fast-stream pops exempt (same reasoning as the stale-pop veto: the stream IS the history).
+    // no samples at +41.6% in 5m on a $14.5k cap and the sample guard passed it by default.
+    // Fast-stream pops exempt (the stream IS the history).
     if (!(sig.metrics && sig.metrics.fastStream)) {
       const fc = freshHistoryCheck(this.history.get(v.address), v, n, { maxChgM5: this.cfg.freshMaxChgM5, smallMc: this.cfg.freshSmallMc, m5ShareH1: this.cfg.freshM5ShareH1 });
       if (!fc.pass) {

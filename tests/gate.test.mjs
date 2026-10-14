@@ -94,25 +94,25 @@ test('blockedNameWord: whole-word name block (user 2026-10-13, CI/SCI)', async (
   assert.equal(blockedNameWord('Crypto Inu', null), null);
 });
 
-test('stalePopCheck: second-hump rollover vetoed, fresh pops pass (user 2026-10-13, SCI)', async () => {
-  const { stalePopCheck } = await import('../src/gate.js');
-  const now = 1_000_000_000_000;
+test('stale-pop veto REMOVED (user 2026-10-14, CODE): no stalePopCheck export, and a second-hump history passes the surviving sampled guards', async () => {
+  const gate = await import('../src/gate.js');
+  // The veto (added 2026-10-13 for SCI) was deleted on the user's order after it rejected
+  // CODE's second signal: a pop may no longer be skipped for staleness, anywhere.
+  assert.equal(gate.stalePopCheck, undefined);
+  const now = NOW;
   const S = (agoSec, price) => ({ ts: now - agoSec * 1000, price });
-  const opts = { staleSec: 60, dropPct: 0.08 };
-  // SCI shape: high 90s ago, price 20% below it -> stale
-  const sci = [S(150, 60), S(120, 90), S(90, 118), S(60, 95), S(30, 100), S(5, 94)];
-  assert.equal(stalePopCheck(sci, 94, now, opts).pass, false);
-  // fresh spike: high is the current sample -> pass
-  assert.equal(stalePopCheck([S(60, 50), S(30, 80), S(2, 118)], 118, now, opts).pass, true);
-  // old high but barely rolled (3%) -> pass (reclaim/continuation)
-  assert.equal(stalePopCheck([S(120, 100), S(90, 118), S(30, 112), S(5, 114)], 114, now, opts).pass, true);
-  // recent high (30s old) even with a 12% dip -> pass (not yet stale)
-  assert.equal(stalePopCheck([S(90, 80), S(30, 118), S(5, 104)], 104, now, opts).pass, true);
-  // too few samples -> fail-open
-  assert.equal(stalePopCheck([S(90, 118)], 90, now, opts).pass, true);
-  assert.equal(stalePopCheck([], 90, now, opts).pass, true);
-  // disabled
-  assert.equal(stalePopCheck(sci, 94, now, { staleSec: 0, dropPct: 0.08 }).pass, true);
+  // CODE shape: sampled high 330s old, price now 28% below it — the veto's exact target.
+  const code = [S(360, 1.20), S(330, 1.39), S(300, 1.32), S(270, 1.26), S(240, 1.20), S(210, 1.15), S(180, 1.10), S(150, 1.07), S(120, 1.04), S(90, 1.02), S(60, 1.01), S(30, 1.00), S(0, 1.00)];
+  // Prove the fixture really is the old veto's shape (60s+ old high, 8%+ rolloff):
+  const peak = Math.max(...code.map(s => s.price));
+  const peakTs = code.find(s => s.price === peak).ts;
+  assert.equal((now - peakTs) / 1000, 330);
+  assert.ok(Math.abs((1 - 1.00 / peak) - 0.28) < 0.01, `drop ${(1 - 1.00 / peak).toFixed(3)}`);
+  // The surviving sample-judged guards judge this history on their own terms and pass it:
+  // extension is measured from the trailing base (here the current price IS the base),
+  // and fresh-history sees enough samples to judge (and nothing extended in the aggregates).
+  assert.equal(gate.extensionCheck(code, 1.00, now, { maxExt: 1.5 }).pass, true);
+  assert.equal(gate.freshHistoryCheck(code, view({ price: 1.00 }), now, { maxChgM5: 25, smallMc: 30000, m5ShareH1: 0.7 }).pass, true);
 });
 
 test('extensionCheck: extreme extension above the 1h base vetoed, near-base entries pass (user 2026-10-13, OTTO)', async () => {

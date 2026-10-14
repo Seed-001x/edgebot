@@ -222,11 +222,6 @@ export function loadConfig(env = process.env) {
     // hard-skipped before gates — user 2026-10-13 after CI ("Crypto Inu", -39%) and SCI ("Super
     // Crypto Inu", -23%) died back-to-back inside two minutes. Empty NAME_BLOCK_WORDS = off.
     nameBlockWords: (env.NAME_BLOCK_WORDS ?? 'inu').split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
-    // stale-pop veto: skip a pop when the bot's own sampled high for the mint is POP_STALE_SEC+ old
-    // and price has rolled POP_STALE_DROP_PCT+ off it (second-hump rollover — user 2026-10-13, SCI).
-    // POP_STALE_SEC=0 disables.
-    popStaleSec: num(env, 'POP_STALE_SEC', 60),
-    popStaleDropPct: num(env, 'POP_STALE_DROP_PCT', 0.08),
     // extension cap: skip classic entries priced more than this fraction above the trailing-1h
     // sampled low (the breakout base) — user 2026-10-13 (OTTO). 0 = off.
     extMaxFromBase: num(env, 'EXT_MAX_FROM_BASE', 1.5),
@@ -318,8 +313,6 @@ export function validateConfig(cfg) {
   if (cfg.stopHardConfirmSec < 0 || cfg.stopHardConfirmSec > 60) errs.push('STOP_HARD_CONFIRM_SEC must be between 0 and 60');
   if (cfg.stopGraceSec < 0 || cfg.stopGraceSec > 120) errs.push('STOP_GRACE_SEC must be between 0 and 120');
   if (cfg.stopXcheckPct < 0.05 || cfg.stopXcheckPct > 0.9) errs.push('STOP_XCHECK_PCT must be between 0.05 and 0.9');
-  if (cfg.popStaleSec < 0 || cfg.popStaleSec > 600) errs.push('POP_STALE_SEC must be between 0 and 600 (0 = off)');
-  if (cfg.popStaleDropPct < 0 || cfg.popStaleDropPct >= 0.9) errs.push('POP_STALE_DROP_PCT must be between 0 and 0.9');
   if (cfg.extMaxFromBase < 0 || cfg.extMaxFromBase > 20) errs.push('EXT_MAX_FROM_BASE must be between 0 and 20 (0 = off)');
   if (cfg.paceRelax < 0 || cfg.paceRelax > 1) errs.push('PACE_RELAX must be 0 or 1');
   if (cfg.fastPopMaxGainPct < 0 || cfg.fastPopMaxGainPct > 5000) errs.push('FAST_POP_MAX_GAIN_PCT must be between 0 and 5000 (0 = off)');

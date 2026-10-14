@@ -161,27 +161,6 @@ export function blockedNameWord(name, words) {
   return null;
 }
 
-// 7c. Stale pop: the pop trigger reads trailing aggregates, which only cross AFTER a move has
-//     printed — on a minutes-old coin the signal can arrive at the echo (second hump rolling over)
-//     instead of the spike. Judged on the bot's OWN recorded samples of this mint: if the sampled
-//     high is `staleSec`+ old and the current price has rolled `dropPct`+ off it, the pop is stale.
-//     Too few samples = no evidence = pass (fail-open, like every data gate here).
-export function stalePopCheck(samples, price, now, { staleSec = 60, dropPct = 0.08, windowMin = 10 } = {}) {
-  if (!(staleSec > 0) || !(price > 0)) return { pass: true, reason: 'stale-pop check off' };
-  const win = (samples || []).filter(s => s && s.price > 0 && now - s.ts <= windowMin * 60000);
-  if (win.length < 3) return { pass: true, reason: 'too few samples to judge staleness' };
-  let peak = 0, peakTs = 0;
-  for (const s of win) if (s.price > peak) { peak = s.price; peakTs = s.ts; }
-  if (!(peak > price)) return { pass: true, reason: 'at the sampled high — move is fresh' };
-  const peakAgeSec = (now - peakTs) / 1000;
-  const drop = 1 - price / peak;
-  const stale = peakAgeSec >= staleSec && drop >= dropPct;
-  return {
-    pass: !stale, peakAgeSec, dropFromPeak: drop,
-    reason: stale ? `pop is stale: sampled high ${Math.round(peakAgeSec)}s ago, price now ${(drop * 100).toFixed(0)}% below it (second-hump rollover)` : 'pop still fresh',
-  };
-}
-
 // 7d. Extension above the breakout base (user 2026-10-13): how far the current price sits
 //     above the lowest price sampled in the trailing hour — the base the move launched from.
 //     An entry at extreme extension (OTTO: bought the top of a long range after a +162%/5m
@@ -208,13 +187,13 @@ export function extensionCheck(samples, price, now, { maxExt = 1.5, windowMin = 
 }
 
 // 7e. Fresh-history fail-closed (user 2026-10-13, entry-fixes A3): coins discovered mid-run
-//     from the trending/movers lists arrive with little or no sampled history, and both
-//     sample-judged guards above (stale pop, extension) fail OPEN on thin data — they waved
+//     from the trending/movers lists arrive with little or no sampled history, and the
+//     sample-judged guard above (extension) fails OPEN on thin data — it waved
 //     BORING through (+41.6% in 5m against +13.8% on the hour at a $14.5k cap, a 3-hour-old
 //     corpse mid-bounce). When there isn't enough history to judge, DexScreener's own
 //     aggregates decide instead: a 5-minute move that has ALREADY printed beyond the cap is
 //     a chase, and a small cap whose entire hourly move is one 5-minute candle is a blip.
-//     With enough samples this check passes untouched — the sampled guards do the judging.
+//     With enough samples this check passes untouched — the sampled guard does the judging.
 export function freshHistoryCheck(samples, view, now, { maxChgM5 = 25, smallMc = 30000, m5ShareH1 = 0.7, windowMin = 60, minSamples = 10, minSpanSec = 180 } = {}) {
   if (!(maxChgM5 > 0) && !(m5ShareH1 > 0)) return { pass: true, reason: 'fresh check off' };
   const win = (samples || []).filter(s => s && s.price > 0 && now - s.ts <= windowMin * 60000);
