@@ -6,6 +6,21 @@
 //   • does each detector have any edge at all?  (taken vs. nothing)
 //   • are the gates SAVING you (skipped coins do badly) or COSTING you (skipped coins do great)?
 // Files are append-only JSONL under DATA_DIR. Use a persistent disk or they vanish on redeploy.
+//
+// OUTCOME-TRACKING FIX (2026-10-14, record-only — diagnosed from the live journal, 3,367 signals):
+// checkpoints used to starve because observe() was fed ONLY by the trading poll (watchlist ∪
+// positions). A skipped coin leaves the watch within WATCH_TTL_MIN (20m) unless rediscovered —
+// r60 needs 60m of views, so it starved by construction; coins evicted inside 5 minutes lost
+// everything (19% of finished skips were never observed again after their signal: excursions
+// exactly 0/0; the young-coin 'no RugCheck report' cohort: 8/12 never re-observed, 9/12 expired,
+// only 4/12 with any checkpoint). Taken trades starved too (r60 on 72%: positions close in
+// minutes, then the mint is on the same 20m TTL). Restarts compounded it: progress was
+// memory-only (reset at boot) and signals ≥90m old at boot were orphaned forever (14, up to
+// 95h). The fix: (1) Bot.outcomeTick polls pending mints independently of the watchlist and
+// feeds observe() — observations no longer depend on watch residence; (2) pending progress is
+// persisted (outcome_pending.json) and restored at boot, with past-horizon signals finalized
+// at boot; (3) finish() flags completeness (partial / missing / fillAgeMin / unobserved)
+// instead of silent nulls.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -26,7 +41,9 @@ export class Journal {
   constructor(dir, { now = Date.now } = {}) {
     this.now = now;
     this.dir = dir;
-    this.f = { sig: path.join(dir, 'signals.jsonl'), out: path.join(dir, 'outcomes.jsonl'), trades: path.join(dir, 'trades.jsonl'), fb: path.join(dir, 'feedback.jsonl'), ticks: path.join(dir, 'ticks.jsonl'), manual: path.join(dir, 'manual_exits.jsonl'), reports: path.join(dir, 'trade_reports.jsonl'), rshadow: path.join(dir, 'ratchet_shadow.jsonl') };
+    this.f = { sig: path.join(dir, 'signals.jsonl'), out: path.join(dir, 'outcomes.jsonl'), trades: path.join(dir, 'trades.jsonl'), fb: path.join(dir, 'feedback.jsonl'), ticks: path.join(dir, 'ticks.jsonl'), manual: path.join(dir, 'manual_exits.jsonl'), reports: path.join(dir, 'trade_reports.jsonl'), rshadow: path.join(dir, 'ratchet_shadow.jsonl'), pend: path.join(dir, 'outcome_pending.json') };
+    this._pendDirty = false;   // outcome-tracking progress changed since the last save
+    this._pendSavedAt = 0;
     try { fs.mkdirSync(dir, { recursive: true }); } catch { /* ignore */ }
     this.signals = [];        // { id, ts, mint, symbol, setup, decision, reasons, price, mc, out:{} }
     this.byId = new Map();
@@ -50,10 +67,58 @@ export class Journal {
       else this.manual.push(r);
     }
     const n = this.now();
+    // Outcome-tracking progress is PERSISTED (outcome_pending.json, saved by
+    // savePending) because the pre-fix design kept it in memory only: every
+    // restart reset earned checkpoints/excursions to the signal price, and any
+    // signal already older than EXPIRE_MIN at boot was never re-registered —
+    // it stayed out={} forever (14 such orphans in the live journal, up to 95h
+    // old, when this was measured 2026-10-14). Now: unfinished signals restore
+    // their saved progress; signals past the tracking horizon finalize AT BOOT
+    // with whatever progress exists, flagged partial — never silent limbo.
+    let saved = {};
+    try { saved = JSON.parse(fs.readFileSync(this.f.pend, 'utf8')) || {}; } catch { /* no saved progress */ }
     for (const s of this.signals) {
       if (!s.out || s.out.done) continue;
-      if (n - s.ts < EXPIRE_MIN * 60000 && s.price > 0) this.pending.set(s.id, { max: s.price, min: s.price, got: {} });
+      if (!(s.price > 0)) continue;
+      const sv = saved[s.id];
+      const st = sv ? {
+        max: Number.isFinite(sv.max) ? sv.max : s.price, min: Number.isFinite(sv.min) ? sv.min : s.price,
+        got: sv.got && typeof sv.got === 'object' ? sv.got : {}, at: sv.at && typeof sv.at === 'object' ? sv.at : {}, obs: sv.obs || 0,
+      } : { max: s.price, min: s.price, got: {}, at: {}, obs: 0 };
+      if (n - s.ts <= EXPIRE_MIN * 60000) this.pending.set(s.id, st);
+      else { this.pending.set(s.id, st); this.finish(s.id, s, st, true); }
     }
+    this.savePending(); // boot finalizations + restored set are the new baseline
+  }
+
+  /** Persist in-flight outcome progress so a restart resumes tracking instead
+   *  of resetting it. Whole-map rewrite; the pending set is small (≤90 min of
+   *  signals). Best-effort — a failed write must never disturb the bot. */
+  savePending() {
+    try {
+      const o = {};
+      for (const [id, st] of this.pending) o[id] = { max: st.max, min: st.min, got: st.got, at: st.at || {}, obs: st.obs || 0 };
+      fs.writeFileSync(this.f.pend, JSON.stringify(o));
+      this._pendDirty = false; this._pendSavedAt = this.now();
+    } catch { /* disk full etc. — never crash the bot */ }
+  }
+
+  /** Throttled savePending for hot paths (observe marks dirty; the bot's
+   *  outcome-observer tick flushes at most every 15s). */
+  flushPending() {
+    if (this._pendDirty && this.now() - this._pendSavedAt >= 15000) this.savePending();
+  }
+
+  /** Mints with outcome tracking in flight, oldest signal first — the
+   *  outcome observer polls exactly these, independently of the watchlist. */
+  pendingMints() {
+    const byMint = new Map();
+    for (const [id] of this.pending) {
+      const s = this.byId.get(id);
+      if (!s) continue;
+      if (!byMint.has(s.mint) || s.ts < byMint.get(s.mint)) byMint.set(s.mint, s.ts);
+    }
+    return [...byMint.entries()].map(([mint, since]) => ({ mint, since })).sort((a, b) => a.since - b.since);
   }
 
   append(file, obj) { try { fs.appendFileSync(file, JSON.stringify(obj) + '\n'); } catch { /* disk full etc. — never crash the bot */ } }
@@ -163,7 +228,7 @@ export class Journal {
     return gates;
   }
 
-  signal({ mint, symbol, setup, decision, reasons = [], price, mc, metrics = null, warnings = [], label = null, gates = null, gatePass = null }) {
+  signal({ mint, symbol, setup, decision, reasons = [], price, mc, metrics = null, warnings = [], label = null, gates = null, gatePass = null, fields = null }) {
     const ts = this.now();
     const id = `${ts}-${++this.seq}`;
     const rec = { id, ts, mint, symbol, setup, decision, reasons, price, mc, metrics, warnings, label };
@@ -173,14 +238,27 @@ export class Journal {
     // exact old shape.
     if (gates != null) rec.gates = gates;
     if (gatePass != null) rec.gatePass = gatePass;
+    // Signal fields (record-only, 2026-10-14): sampled-history context computed
+    // at signal time by src/signalFields.js (holder growth, curve fill speed,
+    // buy velocity). Omitted only when the caller computed none.
+    if (fields != null) rec.fields = fields;
     this.signals.push(rec); this.byId.set(id, rec); rec.out = {};
     if (this.signals.length > KEEP) { const old = this.signals.shift(); this.byId.delete(old.id); }
     this.append(this.f.sig, rec);
-    if (price > 0) this.pending.set(id, { max: price, min: price, got: {} });
+    if (price > 0) { this.pending.set(id, { max: price, min: price, got: {}, at: {}, obs: 0 }); this._pendDirty = true; }
     return id;
   }
 
-  /** Feed every fresh view in; advances outcome checkpoints for pending signals on that mint. */
+  /** Feed every fresh view in; advances outcome checkpoints for pending signals on that mint.
+   *  Checkpoint rule (documented tolerance): a checkpoint fills from the FIRST
+   *  observation at or after its age — catch-up fills are accepted however late
+   *  the observation arrives inside the tracking horizon, and the outcome
+   *  record carries fillAgeMin so analysts can apply their own lateness
+   *  tolerance downstream instead of trusting a silently-late r5. What the fix
+   *  changes is that observations are GUARANTEED to exist near the checkpoints:
+   *  the bot's outcome observer polls pending mints independently of the
+   *  watchlist (see Bot.outcomeTick), so catch-up fills become rare instead of
+   *  the norm. */
   observe(view) {
     if (!view || !(view.price > 0)) return;
     const n = this.now();
@@ -188,14 +266,23 @@ export class Journal {
       const s = this.byId.get(id);
       if (!s) { this.pending.delete(id); continue; }
       if (s.mint !== view.address) continue;
+      st.obs = (st.obs || 0) + 1;
       st.max = Math.max(st.max, view.price); st.min = Math.min(st.min, view.price);
       const ageMin = (n - s.ts) / 60000;
       for (const cp of CPS) {
-        if (ageMin >= cp && st.got[cp] == null) st.got[cp] = view.price / s.price - 1;
+        if (ageMin >= cp && st.got[cp] == null) { st.got[cp] = view.price / s.price - 1; (st.at ||= {})[cp] = ageMin; }
       }
+      this._pendDirty = true;
       if (st.got[60] != null) this.finish(id, s, st, false);
     }
-    // expire signals we stopped seeing
+    this.expireSweep(n);
+  }
+
+  /** Finalize every pending signal past the tracking horizon with whatever
+   *  progress it has (flagged partial — see finish). Runs inside observe();
+   *  the bot's outcome observer also calls it directly so finalization never
+   *  depends on some other mint producing a view. */
+  expireSweep(n = this.now()) {
     for (const [id, st] of this.pending) {
       const s = this.byId.get(id);
       if (s && (n - s.ts) / 60000 > EXPIRE_MIN) this.finish(id, s, st, true);
@@ -203,12 +290,23 @@ export class Journal {
   }
 
   finish(id, s, st, expired) {
+    // Completeness is explicit now (2026-10-14): pre-fix, an expired outcome
+    // with no checkpoints was indistinguishable from a flat coin — `done`
+    // overstated coverage (the 'no RugCheck report' cohort read 12/13 "done"
+    // while only 4 carried any checkpoint). missing names what never filled;
+    // partial = anything missing; unobserved = no post-signal observation
+    // ever arrived (excursions are then the signal price itself, 0/0).
+    const missing = CPS.filter(cp => st.got[cp] == null).map(cp => `r${cp}`);
     const o = {
       id, mint: s.mint, symbol: s.symbol, setup: s.setup, decision: s.decision,
       r5: round(st.got[5]), r15: round(st.got[15]), r60: round(st.got[60]),
       maxRet: round(st.max / s.price - 1), minRet: round(st.min / s.price - 1), done: true, expired,
+      partial: missing.length > 0, missing,
+      fillAgeMin: { r5: st.at && st.at[5] != null ? round(st.at[5], 1) : null, r15: st.at && st.at[15] != null ? round(st.at[15], 1) : null, r60: st.at && st.at[60] != null ? round(st.at[60], 1) : null },
+      unobserved: !(st.obs > 0),
     };
     s.out = o; this.pending.delete(id); this.append(this.f.out, o);
+    this.savePending();
   }
 
   trade(t) { this.trades.push(t); if (this.trades.length > KEEP) this.trades.shift(); this.append(this.f.trades, t); }

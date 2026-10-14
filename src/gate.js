@@ -13,11 +13,36 @@ const RC = 'https://api.rugcheck.xyz/v1';
 const cache = new Map(); // mint -> { ts, report }
 const TTL = 120000;
 
+// Holder-count observation log (record-only, 2026-10-14): every RugCheck
+// report this process reads leaves a timestamped totalHolders sample here.
+// It is the ONLY holder series the bot has — holder counts are not in the
+// DexScreener views the poll samples — and it exists so signal records can
+// carry a holder-growth field (src/signalFields.js) computed from reads the
+// bot already made. Nothing reads this for a trading decision; fetchRug's
+// return value and cache behavior are unchanged.
+const holderLog = new Map(); // mint -> [{ ts, holders }] oldest first
+const HOLDER_LOG_MAX = 288;
+function noteHolders(mint, ts, report) {
+  const h = report ? Number(report.totalHolders) : NaN;
+  if (!mint || !Number.isFinite(h) || h <= 0) return;
+  let a = holderLog.get(mint);
+  if (!a) { a = []; holderLog.set(mint, a); }
+  if (a.length && a[a.length - 1].ts === ts) { a[a.length - 1] = { ts, holders: h }; return; }
+  a.push({ ts, holders: h });
+  while (a.length > HOLDER_LOG_MAX) a.shift();
+}
+/** Timestamped holder-count samples from this process's own RugCheck reads. */
+export function holderSamples(mint) {
+  const a = holderLog.get(mint);
+  return a ? a.slice() : [];
+}
+
 export async function fetchRug(mint, now = Date.now()) {
   const c = cache.get(mint);
-  if (c && now - c.ts < TTL) return c.report;
+  if (c && now - c.ts < TTL) { noteHolders(mint, c.ts, c.report); return c.report; }
   const report = await fetchJson(`${RC}/tokens/${mint}/report`, { timeout: 10000 });
   cache.set(mint, { ts: now, report });
+  noteHolders(mint, now, report);
   return report;
 }
 

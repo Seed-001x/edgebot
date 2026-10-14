@@ -11,7 +11,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { History } from './history.js';
 import { detect, detectChurn, detectLiftoff, eligible, fastPop } from './detect.js';
-import { runGates, hasHardFail, tempRuleViolation, blockedNameWord, extensionCheck, freshHistoryCheck, shallowDipCheck, summarizeGateChecks } from './gate.js';
+import { runGates, hasHardFail, tempRuleViolation, blockedNameWord, extensionCheck, freshHistoryCheck, shallowDipCheck, summarizeGateChecks, holderSamples } from './gate.js';
+import { computeSignalFields } from './signalFields.js';
 import { evaluateExit } from './exits.js';
 import { ShadowFlow, ratchetArmed, ratchetShadowFire } from './ratchetShadow.js';
 import { bundleRisk, bundleDecision, pickTracked, linkedWeights, CREATOR_KEY } from './bundleWatch.js';
@@ -42,6 +43,8 @@ export class Bot {
     this.cfgStamp = configStamp(cfg); // D1: config version stamp carried by entries + closes (record-only)
     this.lastSolUsd = null; // last SOL/USD the position loop saw (feeds observer marks)
     this.watch = new Map();      // mint -> { ts, source }
+    this.outcomeSeenAt = new Map(); // mint -> ts the outcome tracker last got a view (observer bookkeeping only)
+    this.lastOutcomeTickTs = 0;
     this.latest = new Map();     // mint -> latest view
     this.lastSignal = new Map(); // mint -> ts
     this.latestAt = new Map();   // mint -> ts of the latest view fetch
@@ -476,6 +479,42 @@ export class Bot {
     } catch (e) { this.err('discover', e); } finally { this.busy.discover = false; this.saveStats(); }
   }
 
+  // ------------------------------------------------------------ outcome observer
+  // Outcome observer (2026-10-14, RECORD-ONLY — can never trade, never touches
+  // the watchlist, history, or latest-view maps the detectors read). The
+  // journal's outcome tracker used to be fed only as a side effect of the
+  // trading poll (watchlist ∪ positions), so a signal's r5/r15/r60 depended
+  // on its coin KEEPING a watch seat — 20-minute TTL versus a 60-minute last
+  // checkpoint. This tick closes that gap: every ~30s it polls prices (the
+  // same deps.fetchViews source, same chunking) for exactly the mints with
+  // outcome tracking in flight that the trading poll hasn't covered in the
+  // last ~25s, oldest signals first, capped per tick, and feeds the views to
+  // journal.observe ONLY. A mint whose pair is gone simply returns no view;
+  // its outcome finalizes at the horizon flagged partial (see journal.js).
+  async outcomeTick(n) {
+    if (n - (this.lastOutcomeTickTs || 0) < 30000) return;
+    this.lastOutcomeTickTs = n;
+    this.stats.outcomeObs = this.stats.outcomeObs || { ticks: 0, fetched: 0, views: 0 };
+    try { this.journal.flushPending(); } catch { /* persistence is best-effort */ }
+    const pend = this.journal.pendingMints ? this.journal.pendingMints() : [];
+    const due = pend.filter(p => n - (this.outcomeSeenAt.get(p.mint) || 0) >= 25000).slice(0, 150);
+    if (!due.length) return;
+    this.stats.outcomeObs.ticks++;
+    this.stats.outcomeObs.fetched += due.length;
+    const views = await this.d.fetchViews(due.map(p => p.mint)).catch(() => null);
+    if (views) {
+      for (const [mint, v] of views) {
+        if (!v || !(v.price > 0)) continue;
+        this.journal.observe(v);
+        this.outcomeSeenAt.set(mint, n);
+        this.stats.outcomeObs.views++;
+      }
+    }
+    // Finalization must not depend on views existing at all: past-horizon
+    // pendings close out flagged-partial even when every pair is gone.
+    try { this.journal.expireSweep(n); } catch { /* observer only */ }
+  }
+
   // ------------------------------------------------------------ polling + signals
   async pollTick() {
     if (this.busy.poll) return;
@@ -483,7 +522,7 @@ export class Bot {
     try {
       this.evictBlacklisted(); // marked coins never even get priced, let alone signal
       const mints = [...new Set([...this.watch.keys(), ...this.positions.map(p => p.mint)])];
-      if (!mints.length) return;
+      if (!mints.length) { try { await this.outcomeTick(this.now()); } catch { /* observer only */ } return; }
       const views = await this.d.fetchViews(mints);
       const n = this.now();
       // D4 (user 2026-10-13): market breadth — the share of sampled coins green on the hour —
@@ -508,6 +547,7 @@ export class Bot {
         this.history.record(v, n);
         this._noteGraduation(mint, v, n);
         this.journal.observe(v);
+        this.outcomeSeenAt.set(mint, n); // the trading poll just fed the outcome tracker for this mint
         if (this.positions.some(p => p.mint === mint)) continue;
         if (tickCfg.churnEnabled) this._updateChurnPins(mint, n);
         // Pop/trend first, exactly as before; churn is an ADDITIONAL detector judged
@@ -535,6 +575,10 @@ export class Bot {
       // D1 paired shadow exits: run the virtual exit stack for manually-closed
       // positions on the same views (observer only — can never trade)
       try { this.paired.tick(mint => this.latest.get(mint) || null, n, this.cfg, this.lastSolUsd); } catch { /* observer only */ }
+      // Outcome observer (2026-10-14, record-only): price the mints with
+      // outcome tracking in flight that the trading poll did NOT just cover,
+      // so checkpoints stop depending on watchlist residence.
+      try { await this.outcomeTick(n); } catch { /* observer only */ }
       candidates.sort((a, b) => b.sig.strength - a.sig.strength);
       for (const c of candidates.slice(0, this.cfg.maxSignalsPerTick)) {
         this.lastSignal.set(c.v.address, this.now());
@@ -545,8 +589,18 @@ export class Bot {
     } catch (e) { this.err('poll', e); } finally { this.busy.poll = false; this.saveStats(); }
   }
 
+  // Signal fields (record-only, 2026-10-14): sampled-history context for the
+  // signal record — holder growth, curve fill speed, buy velocity — computed
+  // by src/signalFields.js from the coin's own samples + this process's
+  // RugCheck holder reads. Fail-silent: an error yields null and the record
+  // simply omits the block; nothing anywhere branches on these values.
+  _signalFields(v) {
+    try { return computeSignalFields({ samples: this.history.get(v.address), view: v, holders: holderSamples(v.address), now: this.now() }); }
+    catch { return null; }
+  }
+
   skip(v, sig, reasons, warnings = [], gates = null, gatePass = null) {
-    this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'skipped', reasons, price: v.price, mc: v.mc, metrics: sig.metrics, warnings, label: sig.label || null, gates, gatePass });
+    this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'skipped', reasons, price: v.price, mc: v.mc, metrics: sig.metrics, warnings, label: sig.label || null, gates, gatePass, fields: this._signalFields(v) });
   }
 
   // Setups currently in shadow-only mode (user 2026-10-14, forward plan step 1b):
@@ -559,7 +613,7 @@ export class Bot {
   shadow(v, sig, gates = null, gatePass = null) {
     this.stats.shadowSignals = this.stats.shadowSignals || {};
     this.stats.shadowSignals[sig.setup] = (this.stats.shadowSignals[sig.setup] || 0) + 1;
-    this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'shadow', reasons: [`shadow: ${sig.setup} is shadow-only — logged + outcome-tracked, no buy`], price: v.price, mc: v.mc, metrics: sig.metrics, warnings: [], label: sig.label || null, gates, gatePass });
+    this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'shadow', reasons: [`shadow: ${sig.setup} is shadow-only — logged + outcome-tracked, no buy`], price: v.price, mc: v.mc, metrics: sig.metrics, warnings: [], label: sig.label || null, gates, gatePass, fields: this._signalFields(v) });
   }
 
   // D1 (record-only): for a shadow signal, evaluate the same pre-checks and gate
@@ -876,7 +930,7 @@ export class Bot {
       console.log('[callout] failed:', e.message);
       this.lastCallout = { ok: false, error: e.message, symbol: v.symbol, ts: Date.now() };
     });
-    this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'taken', reasons: [], price: v.price, mc: v.mc, metrics: { ...sig.metrics, roundTrip: +rt.ratio.toFixed(3), sizeSol: size }, warnings: g.warnings, label: sig.label || null, gates: checks, gatePass: g.pass });
+    this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'taken', reasons: [], price: v.price, mc: v.mc, metrics: { ...sig.metrics, roundTrip: +rt.ratio.toFixed(3), sizeSol: size }, warnings: g.warnings, label: sig.label || null, gates: checks, gatePass: g.pass, fields: this._signalFields(v) });
     this.journal.trade({ type: 'open', id: pos.id, mint: pos.mint, symbol: pos.symbol, setup: pos.setup, entrySol: pos.entrySol, sig: fill.sig, simulated: fill.simulated, ts: n, stamp: pos.stamp, tokensRaw: fill.tokensRaw, entryFillSol: pos.entryFillSol, entryFillUsd: pos.entryFillSol != null && solUsd > 0 ? +(pos.entryFillSol * solUsd).toFixed(10) : null });
     // one-trade rules are spent the moment an entry executes
     if (this.stats.tempRules) { console.log(`[temp] one-trade rules spent on ${pos.symbol} — cleared`); this.stats.tempRules = null; this.saveStats(); }
