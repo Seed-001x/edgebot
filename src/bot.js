@@ -13,6 +13,7 @@ import { History } from './history.js';
 import { detect, detectChurn, detectLiftoff, eligible, fastPop } from './detect.js';
 import { runGates, hasHardFail, tempRuleViolation, blockedNameWord, extensionCheck, freshHistoryCheck, shallowDipCheck } from './gate.js';
 import { evaluateExit } from './exits.js';
+import { ShadowFlow, ratchetArmed, ratchetShadowFire } from './ratchetShadow.js';
 import { bundleRisk, bundleDecision, pickTracked, linkedWeights, CREATOR_KEY } from './bundleWatch.js';
 import { Journal } from './journal.js';
 import { Risk } from './risk.js';
@@ -42,12 +43,13 @@ export class Bot {
     this.latestAt = new Map();   // mint -> ts of the latest view fetch
     this.streamBuf = new Map();  // mint -> recent stream trades (fast pop detection)
     this.fastEvalAt = new Map(); // mint -> ts of last fast-pop evaluation
+    this.shadowFlow = new ShadowFlow(); // held mints' streamed flow for the shadow ratchet judge (record-only)
     this.churnPins = new Map(); // mint -> { at, until } basing watch: dumped coins stay watchlist-pinned past the normal TTL (churn detector)
     this.curveSeen = new Set(); // mints whose latest view was the pump.fun bonding-curve pair — graduation handoff watches for the flip to an AMM pair
     this.posFile = path.join(cfg.dataDir, 'positions.json');
     this.positions = this.loadPositions();
     this.busy = { discover: false, poll: false, pos: false };
-    this.stats = { discoverTicks: 0, pollTicks: 0, positionTicks: 0, signals: 0, entries: 0, exits: 0, errors: 0, lastError: null, sourceCounts: {}, lastDiscoverTs: 0, lastPollTs: 0, closesSinceReport: 0, lastReportTs: 0, reportIndex: 0, tempRules: null, fastPop: { fires: 0 }, liveFeed: { connected: false, events: 0, added: 0, reconnects: 0, lastEventTs: 0, lastError: null } };
+    this.stats = { discoverTicks: 0, pollTicks: 0, positionTicks: 0, signals: 0, entries: 0, exits: 0, errors: 0, lastError: null, sourceCounts: {}, lastDiscoverTs: 0, lastPollTs: 0, closesSinceReport: 0, lastReportTs: 0, reportIndex: 0, tempRules: null, fastPop: { fires: 0 }, ratchetShadow: { wouldFire: 0, completed: 0 }, liveFeed: { connected: false, events: 0, added: 0, reconnects: 0, lastEventTs: 0, lastError: null } };
     this.statsFile = path.join(cfg.dataDir, 'stats.json');
     this.entryTimes = []; // timestamps of entries (for pace keeper)
     this.PACE_TARGET = 120; // target trades per hour (2 per min)
@@ -134,6 +136,18 @@ export class Bot {
       this.stats.closesSinceReport = (this.stats.closesSinceReport || 0) + 1;
       if (this.stats.closesSinceReport >= (this.cfg.reportEveryTrades || 10)) this.makeTradeReport();
     } catch { /* reporting must never disturb trading */ }
+    // shadow ratchet judge completion (record-only): every close of a position the
+    // judge ever saw armed gets its comparison record — what actually closed it,
+    // whether the live ratchet was the one that fired, and the move at exit — so a
+    // would-fire can be scored against what the price trigger really did.
+    try {
+      if (this.cfg.ratchetShadow && pos.ratchetShadowArmed) {
+        this.stats.ratchetShadow = this.stats.ratchetShadow || { wouldFire: 0, completed: 0 };
+        this.stats.ratchetShadow.completed++;
+        this.journal.ratchetShadow({ kind: 'closed', outcome: 'closed', id: pos.id, ts: rec.ts || this.now(), mint: pos.mint, symbol: pos.symbol, setup: pos.setup, exitReason: rec.reason || null, pnlSol: rec.pnlSol ?? null, ratchetFired: /^break-even ratchet/.test(rec.reason || ''), wouldFire: !!pos.ratchetShadowFired, actualExitMove: pos.ratchetShadowMove != null ? +pos.ratchetShadowMove.toFixed(4) : null });
+        if (!this.positions.some(p => p.id !== pos.id && p.mint === pos.mint)) this.shadowFlow.drop(pos.mint);
+      }
+    } catch { /* observer only — never disturb trading */ }
     return true;
   }
 
@@ -266,11 +280,14 @@ export class Bot {
     return true;
   }
 
-  /** Mints whose trades the live feed should stream: freshest watch entries + open positions. */
+  /** Mints whose trades the live feed should stream: freshest watch entries + open positions.
+   *  Open positions always come first — a held mint keeps its subscription for the life of
+   *  the position, ahead of the capped fresh-watch slice. With fast pop off, held mints are
+   *  still streamed while the shadow ratchet judge (record-only) is on: it reads their flow. */
   tradeWatchMints() {
-    if (!this.cfg.fastPop) return [];
-    const fresh = [...this.watch.entries()].sort((a, b) => b[1].ts - a[1].ts).slice(0, this.cfg.fastPopMaxSubs).map(([m]) => m);
     const held = this.positions.map(p => p.mint);
+    if (!this.cfg.fastPop) return this.cfg.ratchetShadow ? [...new Set(held)] : [];
+    const fresh = [...this.watch.entries()].sort((a, b) => b[1].ts - a[1].ts).slice(0, this.cfg.fastPopMaxSubs).map(([m]) => m);
     return [...new Set([...held, ...fresh])];
   }
 
@@ -282,6 +299,8 @@ export class Bot {
    * the stream is an accelerator, never a dependency.
    */
   noteTrade(mint, trade) {
+    // shadow ratchet judge feed (record-only): held mints' trades, independent of fast pop
+    if (this.cfg.ratchetShadow) this.noteShadowTrade(mint, trade);
     if (!this.cfg.fastPop || !trade || !(trade.price > 0)) return;
     let buf = this.streamBuf.get(mint);
     if (!buf) { buf = []; this.streamBuf.set(mint, buf); }
@@ -293,6 +312,38 @@ export class Bot {
     if (n - (this.fastEvalAt.get(mint) || 0) < this.cfg.fastPopEvalMs) return;
     this.fastEvalAt.set(mint, n);
     this._evalFastPop(mint, buf, n).catch(e => this.err('fastPop', e));
+  }
+
+  /** Buffer a streamed trade for the shadow ratchet judge — held mints only, everything else ignored. */
+  noteShadowTrade(mint, trade) {
+    if (!trade || !(trade.sol > 0)) return;
+    if (!this.positions.some(p => p.mint === mint)) return;
+    this.shadowFlow.note(mint, trade);
+  }
+
+  /**
+   * Shadow ratchet flow judge (user 2026-10-14, RECORD-ONLY — this can never sell).
+   * Runs on every position check with a live mark, right after evaluateExit has
+   * updated the position's peakMove, so it reads the same move/peakMove the live
+   * ratchet (§4c) just judged. For an armed position it asks the stream: is the
+   * flow over the last ratchetFlowWindowSec an exit wave while the price comes
+   * off its high? The first would-fire per position is journaled to
+   * ratchet_shadow.jsonl; the completion record lands in ensureClose. Fail-silent:
+   * no streamed flow for the mint = no opinion, nothing recorded.
+   */
+  judgeRatchetShadow(pos, move, n) {
+    if (!this.cfg.ratchetShadow) return;
+    pos.ratchetShadowMove = move; // the close record's exit move, whichever exit ends it
+    if (ratchetArmed(pos.peakMove, pos.tp1Done, this.cfg)) pos.ratchetShadowArmed = true;
+    if (pos.ratchetShadowFired) return; // at most one would-fire per position: the first
+    const flow = this.shadowFlow.window(pos.mint, n, this.cfg.ratchetFlowWindowSec);
+    const fire = ratchetShadowFire({ peakMove: pos.peakMove, tp1Done: pos.tp1Done, move, flow, cfg: this.cfg });
+    if (!fire) return;
+    pos.ratchetShadowFired = true;
+    this.stats.ratchetShadow = this.stats.ratchetShadow || { wouldFire: 0, completed: 0 };
+    this.stats.ratchetShadow.wouldFire++;
+    this.journal.ratchetShadow({ kind: 'would-fire', id: pos.id, ts: n, mint: pos.mint, symbol: pos.symbol, setup: pos.setup, moveAtFire: +move.toFixed(4), peakMove: +pos.peakMove.toFixed(4), sellShare: +fire.sellShare.toFixed(3), sellSol: +fire.sellSol.toFixed(4), buySol: +fire.buySol.toFixed(4), windowSec: this.cfg.ratchetFlowWindowSec });
+    console.log(`[ratchet-shadow] ${pos.symbol}: WOULD FIRE — sells ${Math.round(fire.sellShare * 100)}% of last ${this.cfg.ratchetFlowWindowSec}s flow (${fire.sellSol.toFixed(2)} SOL), move ${move.toFixed(3)} off peak ${pos.peakMove.toFixed(3)} (record only)`);
   }
 
   async _evalFastPop(mint, buf, n) {
@@ -784,6 +835,13 @@ export class Bot {
     if ('probationSince' in decision) pos.probationSince = decision.probationSince;
     if ('moveHist' in decision) pos.moveHist = decision.moveHist;
     if ('tp1Arm' in decision) pos.tp1Arm = decision.tp1Arm;
+    // shadow ratchet judge (record-only): judged on the same check, off the same
+    // realizable move evaluateExit just used — it only ever writes journal records.
+    if (valueSol != null) {
+      const basis = pos.entrySol * pos.remainingFrac;
+      const base = pos.entryRoundTrip > 0 ? pos.entryRoundTrip : 1;
+      if (basis > 0) this.judgeRatchetShadow(pos, (valueSol / basis) / base, n);
+    }
     // +20% progress callout: let the timeline know it's climbing (once per position)
     if (valueSol != null && !pos.climbCalloutDone) {
       const ratio = valueSol / Math.max(1e-9, pos.entrySol * pos.remainingFrac);

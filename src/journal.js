@@ -26,7 +26,7 @@ export class Journal {
   constructor(dir, { now = Date.now } = {}) {
     this.now = now;
     this.dir = dir;
-    this.f = { sig: path.join(dir, 'signals.jsonl'), out: path.join(dir, 'outcomes.jsonl'), trades: path.join(dir, 'trades.jsonl'), fb: path.join(dir, 'feedback.jsonl'), ticks: path.join(dir, 'ticks.jsonl'), manual: path.join(dir, 'manual_exits.jsonl'), reports: path.join(dir, 'trade_reports.jsonl') };
+    this.f = { sig: path.join(dir, 'signals.jsonl'), out: path.join(dir, 'outcomes.jsonl'), trades: path.join(dir, 'trades.jsonl'), fb: path.join(dir, 'feedback.jsonl'), ticks: path.join(dir, 'ticks.jsonl'), manual: path.join(dir, 'manual_exits.jsonl'), reports: path.join(dir, 'trade_reports.jsonl'), rshadow: path.join(dir, 'ratchet_shadow.jsonl') };
     try { fs.mkdirSync(dir, { recursive: true }); } catch { /* ignore */ }
     this.signals = [];        // { id, ts, mint, symbol, setup, decision, reasons, price, mc, out:{} }
     this.byId = new Map();
@@ -71,6 +71,8 @@ export class Journal {
   tick(t) { this.append(this.f.ticks, t); }
   /** a position the human closed outside the bot */
   manualExit(rec) { this.manual.push(rec); if (this.manual.length > KEEP) this.manual.shift(); this.append(this.f.manual, rec); return rec; }
+  /** shadow ratchet flow judge record (would-fire / close completion) — observer only, append-only */
+  ratchetShadow(rec) { this.append(this.f.rshadow, rec); return rec; }
   /** attach the reason the human gave (see learn.js EXIT_REASONS) */
   tagExit(id, reason, note) {
     let m = this.manual.find(x => x.id === id);

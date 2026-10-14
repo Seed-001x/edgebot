@@ -285,6 +285,10 @@ export function loadConfig(env = process.env) {
     stallLeashPct: num(env, 'STALL_LEASH_PCT', 0.07),     // while on probation, a price move to/below −this from entry sells instantly — the tight leash stands in for the distant −17% hard floor, which was the only other owner of a band-sitter (Musclecat: flat past the 180s deadline, dove to the floor in ~20s, −0.0169); 0 = no leash, expiry only
     beArmPct: num(env, 'BE_ARM_PCT', 0.05),               // break-even ratchet ARM (user 2026-10-14, "Build it — arm at +5%"): once a pre-TP1 position's peak realizable move reaches +this, the trade can no longer become a loser; 0 = ratchet off
     beTriggerPct: num(env, 'BE_TRIGGER_PCT', 0.02),       // ...an armed position sells in full when the move falls back to +this — the cushion above break-even exists so the executed fill lands at true scratch after the sell's own slippage (user approved +1-2%)
+    ratchetShadow: num(env, 'RATCHET_SHADOW', 1),         // shadow flow judge for the ratchet (user 2026-10-14): RECORD-ONLY — watches held positions' streamed flow and journals where a flow trigger WOULD have fired vs where the price trigger did (ratchet_shadow.jsonl). There is no live mode: this can never sell. 0 = fully off (no held-mint subscriptions for it, no records)
+    ratchetFlowWindowSec: num(env, 'RATCHET_FLOW_WINDOW_SEC', 15), // ...the rolling stream window the shadow judge reads
+    ratchetFlowSellShare: num(env, 'RATCHET_FLOW_SELL_SHARE', 0.70), // ...would-fire needs sells to be at least this share of the window's traded SOL
+    ratchetFlowMinSellSol: num(env, 'RATCHET_FLOW_MIN_SELL_SOL', 1.0), // ...AND at least this much SOL of sells in the window (one whale taking profit is not an exit wave)
     bleedPct: num(env, 'BLEED_PCT', 0.07),                 // bleed exit (user 2026-10-14, "Still-falling test — down 7%+ and not recovering"): past the prove-itself window, a position down at least this much on `move` AND still falling sells in full — the probation leash freed from the band (TAILOOR bled to -52% in ~6 min because nothing owned a falling coin that never sat inside the band at the stall deadline); 0 = off
     bleedMinAgeSec: num(env, 'BLEED_MIN_AGE_SEC', 180),    // ...the prove-itself window: before this age the older exits judge alone
     bleedLookbackSec: num(env, 'BLEED_LOOKBACK_SEC', 60),  // ..."still falling" = the current move at/below the move this long ago, judged on the position's own per-check move history; no reading at least ~45s old = no fire yet
@@ -424,6 +428,10 @@ export function validateConfig(cfg) {
   if (cfg.beArmPct < 0 || cfg.beArmPct >= 1) errs.push('BE_ARM_PCT must be 0 (off) or between 0 and 1');
   if (cfg.beTriggerPct < 0 || cfg.beTriggerPct >= 1) errs.push('BE_TRIGGER_PCT must be between 0 and 1');
   if (cfg.beArmPct > 0 && cfg.beTriggerPct >= cfg.beArmPct) errs.push('BE_TRIGGER_PCT must be below BE_ARM_PCT when the break-even ratchet is on');
+  if (cfg.ratchetShadow < 0 || cfg.ratchetShadow > 1) errs.push('RATCHET_SHADOW must be 0 or 1');
+  if (cfg.ratchetFlowWindowSec < 1 || cfg.ratchetFlowWindowSec > 120) errs.push('RATCHET_FLOW_WINDOW_SEC must be 1..120');
+  if (cfg.ratchetFlowSellShare < 0 || cfg.ratchetFlowSellShare > 1) errs.push('RATCHET_FLOW_SELL_SHARE must be between 0 and 1');
+  if (cfg.ratchetFlowMinSellSol < 0) errs.push('RATCHET_FLOW_MIN_SELL_SOL must be >= 0');
   if (cfg.bleedPct < 0 || cfg.bleedPct >= 1) errs.push('BLEED_PCT must be 0 (off) or between 0 and 1');
   if (cfg.bleedMinAgeSec < 0) errs.push('BLEED_MIN_AGE_SEC must be >= 0');
   if (cfg.bleedLookbackSec < 0) errs.push('BLEED_LOOKBACK_SEC must be >= 0');
