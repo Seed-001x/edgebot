@@ -51,10 +51,13 @@ test('grad: malformed rows are skipped without throwing', () => {
 });
 
 // ---- GradWatch poller: priming watermark, transitions, fail-open ----
-function gradRig(rowQueue) {
+// These two pin GRAD_BACKFILL_MAX=0 (pure priming): their fixture coin is FRESH,
+// so under the default backfill it would be added at prime time — the backfill
+// block below covers that; here the watermark/transition mechanics are the point.
+function gradRig(rowQueue, cfgOver = {}) {
   const added = [];
   const gw = new GradWatch({
-    cfg: testCfg(), now: () => NOW, log: () => {},
+    cfg: testCfg(cfgOver), now: () => NOW, log: () => {},
     onAdd: (m) => { added.push(m); return true; },
     fetchRows: async () => { const r = rowQueue.shift(); if (r instanceof Error) throw r; return r; },
   });
@@ -66,7 +69,7 @@ test('grad: first poll primes the watermark and adds nothing; a NEW completion o
     [coin()],                                   // poll 1: prime — Plois predates boot as far as we know
     [coin(), coin({ mint: OTHER })],            // poll 2: OTHER is a first-observed completion
     [coin(), coin({ mint: OTHER })],            // poll 3: OTHER already absorbed — no re-add
-  ]);
+  ], { gradBackfillMax: 0 });
   await gw.poll(); assert.deepEqual(added, []);
   await gw.poll(); assert.deepEqual(added, [OTHER]);
   await gw.poll(); assert.deepEqual(added, [OTHER]);
@@ -79,11 +82,82 @@ test('grad: poll failure never throws, adds nothing, and does not prime', async 
     null,                                       // poll 2: malformed payload
     [coin()],                                   // poll 3: first SUCCESS primes (still no adds)
     [coin(), coin({ mint: OTHER })],           // poll 4: transition fires
-  ]);
+  ], { gradBackfillMax: 0 });
   await gw.poll(); assert.deepEqual(added, []); assert.ok(gw.stats.lastError);
   await gw.poll(); assert.deepEqual(added, []); assert.equal(gw.primed, false);
   await gw.poll(); assert.deepEqual(added, []); assert.equal(gw.primed, true);
   await gw.poll(); assert.deepEqual(added, [OTHER]);
+});
+
+// ---- boot backfill (user 2026-10-14: "Add the boot backfill") ----
+// UNTXED graduated 01:28 EDT while the watcher booted 01:39 — pure priming filed
+// it as history and it stayed invisible until gainers discovery rotated it in.
+const mintN = (i) => ('BF' + 'x'.repeat(36) + String(i + 1)).slice(0, 40); // valid base58, distinct per i
+
+test('backfill: prime poll adds a still-fresh completion through onAdd and marks it seen', async () => {
+  const { gw, added } = gradRig([
+    [coin()],                                   // poll 1 (prime): Plois last traded 2m ago — fresh
+    [coin()],                                   // poll 2: already seen — never re-added
+  ]);
+  await gw.poll(); assert.deepEqual(added, [PLOIS]);
+  assert.equal(gw.stats.backfilled, 1); assert.equal(gw.stats.added, 1);
+  assert.ok(gw.seenComplete.has(PLOIS));
+  await gw.poll(); assert.deepEqual(added, [PLOIS]);
+});
+
+test('backfill: prime poll absorbs a stale completion without adding, and later polls never add it', async () => {
+  const stale = coin({ created_timestamp: NOW - 4 * 3600e3, last_trade_timestamp: NOW - 3 * 3600e3 });
+  const { gw, added } = gradRig([
+    [stale],                                    // poll 1 (prime): last trade 3h ago — history
+    [stale],                                    // poll 2: seen at prime AND stale — no add
+  ]);
+  await gw.poll(); assert.deepEqual(added, []);
+  assert.equal(gw.stats.backfilled, 0);
+  assert.ok(gw.seenComplete.has(PLOIS), 'stale completion is still marked seen');
+  await gw.poll(); assert.deepEqual(added, []);
+});
+
+test('backfill: prime adds are capped at GRAD_BACKFILL_MAX, freshest first; overflow is seen-not-added', async () => {
+  const rows = [0, 1, 2, 3, 4, 5].map(i => coin({ mint: mintN(i), last_trade_timestamp: NOW - (i + 1) * 60000 })); // freshest first, as the API returns
+  const { gw, added } = gradRig([
+    rows,                                       // poll 1 (prime): 6 fresh completions, cap 3
+    rows,                                       // poll 2: everything already seen — no late adds
+  ], { gradBackfillMax: 3 });
+  await gw.poll();
+  assert.deepEqual(added, [mintN(0), mintN(1), mintN(2)]);
+  assert.equal(gw.stats.backfilled, 3); assert.equal(gw.stats.added, 3);
+  for (let i = 0; i < 6; i++) assert.ok(gw.seenComplete.has(mintN(i)), `mint ${i} marked seen`);
+  await gw.poll(); assert.deepEqual(added, [mintN(0), mintN(1), mintN(2)]);
+});
+
+test('backfill: GRAD_BACKFILL_MAX=0 is pure priming — a fresh completion at prime is NOT added', async () => {
+  const { gw, added } = gradRig([
+    [coin()],                                   // poll 1 (prime): fresh, but backfill is off
+  ], { gradBackfillMax: 0 });
+  await gw.poll(); assert.deepEqual(added, []);
+  assert.equal(gw.stats.backfilled, 0);
+  assert.ok(gw.seenComplete.has(PLOIS));
+});
+
+test('backfill: a failed prime poll marks nothing seen and adds nothing; the next success still backfills', async () => {
+  const { gw, added } = gradRig([
+    new Error('HTTP 429'),                      // poll 1 fails — must not prime
+    [coin()],                                   // poll 2: first SUCCESS primes + backfills
+  ]);
+  await gw.poll(); assert.deepEqual(added, []); assert.ok(gw.stats.lastError);
+  assert.equal(gw.primed, false); assert.equal(gw.seenComplete.size, 0);
+  await gw.poll(); assert.deepEqual(added, [PLOIS]);
+  assert.equal(gw.stats.backfilled, 1);
+});
+
+test('backfill: Plois-shaped — graduated minutes before boot, still trading — is backfilled on prime', async () => {
+  // The v3 payload has no graduation stamp; the observable shape of "graduated
+  // 11m before boot and ran" is: long curve life, complete, last trade 1m ago.
+  // (UNTXED's real shape: graduated 01:28 EDT, watcher booted 01:39.)
+  const justGraduated = coin({ created_timestamp: NOW - 60 * 60000, last_trade_timestamp: NOW - 1 * 60000 });
+  const { gw, added } = gradRig([[justGraduated]]);
+  await gw.poll(); assert.deepEqual(added, [PLOIS]);
+  assert.equal(gw.stats.backfilled, 1);
 });
 
 // ---- selectView: the corpse-pair trap ----
@@ -174,9 +248,13 @@ test('handoff: the flip is one-shot, and a coin never seen on the curve gets no 
 test('grad config: defaults, env override, and validation', () => {
   const d = loadConfig({});
   assert.equal(d.gradWatchEnabled, true); assert.equal(d.gradPollSec, 120); assert.equal(d.gradFreshMin, 30);
+  assert.equal(d.gradBackfillMax, 50);
   assert.equal(loadConfig({ GRAD_WATCH_ENABLED: '0' }).gradWatchEnabled, false);
   assert.equal(loadConfig({ GRAD_POLL_SEC: '180' }).gradPollSec, 180);
+  assert.equal(loadConfig({ GRAD_BACKFILL_MAX: '10' }).gradBackfillMax, 10);
+  assert.equal(loadConfig({ GRAD_BACKFILL_MAX: '0' }).gradBackfillMax, 0);
   assert.ok(validateConfig(loadConfig({ GRAD_POLL_SEC: '10' })).some(e => e.includes('GRAD_POLL_SEC')));
   assert.ok(validateConfig(loadConfig({ GRAD_FRESH_MIN: '0' })).some(e => e.includes('GRAD_FRESH_MIN')));
+  assert.ok(validateConfig(loadConfig({ GRAD_BACKFILL_MAX: '-1' })).some(e => e.includes('GRAD_BACKFILL_MAX')));
   assert.deepEqual(validateConfig(d), []);
 });

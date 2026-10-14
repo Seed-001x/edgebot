@@ -20,9 +20,17 @@
 // is the TRANSITION: a mint this poller observes as complete for the first time,
 // while it is actively trading (last trade inside GRAD_FRESH_MIN), graduated recently
 // as far as anyone can observe — or is heating up post-graduation, which is the same
-// runner class this watch exists for. The first successful poll after boot PRIMES the
-// seen set without adding anything (flowWatch's watermark rule): graduations that
-// happened before boot are history, not signals.
+// runner class this watch exists for.
+//
+// Boot backfill (user 2026-10-14: "Add the boot backfill"): priming used to absorb
+// EVERYTHING currently complete as seen-only history (flowWatch's watermark rule),
+// so a coin that graduated while the bot was down was gone for good — UNTXED
+// graduated 01:28 EDT, this watcher booted 01:39, and the coin stayed invisible
+// until DexScreener gainers discovery happened to rotate it in ~20 minutes later.
+// The priming poll now applies the SAME freshness gate as normal adds: completions
+// still trading inside GRAD_FRESH_MIN are backfilled through onAdd, capped at
+// GRAD_BACKFILL_MAX freshest-first; everything else is still absorbed as seen-only
+// history. GRAD_BACKFILL_MAX=0 restores the old pure priming.
 //
 // Fail-open throughout: a failed poll logs and retries next cycle, never throws.
 
@@ -89,7 +97,7 @@ export class GradWatch {
     this.primed = false;
     this.timer = null;
     this.polling = false;
-    this.stats = { polls: 0, added: 0, lastPollTs: 0, lastError: null };
+    this.stats = { polls: 0, added: 0, backfilled: 0, lastPollTs: 0, lastError: null };
   }
 
   get active() { return !!this.cfg.gradWatchEnabled; }
@@ -98,8 +106,8 @@ export class GradWatch {
 
   start() {
     if (!this.active || this.timer) return;
-    // Prime immediately at boot so the first adds come one cycle after startup,
-    // not two; the interval then keeps the cadence.
+    // Poll immediately at boot so the backfill lands at startup and the first
+    // transition adds come one cycle in, not two; the interval keeps the cadence.
     this.poll().catch(e => this.log(`[gradwatch] poll failed: ${e && e.message}`));
     this.timer = setInterval(() => { this.poll().catch(e => this.log(`[gradwatch] poll failed: ${e && e.message}`)); }, this.cfg.gradPollSec * 1000);
     if (this.timer.unref) this.timer.unref();
@@ -116,9 +124,23 @@ export class GradWatch {
       const n = this.now();
       this.stats.polls++; this.stats.lastPollTs = n; this.stats.lastError = null;
       if (!this.primed) {
-        // Watermark: absorb everything currently complete WITHOUT adding — those
-        // graduations predate this process and are history, not fresh signals.
-        for (const c of rows) if (c && c.complete === true && typeof c.mint === 'string') this.seenComplete.add(c.mint);
+        // Boot backfill: everything currently complete is absorbed into the seen
+        // set (those graduations predate this process), but the ones passing the
+        // SAME freshness gate as normal adds are also ADDED through onAdd —
+        // capped at GRAD_BACKFILL_MAX, freshest first (the payload is sorted by
+        // last trade DESC and freshGraduations preserves that order). Mints
+        // beyond the cap, and stale completions, are seen-only history, exactly
+        // as pure priming behaved. Cap 0 = no backfill (pure priming).
+        const cap = this.cfg.gradBackfillMax ?? 50;
+        const backfillSet = new Set(cap > 0 ? freshGraduations(rows, this.cfg, n, new Set()).slice(0, cap) : []);
+        for (const c of rows) {
+          if (!c || c.complete !== true || typeof c.mint !== 'string') continue;
+          this.seenComplete.add(c.mint);
+          if (!backfillSet.has(c.mint)) continue;
+          let added = false;
+          try { added = !!this.onAdd(c.mint); } catch { added = false; }
+          if (added) { this.stats.added++; this.stats.backfilled++; this.log(`[gradwatch] boot backfill → watchlist: ${c.mint}`); }
+        }
         this.primed = true;
         this.emitStats();
         return;

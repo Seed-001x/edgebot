@@ -166,10 +166,15 @@ export function loadConfig(env = process.env) {
     // only counts while the coin's last trade is inside it. There is no graduation
     // timestamp in the v3 payload and created_timestamp cannot judge freshness (Plois
     // sat on the curve 49 minutes before graduating) — the first-observed-completion
-    // transition is the freshness signal; the first poll after boot only primes it.
+    // transition is the freshness signal. The first poll after boot primes it, and
+    // since the boot backfill (user 2026-10-14) it also ADDS still-fresh completions
+    // found at prime time, capped by GRAD_BACKFILL_MAX — a coin that graduated while
+    // the bot was down (UNTXED: graduated 01:28 EDT, watcher booted 01:39) is caught
+    // at startup instead of being primed away as history.
     gradWatchEnabled: num(env, 'GRAD_WATCH_ENABLED', 1) === 1,
     gradPollSec: num(env, 'GRAD_POLL_SEC', 120),          // how often to ask pump.fun for fresh completions
     gradFreshMin: num(env, 'GRAD_FRESH_MIN', 30),         // a first-seen completion counts while its last trade is within this window
+    gradBackfillMax: num(env, 'GRAD_BACKFILL_MAX', 50),   // boot backfill: max adds from the priming poll, freshest first (0 = off, pure priming)
 
     // Pre-buy freshness guard: abort if the price moved hard between signal and execution (stale quote).
     prebuyMaxDumpPct: num(env, 'PREBUY_MAX_DUMP_PCT', 30), // fresh < signal*(1-30%) → dumped, abort
@@ -343,6 +348,7 @@ export function validateConfig(cfg) {
   if (cfg.flowWindowMin < 1 || cfg.flowWindowMin > 240) errs.push('FLOW_WINDOW_MIN must be between 1 and 240');
   if (cfg.gradPollSec < 30 || cfg.gradPollSec > 3600) errs.push('GRAD_POLL_SEC must be between 30 and 3600');
   if (cfg.gradFreshMin < 1 || cfg.gradFreshMin > 1440) errs.push('GRAD_FRESH_MIN must be between 1 and 1440');
+  if (cfg.gradBackfillMax < 0) errs.push('GRAD_BACKFILL_MAX must be >= 0 (0 = backfill off)');
   if (cfg.creatorVolBypassUsd < 0) errs.push('CREATOR_VOL_BYPASS_USD must be >= 0 (0 = off)');
   if (cfg.streakPauseN < 0 || cfg.streakPauseN > 50) errs.push('STREAK_PAUSE_N must be between 0 and 50 (0 = off)');
   if (cfg.streakPauseMinMin < 0 || cfg.streakPauseMinMin > 1440) errs.push('STREAK_PAUSE_MIN_MIN must be between 0 and 1440');
