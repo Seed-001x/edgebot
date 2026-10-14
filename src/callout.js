@@ -2,24 +2,28 @@
 //
 // Flow:
 //   1. Auth: sign "Sign in to pump.fun: <ts>" with the wallet key → POST /auth/login → JWT
-//   2. Facts: the callout body is built BY CODE from the entry signal — the setup that
-//      fired, the exact entry market cap, and the decisive numbers for that setup.
-//      (Rebuilt 2026-10-12, user: LLM-written callouts were "meh" — facts passed
-//      through the model came out as filler like "pure momentum play"/"whopping".)
-//   3. Narrative clause (optional): if research (description/website/X) finds a real
-//      project story, the LLM may contribute ONE short clause saying what the coin
-//      is. When the coin has no links or description at all, the clause instead
-//      riffs on the coin's NAME — the name is the whole pitch for those. Either
-//      way the clause is validated: no numbers, no hype, so it can never corrupt
-//      the facts; no valid clause → the callout is facts only.
-//   4. Post: POST /callout/create { coinMint, thesis, marketCap }
+//   2. Research: read what the coin says it is (pump.fun description, website, X).
+//   3. Thesis: the WHOLE post is a thesis — why this coin exists and what it is —
+//      written by the LLM from the research in a plain, casual trader voice
+//      (one or two short sentences; if it's a meme, name the joke).
+//      (Rebuilt 2026-10-14, user: the v2 format — an LLM clause stapled to a
+//      code-built facts line of entry mc / % moves / volume / buy share — was a
+//      stats readout, not a call. He revoked it: "no numbers or stats… just
+//      thesis." The facts line and the stats-only fallback are deleted.)
+//      HARD RULE: no numbers or stats in the post text, ever — no digits, no %,
+//      no $ amounts, no time-window fragments. The final text is validated
+//      before posting; a violating draft is retried once with the violation
+//      named, then replaced by a simple name/description line ("cute cat."
+//      register), and if even that can't be made clean the callout is skipped.
+//   4. Post: POST /callout/create { coinMint, thesis, marketCap } — marketCap
+//      is API data the card needs; it is never rendered into the post text.
 //
 // The callout posts as the user's pump.fun profile, so callout rewards
 // (USDC, daily, based on volume driven) accrue to them.
 //
 // Env:
 //   WALLET_PRIVATE_KEY   required (signs the pump.fun login)
-//   OPENAI_API_KEY       optional; without it, callouts fall back to a stats-only line
+//   OPENAI_API_KEY       optional; without it, callouts use the simple fallback (or skip)
 //   OPENAI_MODEL         optional, default gpt-4o-mini
 //   X_BEARER_TOKEN       optional; official X API. Without it, X posts are read via
 //                        the public fxtwitter API (free, no key, can be flaky)
@@ -186,66 +190,42 @@ async function research(v) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Thesis                                                              */
+/* Thesis — the whole post. No numbers, no stats, ever.                */
 /* ------------------------------------------------------------------ */
-
-const fmtUsd = n => n == null || !isFinite(n) ? null : n >= 1e6 ? `$${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `$${Math.round(n / 1e3)}k` : `$${Math.round(n)}`;
 
 const BANNED = /\b(moon|mooning|gem|ape[ds]?|lfg|fomo|100x|1000x|send(ing)? it|don'?t miss|sleep(ing)? on|explode|viral|guaranteed|next \w+ coin)\b/i;
 const DISCLAIM = /\b(not (financial )?advice|nfa|dyor|risky|be careful|invalid if)\b/i;
-const FLUFF = /\b(whopping|massive|huge|insane|crazy|just|pure momentum|momentum play|incredible|amazing)\b/i;
+// "just" is NOT filler in this format — it is the user's own register ("just say
+// cute cat") — so it left the fluff list in the 2026-10-14 rewrite. The rest of
+// the list still guards against intensifier stuffing.
+const FLUFF = /\b(whopping|massive|huge|insane|crazy|pure momentum|momentum play|incredible|amazing)\b/i;
 
-/**
- * The fact block: built by code from the entry signal, never by the LLM.
- * The setup decides which numbers lead (trend → the hour, pop → the 5 minutes)
- * but is never NAMED (user, 2026-10-12) — the numbers speak bare. With no signal
- * metrics at all, the numbers fall back to the coin's live view so the callout
- * is never just an entry line.
- */
-export function factBlock(v, sig) {
-  const m = (sig && sig.metrics) || {};
-  const sym = '$' + (v.symbol || '???').replace(/^\$/, '').toLowerCase();
-  const head = `in ${sym}` + (v.mc ? ` at ${fmtUsd(v.mc)} mc` : '');
-  const pct = (x) => `${Number(x) >= 0 ? '+' : ''}${Math.round(Number(x))}%`;
-  const parts = [];
-  const hasMetrics = Object.keys(m).length > 0;
-  if (hasMetrics && sig.setup === 'trend') {
-    if (m.chgH1 != null) parts.push(`${pct(m.chgH1)} on the hour`);
-    if (m.chgM5 != null) parts.push(`${pct(m.chgM5)} last 5m`);
-    if (m.volH1) parts.push(`${fmtUsd(Number(m.volH1))}/h volume`);
-  } else if (hasMetrics) {
-    if (m.gainPct != null) parts.push(`${pct(m.gainPct)} in 5 min`);
-    else if (m.chgM5 != null) parts.push(`${pct(m.chgM5)} in 5 min`);
-    if (m.volM5) parts.push(`${fmtUsd(Number(m.volM5))} 5m volume`);
-    else if (m.volH1) parts.push(`${fmtUsd(Number(m.volH1))}/h volume`);
-    if (m.drawFromPeak != null && Number(m.drawFromPeak) <= 0.02) parts.push('right at its highs');
-  } else {
-    // No setup: build from the live view itself.
-    if (v.chgH1 != null) parts.push(`${pct(v.chgH1)} on the hour`);
-    if (v.chgM5 != null) parts.push(`${pct(v.chgM5)} last 5m`);
-    if (v.volH1) parts.push(`${fmtUsd(Number(v.volH1))}/h volume`);
-    else if (v.volM5) parts.push(`${fmtUsd(Number(v.volM5))} 5m volume`);
-    const tot = (v.buysM5 || 0) + (v.sellsM5 || 0);
-    if (tot > 0) m.buyRatioM5 = (v.buysM5 || 0) / tot;
-  }
-  if (m.holders) parts.push(`${m.holders} holders`);
-  if (m.buyRatioM5 != null && Number(m.buyRatioM5) >= 0.5) parts.push(`${Math.round(Number(m.buyRatioM5) * 100)}% buys`);
-  return (parts.length ? `${head}. ${parts.join(', ')}.` : `${head}.`).slice(0, 280);
+/** Why a draft thesis is unpostable, or null if it is clean. The stat patterns
+ *  are the user's hard rule (2026-10-14): any digit, any %, any $ amount. The
+ *  $cashtag ($musclecat) is the coin's NAME, not a stat, and is allowed. */
+export function thesisViolation(raw) {
+  if (!raw) return 'it was empty';
+  const t = String(raw);
+  if (/\d/.test(t)) return 'it contained a number';
+  if (/%/.test(t)) return 'it contained a percent sign';
+  if (/\$\s?\d/.test(t)) return 'it contained a dollar amount';
+  if (BANNED.test(t)) return 'it used a banned hype word';
+  if (DISCLAIM.test(t)) return 'it contained a disclaimer';
+  if (FLUFF.test(t)) return 'it used filler words';
+  return null;
 }
 
-/** A narrative clause may only describe what the coin IS — no numbers, no hype, no filler. */
-export function validClause(txt) {
-  if (!txt) return null;
-  const t = String(txt).trim().replace(/^["'“”]+|["'“”]+$/g, '').replace(/[.!]+$/, '').trim().toLowerCase();
-  if (t.length < 12 || t.length > 90) return null;
-  if (/\d/.test(t)) return null; // facts live in the fact block; the clause carries none
-  if (BANNED.test(t) || DISCLAIM.test(t) || FLUFF.test(t)) return null;
-  if (/\bmeme ?coin\b|\bmemecoin\b|\btoken\b|\bthis coin\b/.test(t)) return null;
+/** Clean a draft into a postable thesis, or null. A null here means the text
+ *  must never be posted — every path that produces post text ends here. */
+export function validateThesis(raw) {
+  if (!raw) return null;
+  const t = String(raw).trim().replace(/\s+/g, ' ').replace(/^["'“”]+|["'“”]+$/g, '').trim().toLowerCase();
+  if (t.length < 3 || t.length > 280) return null;
   if (t === 'none') return null;
-  return t;
+  return thesisViolation(t) ? null : t;
 }
 
-async function llmClause(prompt) {
+async function llmWrite(prompt) {
   const key = process.env.OPENAI_API_KEY;
   if (!key) return null;
   try {
@@ -255,70 +235,113 @@ async function llmClause(prompt) {
       body: JSON.stringify({
         model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
         messages: [{ role: 'user', content: prompt }],
-        max_tokens: 40,
-        temperature: 0.4,
+        max_tokens: 120,
+        temperature: 0.7,
       }),
       signal: AbortSignal.timeout(12000),
     });
     if (!res.ok) return null;
     const data = await res.json();
-    return validClause(data.choices?.[0]?.message?.content || '');
+    const txt = data.choices?.[0]?.message?.content;
+    return txt == null ? null : String(txt);
   } catch { return null; }
 }
 
-export async function narrativeClause(r, v) {
-  const src = [r.description && `description: ${r.description}`, r.site && `website: ${r.site}`, r.xText && `X: ${r.xText}`].filter(Boolean).join('\n');
-  if (src.replace(/\s/g, '').length >= 40) {
-    return llmClause(`From this text about a crypto project, write ONE clause (max 12 words, lowercase, NO numbers, no hype, no prices) saying what the project IS or claims to do, in its own framing — e.g. "a prediction market for livestream events" or "the mascot dog of the eth merge anniversary". If the text is generic, empty, just links, or says nothing concrete about what the project is, reply with exactly: NONE
+const THESIS_RULES = 'Hard rules: NO numbers or stats of any kind — no digits, no percentages, no dollar amounts, no market cap, no volume, no time windows. No hype words (moon, gem, viral, lfg, fomo). No disclaimers, no explainer phrases. Plain casual trader voice, lowercase, confident and simple.';
 
-Text:
-${src.slice(0, 1800)}
-
-Return only the clause or NONE.`);
-  }
-  // No links, no description — the NAME is the story. A human callout riffs on what
-  // the ticker is playing on (user, 2026-10-12: ETHINU could have said "riding this
-  // eth pair"). Interpret the name only; never invent features or promises.
+/** The LLM writes the whole thesis from the research. One retry with the
+ *  violation named; a second failure returns null (caller falls back). The
+ *  entry signal is never passed in — its numbers must not be recited. */
+export async function llmThesis(r, v) {
+  if (!process.env.OPENAI_API_KEY) return null;
   const name = (r.name || v.name || '').trim();
   const sym = (r.symbol || v.symbol || '').replace(/^\$/, '').trim();
-  if (!name && !sym) return null;
-  return llmClause(`A memecoin is named "${name}" with ticker $${sym}. It has no website, no socials, no description — the name IS the whole pitch. Write ONE short clause (max 10 words, lowercase, NO numbers, no hype words like moon/gem/viral, no exclamation marks) capturing what the name is riffing on, the way a trader would say it — voice examples: "riding this eth pair", "a president coin for the election run", "the grocery store cat from the viral video". Interpret the name's reference, mascot or pun only. Do NOT invent features, rewards, utilities or promises the name doesn't state. If the name is random letters with no readable reference, reply with exactly: NONE
+  const src = [r.description && `description: ${r.description}`, r.site && `website: ${r.site}`, r.xText && `X: ${r.xText}`].filter(Boolean).join('\n');
+  let base;
+  if (src.replace(/\s/g, '').length >= 40) {
+    base = `You are posting a callout for a coin you just bought on pump.fun. Write the thesis: why this coin exists and what it is, in one or two short casual sentences. Base it only on the research below — what the project itself says it is. If it is a meme, name the joke. ${THESIS_RULES} You may tag the coin once as $${sym || 'coin'}. If the research says nothing concrete about what the coin is, reply with exactly: NONE
 
-Return only the clause or NONE.`);
-}
+Coin: ${name} ($${sym})
+Research:
+${src.slice(0, 1800)}
 
-async function aiThesis(v, sig) {
-  const facts = factBlock(v, sig);
-  try {
-    const r = await research(v);
-    const clause = await narrativeClause(r, v);
-    if (clause) {
-      console.log(`[callout] thesis for ${v.symbol}: narrative clause + facts`);
-      return `${clause} — ${facts}`.slice(0, 280);
-    }
-    console.log(`[callout] thesis for ${v.symbol}: facts only`);
-  } catch (e) {
-    console.log('[callout] research/clause failed, facts only:', e.message);
+Return only the post text or NONE.`;
+  } else {
+    // No links, no usable description — the NAME is the story. Keep it stupidly
+    // simple; the user's own anchor for this case is "just say cute cat."
+    if (!name && !sym) return null;
+    base = `A memecoin is named "${name}" with ticker $${sym}. It has no website, no socials, no usable description — the name IS the whole pitch. Write the callout post: one or two very short casual sentences saying what the name is riffing on, the way a trader would say it. Keep it stupidly simple — "cute cat." energy is exactly right. Do not invent features, rewards or promises the name does not state. ${THESIS_RULES} You may tag the coin once as $${sym}. If the name is random letters with no readable reference, reply with exactly: NONE
+
+Return only the post text or NONE.`;
   }
-  return facts;
+  let prompt = base;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const raw = await llmWrite(prompt);
+    if (raw == null) return null;
+    const clean = validateThesis(raw);
+    if (clean) return clean;
+    const why = thesisViolation(raw) || 'it broke the format rules';
+    prompt = `${base}\n\nYour previous attempt was rejected because ${why}. Rewrite it with zero numbers and zero stats.`;
+  }
+  return null;
 }
 
-export function thesis(v, sig) { return factBlock(v, sig || {}); }
+/** The simple fallback (replaces the deleted stats fallback): a plain line in
+ *  the user's register, number-free by construction — the project's own first
+ *  sentence if it survives validation, else a name riff ("muscle cat. looks
+ *  good."), else null so the callout is skipped. Never a stats line. */
+export function simpleFallback(r, v) {
+  r = r || {}; v = v || {};
+  const desc = clip(r.description || '', 300);
+  if (desc) {
+    const first = (desc.split(/(?<=[.!?])\s+/)[0] || '').trim();
+    const clean = validateThesis(first);
+    if (clean && clean.length >= 12) return clean;
+  }
+  const name = String(r.name || v.name || '').replace(/\s+/g, ' ').trim();
+  if (name) {
+    const clean = validateThesis(`${name}. looks good.`);
+    if (clean) return clean;
+  }
+  const sym = String(r.symbol || v.symbol || '').replace(/^\$/, '').trim();
+  if (sym) {
+    const clean = validateThesis(`$${sym}. looks good.`);
+    if (clean) return clean;
+  }
+  return null;
+}
+
+/** Build the entry callout text: research → LLM thesis → simple fallback →
+ *  null (skip). sig is accepted for call-site compatibility and deliberately
+ *  unused: the entry signal's numbers are never rendered into the post. */
+export async function buildThesis(v, sig) {
+  let r = {};
+  try { r = await research(v); } catch (e) { console.log('[callout] research failed:', e.message); }
+  const text = await llmThesis(r, v).catch(() => null);
+  if (text) { console.log(`[callout] thesis for ${v.symbol}: llm`); return text; }
+  const fb = simpleFallback(r, v);
+  if (fb) console.log(`[callout] thesis for ${v.symbol}: simple fallback`);
+  return fb;
+}
 
 // Follow-up posts. Pass sig.stillHolding = false after the bot sells so the post stays true.
+// Number-free like everything else — the gain is a stat and never renders.
 function progressThesis(v, sig) {
-  const gain = Math.round(sig.gainPct ?? 20);
   const sym = '$' + (v.symbol || '???').replace(/^\$/, '').toLowerCase();
-  if (sig.stillHolding === false) return `took profit on ${sym} at +${gain}% from the call.`;
-  return `${sym} up ${gain}% since the call.`;
+  if (sig.stillHolding === false) return `took profit on ${sym}. called it here first.`;
+  return `${sym} still running since the call.`;
 }
 
 export async function postCallout(v, sig = {}) {
   const token = await auth();
   const isProgress = !!sig.progress;
+  const draft = isProgress ? progressThesis(v, sig) : await buildThesis(v, sig);
+  // Final hard gate: whatever produced the draft, a violating string cannot post.
+  const text = validateThesis(draft);
+  if (!text) { console.log(`[callout] no clean thesis for ${v.symbol} — skipping callout`); return { skipped: 'no-clean-thesis' }; }
   const body = {
     coinMint: v.address,
-    thesis: isProgress ? progressThesis(v, sig) : await aiThesis(v, sig),
+    thesis: text,
     marketCap: Math.round(v.mc || 0),
   };
   const res = await fetch(`${API}/callout/create`, {
@@ -341,5 +364,5 @@ export async function postCallout(v, sig = {}) {
   return { ok: true, id: data.id || data.calloutId || null, thesis: body.thesis };
 }
 
-// For testing without posting: node -e "import('./callout.js').then(m=>m.previewThesis({address:'<mint>',symbol:'HIRE',mc:68000},{metrics:{volH1:26000,holders:400}}).then(console.log))"
-export async function previewThesis(v, sig = {}) { return aiThesis(v, sig); }
+// For testing without posting: node -e "import('./src/callout.js').then(m=>m.previewThesis({address:'<mint>',symbol:'CAT',name:'Cat'}).then(console.log))"
+export async function previewThesis(v, sig = {}) { return buildThesis(v, sig); }

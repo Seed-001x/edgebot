@@ -1,62 +1,158 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { factBlock, validClause } from '../src/callout.js';
+import { validateThesis, thesisViolation, simpleFallback, buildThesis } from '../src/callout.js';
 
-// Real entry signals from 2026-10-12 (the trades whose callouts the user called "meh").
-test('factBlock: trend leads with the hour and flags acceleration (ETHINU)', () => {
-  const out = factBlock({ symbol: 'ETHINU', mc: 63296 }, { setup: 'trend', metrics: { chgH1: 43.76, chgM5: 68.75, buyRatioM5: 0.62, volH1: 50526.29 } });
-  assert.equal(out, 'in $ethinu at $63k mc. +44% on the hour, +69% last 5m, $51k/h volume, 62% buys.');
+// Thesis-only callouts (user, 2026-10-14): "no numbers or stats… just thesis."
+// The v2 facts line (entry mc / % moves / volume / buy share) is deleted.
+
+const NO_STATS = [/\d/, /%/, /\$\s?\d/, /in 5 min/i, /\bmc\b/i, /volume/i, /holders/i];
+
+test('validateThesis: rejects any digit, percent or dollar amount', () => {
+  assert.equal(validateThesis('in $musclecat at $46k mc.'), null);          // $ amount + digit
+  assert.equal(validateThesis('a strong cat, up 59% today'), null);          // percent + digit
+
+  assert.equal(validateThesis('a cat with 5000 holders and rising'), null); // digit
+  assert.equal(validateThesis('the cat launchpad, $12k already'), null);    // $ amount
+  assert.equal(validateThesis('right at its highs, 62% buys'), null);       // percent + digit
 });
 
-test('factBlock: pop leads with the 5-minute move (VIBELON)', () => {
-  const out = factBlock({ symbol: 'VIBELON', mc: 47488 }, { setup: 'pop', metrics: { gainPct: 18.9, drawFromPeak: 0.156, buyRatioM5: 0.55, volM5: 12901.9, volH1: 12901.9 } });
-  assert.equal(out, 'in $vibelon at $47k mc. +19% in 5 min, $13k 5m volume, 55% buys.');
+test('validateThesis: accepts a clean thesis — the cashtag is a name, not a stat', () => {
+  assert.equal(validateThesis('cute cat.'), 'cute cat.');
+  assert.equal(validateThesis('this is a cat launchpad. looks good.'), 'this is a cat launchpad. looks good.');
+  assert.equal(validateThesis('"A strong cat meme for fitness enthusiasts."'), 'a strong cat meme for fitness enthusiasts.');
+  assert.equal(validateThesis('gym cat energy, all gains. in $musclecat.'), 'gym cat energy, all gains. in $musclecat.');
 });
 
-test('factBlock: pop at its highs says so (AGP)', () => {
-  const out = factBlock({ symbol: 'AGP', mc: 109552 }, { setup: 'pop', metrics: { gainPct: 24, drawFromPeak: 0, buyRatioM5: 0.55, volM5: 25350.56, volH1: 48501.66 } });
-  assert.equal(out, 'in $agp at $110k mc. +24% in 5 min, $25k 5m volume, right at its highs, 55% buys.');
+test('validateThesis: rejects hype, fluff, disclaimers and non-answers', () => {
+  assert.equal(validateThesis('the next moon gem of solana'), null);
+  assert.equal(validateThesis('a whopping big deal of a cat'), null);
+  assert.equal(validateThesis('not financial advice, but cute cat'), null);
+  assert.equal(validateThesis('NONE'), null);
+  assert.equal(validateThesis(''), null);
+  assert.equal(validateThesis(null), null);
 });
 
-test('factBlock: sparse data degrades to the entry line, never filler', () => {
-  assert.equal(factBlock({ symbol: 'XYZ', mc: 12000 }, {}), 'in $xyz at $12k mc.');
-  assert.ok(!/momentum|whopping/.test(factBlock({ symbol: 'XYZ', mc: 1 }, { setup: 'trend', metrics: {} })));
+test('thesisViolation: names the stat that killed the draft', () => {
+  assert.match(thesisViolation('up 59 and climbing'), /number/);
+  assert.match(thesisViolation('up a lot % today'), /percent/);
+  assert.equal(thesisViolation('cute cat.'), null);
+  assert.equal(thesisViolation('in $musclecat, gym cat energy'), null); // cashtag alone is fine
 });
 
-test('validClause: accepts a concrete, number-free description', () => {
-  assert.equal(validClause('a prediction market for livestream events'), 'a prediction market for livestream events');
-  assert.equal(validClause('"The mascot dog of the ETH merge anniversary."'), 'the mascot dog of the eth merge anniversary');
+test('facts-line builder and the old exports are gone', async () => {
+  const m = await import('../src/callout.js');
+  assert.equal(m.factBlock, undefined);
+  assert.equal(m.thesis, undefined);
+  assert.equal(m.validClause, undefined);
+  assert.equal(m.narrativeClause, undefined);
 });
 
-test('validClause: rejects numbers, hype, fluff and non-answers', () => {
-  assert.equal(validClause('a coin with 50k holders and rising'), null);       // digits
-  assert.equal(validClause('the next moon gem of solana'), null);              // banned hype
-  assert.equal(validClause('a whopping momentum play on the rise'), null);     // fluff
-  assert.equal(validClause('NONE'), null);
-  assert.equal(validClause('up only'), null);                                  // too short
-  assert.equal(validClause(''), null);
-});
+/* Fetch stubbing, same pattern as the old suite: dispatch by URL. */
+function stubFetch({ coin = null, openai = '' } = {}) {
+  const calls = { openai: 0 };
+  const fn = async (url) => {
+    const u = String(url);
+    if (u.includes('api.openai.com')) {
+      calls.openai++;
+      const content = typeof openai === 'function' ? openai(calls.openai) : openai;
+      return { ok: true, json: async () => ({ choices: [{ message: { content } }] }) };
+    }
+    if (u.includes('/coins/')) {
+      if (!coin) return { ok: false, status: 404, json: async () => ({}) };
+      return { ok: true, json: async () => coin };
+    }
+    return { ok: false, status: 404, json: async () => ({}), text: async () => '' };
+  };
+  fn.calls = calls;
+  return fn;
+}
 
-test('factBlock: no setup at all — numbers come from the live view (ETHINU copycat)', () => {
-  // The coin the user pasted, 2026-10-12 ~21:57: $209k MC, +375% h1, +8% m5, 464 buys / 323 sells in 5m.
-  const view = { symbol: 'ETHINU', mc: 208969, chgH1: 375, chgM5: 7.97, volH1: 151761.93, volM5: 46049.55, buysM5: 464, sellsM5: 323 };
-  assert.equal(factBlock(view, {}), 'in $ethinu at $209k mc. +375% on the hour, +8% last 5m, $152k/h volume, 59% buys.');
-});
-
-test('narrativeClause: no links — falls back to a name riff, still validated', async () => {
-  const { narrativeClause } = await import('../src/callout.js');
+async function withEnv(key, fn) {
   const realFetch = globalThis.fetch;
-  process.env.OPENAI_API_KEY = 'test-key';
-  const stub = (content) => async () => ({ ok: true, json: async () => ({ choices: [{ message: { content } }] }) });
-  try {
-    globalThis.fetch = stub('riding this eth pair');
-    assert.equal(await narrativeClause({}, { name: 'ETH INU', symbol: 'ETHINU' }), 'riding this eth pair');
-    globalThis.fetch = stub('a coin with 5000 holders ready to moon');
-    assert.equal(await narrativeClause({}, { name: 'ETH INU', symbol: 'ETHINU' }), null); // digits + hype rejected
-    globalThis.fetch = stub('NONE');
-    assert.equal(await narrativeClause({}, { name: 'XQZ', symbol: 'XQZ' }), null);
-  } finally {
+  const had = 'OPENAI_API_KEY' in process.env;
+  const prev = process.env.OPENAI_API_KEY;
+  if (key == null) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = key;
+  try { return await fn(); }
+  finally {
     globalThis.fetch = realFetch;
-    delete process.env.OPENAI_API_KEY;
+    if (had) process.env.OPENAI_API_KEY = prev; else delete process.env.OPENAI_API_KEY;
   }
+}
+
+test('buildThesis: rich research produces a thesis-only post — no facts fragments', async () => {
+  const stub = stubFetch({
+    coin: { name: 'Cat Launchpad', symbol: 'CATLP', description: 'The first launchpad where cat coins are born — a launchpad for cat tokens, run by the community.', twitter: '', website: '' },
+    openai: 'this is a cat launchpad — new cat coins are born here and the community runs the show. looks good.',
+  });
+  await withEnv('test-key', async () => {
+    globalThis.fetch = stub;
+    const out = await buildThesis(
+      { address: 'MINT1', symbol: 'CATLP', name: 'Cat Launchpad', mc: 46000 },
+      { setup: 'pop', metrics: { gainPct: 59, volM5: 36000, buyRatioM5: 0.61 } }, // rich signal: none of it may render
+    );
+    assert.equal(out, 'this is a cat launchpad — new cat coins are born here and the community runs the show. looks good.');
+    for (const re of NO_STATS) assert.ok(!re.test(out), `facts fragment leaked: ${re}`);
+  });
+});
+
+test('buildThesis: an LLM draft that recites stats is retried once, clean rewrite wins', async () => {
+  const stub = stubFetch({
+    coin: { name: 'Muscle Cat', symbol: 'MUSCLECAT', description: '', twitter: '', website: '' },
+    openai: (n) => n === 1
+      ? 'muscle cat up 59% in 5 min with $36k volume, 61% buys'
+      : 'a strong cat with gym energy. cute cat. $musclecat',
+  });
+  await withEnv('test-key', async () => {
+    globalThis.fetch = stub;
+    const out = await buildThesis({ address: 'MINT2', symbol: 'MUSCLECAT', name: 'Muscle Cat' }, {});
+    assert.equal(out, 'a strong cat with gym energy. cute cat. $musclecat');
+    assert.equal(stub.calls.openai, 2); // exactly one retry
+  });
+});
+
+test('buildThesis: LLM fails validation twice → simple fallback, never a stats line', async () => {
+  const stub = stubFetch({
+    coin: { name: 'Muscle Cat', symbol: 'MUSCLECAT', description: '', twitter: '', website: '' },
+    openai: 'muscle cat at $46k mc, +59% in 5 min, $36k volume',
+  });
+  await withEnv('test-key', async () => {
+    globalThis.fetch = stub;
+    const out = await buildThesis(
+      { address: 'MINT3', symbol: 'MUSCLECAT', name: 'Muscle Cat', mc: 46000 },
+      { setup: 'pop', metrics: { gainPct: 59, volM5: 36000 } },
+    );
+    assert.equal(out, 'muscle cat. looks good.');
+    assert.equal(stub.calls.openai, 2);
+    for (const re of NO_STATS) assert.ok(!re.test(out), `stats leaked into fallback: ${re}`);
+  });
+});
+
+test('buildThesis: no research and no LLM key → simple name fallback', async () => {
+  const stub = stubFetch({ coin: null }); // pump.fun has nothing on the mint
+  await withEnv(null, async () => {
+    globalThis.fetch = stub;
+    const out = await buildThesis({ address: 'MINT4', symbol: 'MUSCLECAT', name: 'Muscle Cat' }, {});
+    assert.equal(out, 'muscle cat. looks good.');
+    assert.equal(stub.calls.openai, 0);
+  });
+});
+
+test('buildThesis: nothing usable at all → null (callout skipped), never a stats line', async () => {
+  const stub = stubFetch({ coin: null });
+  await withEnv(null, async () => {
+    globalThis.fetch = stub;
+    const out = await buildThesis({ address: 'MINT5' }, { setup: 'pop', metrics: { gainPct: 59, volM5: 36000, buyRatioM5: 0.61 } });
+    assert.equal(out, null);
+  });
+});
+
+test('simpleFallback: description sentence, name riff, and un-cleanable inputs', () => {
+  assert.equal(
+    simpleFallback({ description: 'A launchpad for cat coins, run by the community. More words follow here.' }, {}),
+    'a launchpad for cat coins, run by the community.',
+  );
+  assert.equal(simpleFallback({}, { name: 'Muscle Cat', symbol: 'MUSCLECAT' }), 'muscle cat. looks good.');
+  // Description carries a stat and the name carries a digit: nothing clean exists.
+  assert.equal(simpleFallback({ description: 'Over 5000 holders strong and growing.' }, { name: 'Cat 3000', symbol: 'CAT3000' }), null);
+  assert.equal(simpleFallback({}, {}), null);
 });
