@@ -102,6 +102,67 @@ export function detect(v, samples, cfg, now) {
   return null;
 }
 
+// ---- CHURN (dumped coin basing at its lows, user 2026-10-14) ----
+// The Vwhale shape: a coin dumped hard, then sat at its lows while trade COUNT stayed
+// hot (~180 tx/5m of two-way flow at support) — accumulation before any pop. Pop never
+// fired: its buy ratio sat ~0.50 the whole recovery and price hadn't moved yet. This
+// detector reads the bot's own samples and asks the opposite question of pop: not "did
+// it just move?" but "did it stop falling while people kept trading it?"
+//   dropped ≥ churnMinDropPct from the sampled peak to an ESTABLISHED low (set before
+//   the stable window), no (materially) new low inside churnStableMin, current price
+//   within churnLowBandPct of that low, the trailing-5m trade count sustained at/above
+//   churnMinTxM5 across the last 3 samples, buy share ≥ churnMinBuyShare (two-way, not
+//   a stampede out), and average trade size ≥ churnMinAvgUsd — the avg floor sits above
+//   the botflow/dust hard-gate floors so wash churn can't qualify by construction.
+export function detectChurn(v, samples, cfg, now) {
+  if (!cfg.churnEnabled) return null;
+  if (eligible(v, cfg, now).length) return null;
+  const a = (samples || []).filter(s => s && s.price > 0);
+  if (a.length < 4) return null;
+  const last = a[a.length - 1];
+
+  let peak = 0, peakTs = 0;
+  for (const s of a) if (s.price > peak) { peak = s.price; peakTs = s.ts; }
+  if (!(peak > 0)) return null;
+
+  // The low must be ESTABLISHED: set before the stable window, and not materially
+  // undercut inside it. A low printed minutes ago means it's still falling.
+  const cutoff = now - cfg.churnStableMin * 60000;
+  const before = a.filter(s => s.ts <= cutoff);
+  if (!before.length) return null;
+  let low = Infinity, lowTs = 0;
+  for (const s of before) if (s.price < low) { low = s.price; lowTs = s.ts; }
+  if (!(low > 0) || peakTs > lowTs) return null; // the drop must run peak → low, in that order
+  const recent = a.filter(s => s.ts > cutoff);
+  if (!recent.length) return null;
+  const recentLow = Math.min(...recent.map(s => s.price));
+  if (recentLow < low * 0.999) return null; // new low inside the stable window — still falling
+
+  const dropPct = (peak - low) / peak * 100;
+  if (dropPct < cfg.churnMinDropPct) return null;
+  if (!(last.price <= low * (1 + cfg.churnLowBandPct / 100))) return null; // hugging the low, not recovering away from it
+
+  // Sustained count: each of the last 3 samples carries a hot trailing-5m count
+  // (rolling snapshots — sustained elevation is the intent, not disjoint windows).
+  const last3 = a.slice(-3);
+  for (const s of last3) if ((s.buysM5 || 0) + (s.sellsM5 || 0) < cfg.churnMinTxM5) return null;
+  const tx = (last.buysM5 || 0) + (last.sellsM5 || 0);
+  if (tx <= 0) return null;
+  const share = (last.buysM5 || 0) / tx;
+  if (share < cfg.churnMinBuyShare) return null;
+  const avgUsd = (last.volM5 || 0) / tx;
+  if (avgUsd < cfg.churnMinAvgUsd) return null;
+
+  const lowAgeMin = (now - lowTs) / 60000;
+  const metrics = { dropPct: +dropPct.toFixed(1), txM5: tx, buyShare: +share.toFixed(2), avgUsd: +avgUsd.toFixed(2), lowAgeMin: +lowAgeMin.toFixed(1) };
+  return {
+    setup: 'churn',
+    strength: dropPct,
+    metrics,
+    label: `churn: -${Math.round(dropPct)}% off peak, basing ${Math.round(lowAgeMin)}m, ${tx} tx/5m, share ${share.toFixed(2)}`,
+  };
+}
+
 // ---- FAST POP (live trade stream) ----
 // Samples are individual stream trades: { ts, price, sol, side: 'buy'|'sell' } with
 // price in SOL per token as printed by the trade itself. Judged over a short rolling

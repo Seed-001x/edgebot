@@ -161,10 +161,10 @@ export class Journal {
     return gates;
   }
 
-  signal({ mint, symbol, setup, decision, reasons = [], price, mc, metrics = null, warnings = [] }) {
+  signal({ mint, symbol, setup, decision, reasons = [], price, mc, metrics = null, warnings = [], label = null }) {
     const ts = this.now();
     const id = `${ts}-${++this.seq}`;
-    const rec = { id, ts, mint, symbol, setup, decision, reasons, price, mc, metrics, warnings };
+    const rec = { id, ts, mint, symbol, setup, decision, reasons, price, mc, metrics, warnings, label };
     this.signals.push(rec); this.byId.set(id, rec); rec.out = {};
     if (this.signals.length > KEEP) { const old = this.signals.shift(); this.byId.delete(old.id); }
     this.append(this.f.sig, rec);

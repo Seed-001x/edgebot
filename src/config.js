@@ -115,6 +115,44 @@ export function loadConfig(env = process.env) {
     // Fresh momentum only: the 5m move must be a real share of the 1h move.
     // A coin up 50% on the hour but only +5% in the last 5m already made its move — that's chasing.
     trendFreshM5Ratio: num(env, 'TREND_FRESH_M5_RATIO', 0.3),
+    // ---- 'churn' detector (user 2026-10-14): a dumped coin BASING at its lows with a trade
+    // count that refuses to die — accumulation BEFORE any pop (the Vwhale shape: −53% peak→low,
+    // then ~180 tx/5m of two-way flow at support while its buy ratio sat ~0.50, so pop never
+    // fired). Needs the dump, the base, the sustained count, two-way flow, and a real average
+    // trade size — the avg floor is what separates accumulation from wash churn by construction:
+    // it sits above the botflow ($6) and dust ($1.5) HARD gate floors, and the B3 wash reject /
+    // hard gates still judge every churn candidate downstream.
+    churnEnabled: num(env, 'CHURN_ENABLED', 1) === 1,
+    churnMinDropPct: num(env, 'CHURN_MIN_DROP_PCT', 40),   // sampled peak → window low drop that counts as "dumped"
+    churnLowBandPct: num(env, 'CHURN_LOW_BAND_PCT', 10),  // current price must sit within this % of the window low
+    churnStableMin: num(env, 'CHURN_STABLE_MIN', 10),     // no new low for this long = the dump is over, it's basing
+    churnMinTxM5: num(env, 'CHURN_MIN_TX_M5', 120),       // trailing-5m trade count (buys+sells), sustained over the last 3 samples
+    churnMinBuyShare: num(env, 'CHURN_MIN_BUY_SHARE', 0.40), // two-way interest, not an exit stampede (deliberately below the pop 0.60)
+    churnMinAvgUsd: num(env, 'CHURN_MIN_AVG_USD', 10),    // volM5 / tx — above BOTFLOW_MAX_AVG_USD ($6) and DUST_MAX_AVG_USD ($1.5) so wash/dust flow can't qualify
+    churnWatchH: num(env, 'CHURN_WATCH_H', 3),            // basing watch: a coin that dumped stays watchlist-pinned this many hours past WATCH_TTL
+    churnWatchMax: num(env, 'CHURN_WATCH_MAX', 40),       // max pinned coins (oldest pin evicted first)
+
+    // ---- 'flow' detector (user 2026-10-14): tracked smart wallets' BUYS are the trigger,
+    // not price momentum. Polls each wallet's recent transactions over the existing Helius
+    // RPC (RPC_URLS) — NOT the PumpPortal stream (dark while its wallet sits under the 0.02
+    // SOL streaming threshold). A wallet nominates; the full gate stack still judges.
+    // FLOW_WALLETS empty = module inert. FLOW_SOLO_WALLETS: a solo wallet's buy fires on its
+    // own — no size bar, no confluence — above only the 0.1 SOL anti-dust floor. The user's
+    // solo wallets: Be24Gbf5KisDk1LcWWZsBn8dvB816By7YzYF5zWZnRR6 ("chairman") and
+    // 5B52w1ZW9tuwUduueP5J7HXz5AcGfruGoX6YoAudvyxG ("yenni"). FLOW_WALLET_NAMES maps any
+    // tracked address to a display name (address:name pairs) used in signal labels —
+    // "flow: yenni bought 0.85 SOL"; unnamed wallets label by shortened address.
+    flowEnabled: num(env, 'FLOW_ENABLED', 1) === 1,
+    flowWallets: (env.FLOW_WALLETS || '').split(',').map(s => s.trim()).filter(Boolean),
+    flowSoloWallets: (env.FLOW_SOLO_WALLETS || '').split(',').map(s => s.trim()).filter(Boolean),
+    flowNames: Object.fromEntries((env.FLOW_WALLET_NAMES || '').split(',').map(s => s.trim()).filter(Boolean)
+      .map(pair => { const i = pair.lastIndexOf(':'); return i > 0 ? [pair.slice(0, i).trim(), pair.slice(i + 1).trim()] : [pair, '']; })
+      .filter(([addr, name]) => addr && name)),
+    flowPollSec: num(env, 'FLOW_POLL_SEC', 30),           // per-wallet signature poll cadence
+    flowMinSol: num(env, 'FLOW_MIN_SOL', 1.0),            // a single tracked wallet buying >= this fires alone
+    flowWalletsConfl: num(env, 'FLOW_WALLETS_CONFL', 2),  // …or this many distinct wallets buying the same mint…
+    flowWindowMin: num(env, 'FLOW_WINDOW_MIN', 15),       // …inside this window (any size above the 0.1 SOL dust floor)
+
     // Pre-buy freshness guard: abort if the price moved hard between signal and execution (stale quote).
     prebuyMaxDumpPct: num(env, 'PREBUY_MAX_DUMP_PCT', 30), // fresh < signal*(1-30%) → dumped, abort
     prebuyMaxPumpPct: num(env, 'PREBUY_MAX_PUMP_PCT', 100), // fresh > signal*2 → chasing, abort
@@ -271,6 +309,18 @@ export function validateConfig(cfg) {
   if (cfg.freshSmallMc < 0) errs.push('FRESH_SMALL_MC must be >= 0');
   if (cfg.freshM5ShareH1 < 0 || cfg.freshM5ShareH1 > 1) errs.push('FRESH_M5_SHARE_H1 must be between 0 and 1 (0 = off)');
   if (cfg.maxBuyRatioM5 < 0 || cfg.maxBuyRatioM5 > 1) errs.push('MAX_BUY_RATIO_M5 must be between 0 and 1 (0 = off)');
+  if (cfg.churnMinDropPct < 0 || cfg.churnMinDropPct > 100) errs.push('CHURN_MIN_DROP_PCT must be between 0 and 100');
+  if (cfg.churnLowBandPct < 0 || cfg.churnLowBandPct > 100) errs.push('CHURN_LOW_BAND_PCT must be between 0 and 100');
+  if (cfg.churnStableMin < 0 || cfg.churnStableMin > 240) errs.push('CHURN_STABLE_MIN must be between 0 and 240');
+  if (cfg.churnMinTxM5 < 0) errs.push('CHURN_MIN_TX_M5 must be >= 0');
+  if (cfg.churnMinBuyShare < 0 || cfg.churnMinBuyShare > 1) errs.push('CHURN_MIN_BUY_SHARE must be between 0 and 1');
+  if (cfg.churnMinAvgUsd < 0) errs.push('CHURN_MIN_AVG_USD must be >= 0');
+  if (cfg.churnWatchH < 0 || cfg.churnWatchH > 72) errs.push('CHURN_WATCH_H must be between 0 and 72');
+  if (cfg.churnWatchMax < 0 || cfg.churnWatchMax > 500) errs.push('CHURN_WATCH_MAX must be between 0 and 500');
+  if (cfg.flowPollSec < 5 || cfg.flowPollSec > 600) errs.push('FLOW_POLL_SEC must be between 5 and 600');
+  if (cfg.flowMinSol < 0) errs.push('FLOW_MIN_SOL must be >= 0');
+  if (cfg.flowWalletsConfl < 1 || cfg.flowWalletsConfl > 20) errs.push('FLOW_WALLETS_CONFL must be between 1 and 20');
+  if (cfg.flowWindowMin < 1 || cfg.flowWindowMin > 240) errs.push('FLOW_WINDOW_MIN must be between 1 and 240');
   if (cfg.streakPauseN < 0 || cfg.streakPauseN > 50) errs.push('STREAK_PAUSE_N must be between 0 and 50 (0 = off)');
   if (cfg.streakPauseMinMin < 0 || cfg.streakPauseMinMin > 1440) errs.push('STREAK_PAUSE_MIN_MIN must be between 0 and 1440');
   if (cfg.streakHeatPct <= 0 || cfg.streakHeatPct > 1) errs.push('STREAK_HEAT_PCT must be between 0 and 1');

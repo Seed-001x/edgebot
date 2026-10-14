@@ -35,6 +35,20 @@ if (cfg.liveFeed) {
   process.on('SIGTERM', () => feed.stop());
 }
 
+// Smart-wallet flow (user 2026-10-14): tracked wallets' buys fire 'flow' signals into
+// the same onSignal pipeline. Polls the existing Helius RPC; inert unless FLOW_WALLETS
+// or FLOW_SOLO_WALLETS is set. Fail-open.
+if (cfg.flowEnabled && (cfg.flowWallets.length || cfg.flowSoloWallets.length)) {
+  const { FlowWatch } = await import('./flowWatch.js');
+  const flow = new FlowWatch({
+    cfg,
+    onTrigger: (mint, agg) => bot._evalFlow(mint, agg).catch(e => bot.err('flow', e)),
+  });
+  flow.start();
+  process.on('SIGTERM', () => flow.stop());
+  console.log(`[edgebot] flow watch: ${flow.wallets.length} wallets (${cfg.flowSoloWallets.length} solo), polling every ${cfg.flowPollSec}s`);
+}
+
 const every = (sec, fn) => { fn(); return setInterval(fn, sec * 1000); };
 every(cfg.discoverEverySec, () => bot.discoverTick());
 every(cfg.pollEverySec, () => bot.pollTick());

@@ -10,7 +10,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { History } from './history.js';
-import { detect, eligible, fastPop } from './detect.js';
+import { detect, detectChurn, eligible, fastPop } from './detect.js';
 import { runGates, hasHardFail, tempRuleViolation, blockedNameWord, stalePopCheck, extensionCheck, freshHistoryCheck } from './gate.js';
 import { evaluateExit } from './exits.js';
 import { bundleRisk, bundleDecision, pickTracked, linkedWeights, CREATOR_KEY } from './bundleWatch.js';
@@ -42,6 +42,7 @@ export class Bot {
     this.latestAt = new Map();   // mint -> ts of the latest view fetch
     this.streamBuf = new Map();  // mint -> recent stream trades (fast pop detection)
     this.fastEvalAt = new Map(); // mint -> ts of last fast-pop evaluation
+    this.churnPins = new Map(); // mint -> { at, until } basing watch: dumped coins stay watchlist-pinned past the normal TTL (churn detector)
     this.posFile = path.join(cfg.dataDir, 'positions.json');
     this.positions = this.loadPositions();
     this.busy = { discover: false, poll: false, pos: false };
@@ -342,13 +343,15 @@ export class Bot {
       this.evictBlacklisted();
       this.stats.sourceCounts = found.counts || {};
       this.stats.discoverTicks++; this.stats.lastDiscoverTs = n;
-      // prune: stale entries first; hard cap keeps the freshest, never drops open positions
+      // prune: stale entries first; hard cap keeps the freshest, never drops open positions.
+      // Churn-pinned mints (dumped coins on the basing watch) are exempt from both prunes
+      // until their pin expires — non-pinned mints behave exactly as before.
       const ttl = this.cfg.watchTtlMin * 60000;
       const held = new Set(this.positions.map(p => p.mint));
-      for (const [m, w] of this.watch) if (!held.has(m) && n - w.ts > ttl) this.watch.delete(m);
+      for (const [m, w] of this.watch) if (!held.has(m) && !this.churnPinned(m, n) && n - w.ts > ttl) this.watch.delete(m);
       if (this.watch.size > this.cfg.watchMax) {
         const sorted = [...this.watch.entries()].sort((a, b) => b[1].ts - a[1].ts);
-        for (const [m] of sorted.slice(this.cfg.watchMax)) if (!held.has(m)) this.watch.delete(m);
+        for (const [m] of sorted.slice(this.cfg.watchMax)) if (!held.has(m) && !this.churnPinned(m, n)) this.watch.delete(m);
       }
       this.history.prune(n, new Set([...this.watch.keys(), ...held]));
     } catch (e) { this.err('discover', e); } finally { this.busy.discover = false; this.saveStats(); }
@@ -386,7 +389,12 @@ export class Bot {
         this.history.record(v, n);
         this.journal.observe(v);
         if (this.positions.some(p => p.mint === mint)) continue;
-        const sig = detect(v, this.history.get(mint), tickCfg, n);
+        if (tickCfg.churnEnabled) this._updateChurnPins(mint, n);
+        // Pop/trend first, exactly as before; churn is an ADDITIONAL detector judged
+        // only when the classic pair passed (user 2026-10-14: "we still keep pop tho,
+        // this is just adding more signals").
+        let sig = detect(v, this.history.get(mint), tickCfg, n);
+        if (!sig && tickCfg.churnEnabled) sig = detectChurn(v, this.history.get(mint), tickCfg, n);
         if (!sig) continue;
         const last = this.lastSignal.get(mint) || 0;
         if (n - last < this.cfg.signalCooldownMin * 60000) continue;
@@ -403,13 +411,66 @@ export class Bot {
       candidates.sort((a, b) => b.sig.strength - a.sig.strength);
       for (const c of candidates.slice(0, this.cfg.maxSignalsPerTick)) {
         this.lastSignal.set(c.v.address, this.now());
+        if (c.sig.setup === 'churn') { this.stats.churn = this.stats.churn || { fires: 0 }; this.stats.churn.fires++; }
         await this.onSignal(c.v, c.sig).catch(e => this.err('onSignal', e));
       }
     } catch (e) { this.err('poll', e); } finally { this.busy.poll = false; this.saveStats(); }
   }
 
   skip(v, sig, reasons, warnings = []) {
-    this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'skipped', reasons, price: v.price, mc: v.mc, metrics: sig.metrics, warnings });
+    this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'skipped', reasons, price: v.price, mc: v.mc, metrics: sig.metrics, warnings, label: sig.label || null });
+  }
+
+  // ------------------------------------------------------------ churn basing watch
+  // A coin that dumped ≥ churnMinDropPct from its sampled peak gets pinned in the
+  // watchlist for churnWatchH hours past the normal TTL, so its basing phase stays
+  // sampled (a dumped coin otherwise falls off discovery within ~20 minutes and the
+  // churn detector never sees the base form). Capped, oldest pin evicted first.
+  _updateChurnPins(mint, n) {
+    const a = this.history.get(mint);
+    if (a.length >= 2) {
+      let peak = 0, low = Infinity;
+      for (const s of a) { if (s.price > peak) peak = s.price; if (s.price < low) low = s.price; }
+      if (peak > 0 && low > 0 && (peak - low) / peak * 100 >= this.cfg.churnMinDropPct) {
+        const existing = this.churnPins.get(mint);
+        this.churnPins.set(mint, { at: existing ? existing.at : n, until: n + this.cfg.churnWatchH * 3600000 });
+      }
+    }
+    if (this.churnPins.size > this.cfg.churnWatchMax) {
+      const sorted = [...this.churnPins.entries()].sort((x, y) => x[1].at - y[1].at);
+      for (const [m] of sorted.slice(0, this.churnPins.size - this.cfg.churnWatchMax)) this.churnPins.delete(m);
+    }
+  }
+
+  churnPinned(mint, n) {
+    const p = this.churnPins.get(mint);
+    if (!p) return false;
+    if (n > p.until) { this.churnPins.delete(mint); return false; }
+    return true;
+  }
+
+  // ------------------------------------------------------------ smart-wallet flow
+  /**
+   * A 'flow' trigger from the FlowWatch poller (tracked smart-wallet buys).
+   * Mirrors _evalFastPop: position + per-mint signal-cooldown guards, the shared
+   * eligible() tradability floor, then the exact same onSignal pipeline — gates,
+   * risk, exits all unchanged. The wallet nominates; it never bypasses.
+   */
+  async _evalFlow(mint, agg) {
+    const n = this.now();
+    if (this.positions.some(p => p.mint === mint)) return;
+    if (n - (this.lastSignal.get(mint) || 0) < this.cfg.signalCooldownMin * 60000) return;
+    const views = await this.d.fetchViews([mint]).catch(() => null);
+    const v = views && views.get(mint);
+    if (!v) return;
+    this.latest.set(mint, v); this.latestAt.set(mint, n); this.history.record(v, n);
+    this.noteMint(mint, 'flow'); // keep sampling it so classic/churn detectors can judge it too
+    if (eligible(v, this.cfg, n).length) return; // same tradability floor the classic detectors apply
+    this.lastSignal.set(mint, n);
+    this.stats.flow = this.stats.flow || { fires: 0 };
+    this.stats.flow.fires++;
+    console.log(`[flow] ${v.symbol} fired from wallet flow: ${agg.label}`);
+    await this.onSignal(v, { setup: 'flow', strength: agg.maxSol || 0, metrics: { wallets: agg.wallets || [], maxSol: agg.maxSol || 0, count: agg.count || 0, kind: agg.kind || null }, label: agg.label || null });
   }
 
   async onSignal(v, sig) {
@@ -587,7 +648,7 @@ export class Bot {
       console.log('[callout] failed:', e.message);
       this.lastCallout = { ok: false, error: e.message, symbol: v.symbol, ts: Date.now() };
     });
-    this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'taken', reasons: [], price: v.price, mc: v.mc, metrics: { ...sig.metrics, roundTrip: +rt.ratio.toFixed(3), sizeSol: size }, warnings: g.warnings });
+    this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'taken', reasons: [], price: v.price, mc: v.mc, metrics: { ...sig.metrics, roundTrip: +rt.ratio.toFixed(3), sizeSol: size }, warnings: g.warnings, label: sig.label || null });
     this.journal.trade({ type: 'open', id: pos.id, mint: pos.mint, symbol: pos.symbol, setup: pos.setup, entrySol: pos.entrySol, sig: fill.sig, simulated: fill.simulated, ts: n });
     // one-trade rules are spent the moment an entry executes
     if (this.stats.tempRules) { console.log(`[temp] one-trade rules spent on ${pos.symbol} — cleared`); this.stats.tempRules = null; this.saveStats(); }
