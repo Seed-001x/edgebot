@@ -337,7 +337,13 @@ export function loadConfig(env = process.env) {
     dataDir: env.DATA_DIR || './data',
     port: num(env, 'PORT', 3000),
   };
-  cfg.txFeeSol = (5000 + cfg.priorityFeeLamports) / 1e9; // SOL network cost of one swap transaction
+  // Burned cost of ONE swap transaction: the 5,000-lamport base fee (protocol
+  // constant) + the configured priority fee. Chain-calibrated (D2 + rent
+  // analysis, 2026-10-14): meta.fee on parsed buy txs was exactly 105,000
+  // lamports at the default priority fee. The ~0.001514 token-account deposit
+  // a buy also pays is NOT included — it is a refundable deposit the
+  // closeEmptyAccounts sweep recovers, not a burned fee.
+  cfg.txFeeSol = (5000 + cfg.priorityFeeLamports) / 1e9;
   return cfg;
 }
 

@@ -80,9 +80,9 @@ test('D1 close: a bot-managed exit carries snapshot, gates, stamp, fills, fees a
   assert.equal(close.decimals, 6);
   assert.ok(Math.abs(close.entryFillSol - 0.00002) < 1e-12, `entry fill ${close.entryFillSol}`);
   assert.ok(close.exitFillSol > 0 && close.exitFillUsd > 0, 'exit fill present on a bot-managed sell');
-  // fees: the accumulated estimate, labeled as an estimate — never fabricated as chain-exact
+  // fees: the accumulated calibrated tx fees, labeled as calibrated — never fabricated as chain-exact
   assert.ok(close.feesSol > 0);
-  assert.equal(close.feesSource, 'txFeeEstimate');
+  assert.equal(close.feesSource, 'calibratedTxFees');
   // % P&L alongside SOL P&L
   assert.ok(close.pnlSol != null && close.pnlPct != null);
   assert.ok(Math.abs(close.pnlPct - (close.pnlSol / close.entrySol) * 100) < 0.02, `pnlPct ${close.pnlPct}`);

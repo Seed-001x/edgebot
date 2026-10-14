@@ -129,7 +129,7 @@ test('FU1 manual exit: close + manual record carry the chain fill; the paired si
   assert.equal(close.sellTxFeeSol, 0.000005, 'the real sell fee, from the tx');
   assert.deepEqual(close.sellSigs, ['SX1']);
   assert.ok(Math.abs(close.feesSol - (buyFeeEst + 0.000005)) < 1e-9, 'feesSol = buy estimate + real sell fee');
-  assert.equal(close.feesSource, 'chainTxSellFee+txFeeEstimate', 'the mix is labeled as a mix');
+  assert.equal(close.feesSource, 'chainTxSellFee+calibratedTxFees', 'the mix is labeled as a mix');
   // the paired shadow comparison: manual side is the REAL proceeds, not the mark
   const st = bot.paired.pending.get(rec.id);
   assert.ok(st, 'paired watch registered');
@@ -154,7 +154,7 @@ test('FU1 manual exit: sell tx unreadable → today\'s nulls, mark-based pair, n
   const rec = await bot.recordManualExit(pos, 0.024, n, 'sold in own wallet');
   const close = bot.journal.trades.find(t => t.type === 'close' && t.id === rec.id);
   assert.equal(close.exitFillSol, null, 'no fill read — null preserved, never invented');
-  assert.equal(close.feesSource, 'txFeeEstimate', 'fees stay the plain estimate');
+  assert.equal(close.feesSource, 'calibratedTxFees', 'fees stay the calibrated tx-fee estimate');
   const st = bot.paired.pending.get(rec.id);
   assert.equal(st.manualMarkSol, 0.024, 'pair falls back to the mark');
   assert.equal(st.manualFillSource, null);

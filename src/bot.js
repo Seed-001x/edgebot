@@ -151,8 +151,15 @@ export class Bot {
     // comparison was empty by construction. An explicit value in `rec` always
     // wins; the funnel only fills what the caller didn't provide. Fields the
     // exec layer genuinely doesn't produce at record time are null, never
-    // invented: `feesSol` is the bot's accumulated per-tx fee ESTIMATE
-    // (feesSource says so) — no chain-exact fee is read anywhere today.
+    // invented. `feesSol` is the accumulated BURNED tx-fee estimate, calibrated
+    // on-chain (D2 + rent analysis, 2026-10-14): cfg.txFeeSol per transaction
+    // actually incurred — one for the buy, one per executed sell — where
+    // txFeeSol = 5,000 base + configured priority fee (parsed buy txs' meta.fee
+    // was exactly that). The 0.001514 token-account deposit is never counted:
+    // the closeEmptyAccounts sweep refunds it. feesSource 'calibratedTxFees'
+    // says exactly this — an estimate calibrated to chain, never chain-exact
+    // (the manual path's chain-read sell fee is the exception; its label
+    // says so).
     try {
       if (full.entry === undefined) full.entry = pos.entry || null;
       if (full.gates === undefined) full.gates = pos.gates || null;
@@ -164,7 +171,7 @@ export class Bot {
       if (full.entryFillUsd === undefined) full.entryFillUsd = full.entryFillSol != null && pos.solUsdEntry > 0 ? +(full.entryFillSol * pos.solUsdEntry).toFixed(10) : null;
       if (full.exitFillSol === undefined) full.exitFillSol = null;
       if (full.exitFillUsd === undefined) full.exitFillUsd = null;
-      if (full.feesSol === undefined) { full.feesSol = +((pos.feesSol || 0)).toFixed(6); full.feesSource = 'txFeeEstimate'; }
+      if (full.feesSol === undefined) { full.feesSol = +((pos.feesSol || 0)).toFixed(6); full.feesSource = 'calibratedTxFees'; }
       if (full.pnlPct === undefined) full.pnlPct = full.pnlSol != null && full.entrySol > 0 ? +(full.pnlSol / full.entrySol * 100).toFixed(2) : null;
     } catch { /* record enrichment must never disturb the close itself */ }
     this.journal.trade(full);
@@ -241,8 +248,8 @@ export class Bot {
 
   // Record fields a chain-read manual fill contributes — to the close record
   // and to the manual-exit record: the real per-token fill (chainTx-sourced),
-  // the real sell fee folded into feesSol alongside the buy-side estimate
-  // (feesSource says exactly that mix), and manualValueSol: what the manual
+  // the real sell fee folded into feesSol alongside the buy-side calibrated
+  // tx fees (feesSource says exactly that mix), and manualValueSol: what the manual
   // remainder actually realized — net (after-fee) proceeds scaled to the
   // books' full remainder at the realized per-token net price, so the paired
   // shadow comparison prices the SAME remainder its virtual position holds.
@@ -257,7 +264,7 @@ export class Bot {
       sellTxFeeSol: +(fill.feeSol || 0).toFixed(6),
       sellSigs: fill.sigs || [],
       feesSol: +(((pos.feesSol || 0)) + (fill.feeSol || 0)).toFixed(6),
-      feesSource: 'chainTxSellFee+txFeeEstimate',
+      feesSource: 'chainTxSellFee+calibratedTxFees',
       manualValueSol: booksWhole > 0 && fill.tokensWhole > 0 ? +((fill.proceedsNetSol * booksWhole) / fill.tokensWhole).toFixed(6) : fill.proceedsNetSol,
     };
   }
