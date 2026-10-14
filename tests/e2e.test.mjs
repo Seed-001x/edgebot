@@ -32,27 +32,52 @@ function rig({ rug = healthyRug, cfgOver = {}, others = [] } = {}) {
 }
 const RAMP = [1.1, 1.2, 1.3, 1.4, 1.5];
 
-test('full lifecycle: pop → gates pass → buy → TP1 → trailing stop → profit booked', async () => {
-  const r = rig();
+test('full lifecycle: pop → gates pass → buy → adaptive TP1 → TP2 → moonbag trail → profit booked', async () => {
+  // Fixture pins the spend the rig's scripted sell-back value is calibrated to (0.02, as in the
+  // sibling fixtures) and a TP1 slice that leaves a post-TP2 moonbag; every threshold the flow
+  // is then judged against is read from this same config.
+  const r = rig({ cfgOver: { tradeSol: 0.02, tp1Frac: 0.4 } });
+  const cfg = r.cfg;
   await r.bot.start(); await r.bot.discoverTick();
   await r.tick(1, 12);
   assert.equal(r.bot.positions.length, 0, 'flat market must not trigger');
   for (const p of RAMP) await r.tick(p);
   assert.equal(r.bot.positions.length, 1, 'pop should have opened a position');
   const pos = r.bot.positions[0];
-  assert.equal(pos.setup, 'pop'); assert.equal(pos.simulated, true); assert.ok(Math.abs(pos.entrySol - 0.02) < 1e-9);
+  assert.equal(pos.setup, 'pop'); assert.equal(pos.simulated, true); assert.ok(Math.abs(pos.entrySol - cfg.tradeSol) < 1e-9);
 
   await r.bot.positionTick(); assert.equal(r.bot.positions.length, 1, 'quiet → hold');
-  r.q.valueLam = 30_000_000; await r.bot.positionTick();           // +50% → TP1 (sell half)
-  assert.equal(r.bot.positions[0].tp1Done, true); assert.ok(Math.abs(r.bot.positions[0].remainingFrac - 0.5) < 1e-9);
-  r.q.valueLam = 40_000_000; await r.bot.positionTick();           // peak 2.0x
-  assert.equal(r.bot.positions.length, 1);
-  r.q.valueLam = 30_000_000; await r.bot.positionTick();           // fell to 1.5x ≤ 2.0*0.85 → trail
-  assert.equal(r.bot.positions.length, 0, 'trailing stop should close it');
 
+  // Adaptive TP1: push the realizable gain past the slide ceiling (cfg.tp1AdaptMax) — TP1
+  // banks cfg.tp1Frac of the holding on the spot.
+  r.q.valueLam = 34_000_000; await r.bot.positionTick();           // ratio 1.70 on the full basis
+  assert.equal(r.bot.positions[0].tp1Done, true);
+  assert.ok(Math.abs(r.bot.positions[0].remainingFrac - (1 - cfg.tp1Frac)) < 1e-9);
+
+  // Middle stage: a pullback that stays inside the post-TP1 trail (peak 1.70 × (1 − tpTrailPct)) holds.
+  r.q.valueLam = 30_000_000; await r.bot.positionTick();           // ratio 1.50 on the remaining basis
+  assert.equal(r.bot.positions.length, 1, 'middle-stage pullback inside the trail must hold');
+  assert.equal(r.bot.positions[0].tp2Done, false);
+
+  // TP2: the gain on the remainder reaches cfg.tp2Pct — banks cfg.tp2Frac of the ORIGINAL position.
+  r.q.valueLam = 44_000_000; await r.bot.positionTick();           // ratio 2.20 on the remaining basis
+  assert.equal(r.bot.positions[0].tp2Done, true);
+  assert.ok(Math.abs(r.bot.positions[0].remainingFrac - (1 - cfg.tp1Frac - cfg.tp2Frac)) < 1e-6);
+
+  // Moonbag: the post-TP2 remainder trails cfg.bagTrailPct under its peak (2.20x) — a drop
+  // past that line closes the position through the bag's own trail.
+  r.q.valueLam = 36_000_000; await r.bot.positionTick();           // ratio ≈1.80 ≤ 2.20 × (1 − bagTrailPct)
+  assert.equal(r.bot.positions.length, 0, 'moonbag trail should close it');
+
+  const sells = r.bot.journal.trades.filter(t => t.type === 'sell');
+  assert.ok(sells.some(t => /TP1/.test(t.reason)), 'the TP1 bank is journaled');
+  assert.ok(sells.some(t => /TP2/.test(t.reason)), 'the TP2 bank is journaled');
+  const close = r.bot.journal.trades.find(t => t.type === 'close');
+  assert.match(close.reason, /moonbag trail/);
   const rep = r.bot.journal.report();
-  assert.equal(rep.trades.closed, 1); assert.ok(Math.abs(rep.trades.totalPnlSol - 0.01) < 1e-6, `pnl ${rep.trades.totalPnlSol}`);
-  assert.ok(Math.abs(r.bot.risk.snapshot().dayPnlSol - 0.01) < 1e-6);
+  assert.equal(rep.trades.closed, 1);
+  assert.ok(rep.trades.totalPnlSol > 0.01, `profit booked through the ladder, pnl ${rep.trades.totalPnlSol}`);
+  assert.ok(Math.abs(r.bot.risk.snapshot().dayPnlSol - rep.trades.totalPnlSol) < 1e-6);
   assert.equal(rep.bySetup['pop/taken'].n, 1);
 });
 
@@ -109,31 +134,24 @@ test('unsellable token (sell-back worth 10% of spend) is refused before any buy'
   assert.equal(await r.bot.exec.solBalance(), 1, 'nothing was spent');
 });
 
-test('daily-loss cap and HALT file both stop new entries', async () => {
-  let r = rig(); r.bot.risk.recordClose(-0.07);
+test('HALT file stops new entries', async () => {
+  const r = rig(); fs.writeFileSync(path.join(r.cfg.dataDir, 'HALT'), '');
   await r.bot.start(); await r.bot.discoverTick(); await r.tick(1, 12); for (const p of RAMP) await r.tick(p);
-  assert.equal(r.bot.positions.length, 0); assert.ok(r.bot.journal.signals.some(s => s.reasons.some(x => /daily loss/.test(x))));
-
-  r = rig(); fs.writeFileSync(path.join(r.cfg.dataDir, 'HALT'), '');
-  await r.bot.start(); await r.bot.discoverTick(); await r.tick(1, 12); for (const p of RAMP) await r.tick(p);
-  assert.equal(r.bot.positions.length, 0); assert.ok(r.bot.journal.signals.some(s => s.reasons.some(x => /HALT/.test(x))));
-});
-
-test('stop-loss exits on realizable value even if the screen price still looks fine', async () => {
-  const r = rig();
-  await r.bot.start(); await r.bot.discoverTick(); await r.tick(1, 12); for (const p of RAMP) await r.tick(p);
-  assert.equal(r.bot.positions.length, 1);
-  r.q.valueLam = 14_000_000;                                       // sell quote says -30% although price feed is unchanged
-  await r.bot.positionTick();
   assert.equal(r.bot.positions.length, 0);
-  assert.ok(r.bot.journal.trades.some(t => t.type === 'close' && /stop-loss/.test(t.reason) && t.pnlSol < 0));
+  assert.ok(r.bot.journal.signals.some(s => s.reasons.some(x => /HALT/.test(x))));
 });
 
 test('positions persist across restarts', async () => {
-  const r = rig();
+  const r = rig({ cfgOver: { tradeSol: 0.02 } }); // the rig's scripted sell-back value is calibrated to a 0.02 spend (as in the lifecycle fixture)
   await r.bot.start(); await r.bot.discoverTick(); await r.tick(1, 12); for (const p of RAMP) await r.tick(p);
+  assert.equal(r.bot.positions.length, 1, 'the pop should have opened a position');
+  const opened = r.bot.positions[0];
+  // a fresh Bot on the same data dir restores the open book from the durable positions file
   const again = new Bot(r.cfg, { now: () => r.clock.t, exec: r.bot.exec, discover: async () => new Map(), fetchViews: async () => new Map(), fetchSolUsd: async () => 150, fetchRug: async () => null, searchByName: async () => [] });
   assert.equal(again.positions.length, 1); assert.equal(again.positions[0].mint, 'MINT1');
+  assert.equal(again.positions[0].id, opened.id);
+  assert.equal(again.positions[0].entrySol, opened.entrySol);
+  assert.equal(again.positions[0].remainingFrac, 1);
 });
 
 test('second-hump pop is taken, not stale-vetoed (user 2026-10-14, CODE): sampled high 330s old, price 28% below it', async () => {

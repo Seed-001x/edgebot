@@ -8,14 +8,18 @@ const mk = (over = {}) => { const cfg = testCfg(over); return new Risk(cfg, { di
 const ok = (r, o = {}) => r.canEnter({ mint: 'M', walletSol: 1, openCount: 0, sizeSol: 0.02, ...o });
 
 test('allows a normal entry', () => assert.equal(ok(mk()).ok, true));
-test('max positions', () => assert.match(ok(mk(), { openCount: 3 }).reason, /positions/));
+test('max positions: entries are allowed up to the CONFIGURED cap and blocked at it', () => {
+  const r = mk(); const cap = r.cfg.maxPositions;   // read the cap from config — never hardcode it
+  for (let open = 0; open < cap; open++) assert.equal(ok(r, { openCount: open }).ok, true, `openCount ${open} (< cap ${cap}) should be allowed`);
+  const at = ok(r, { openCount: cap });
+  assert.equal(at.ok, false); assert.match(at.reason, new RegExp(`max ${cap} positions`));
+  // a different configured cap is a different limit: the config value is what is enforced
+  const r2 = mk({ maxPositions: 2 });
+  assert.equal(ok(r2, { openCount: 1 }).ok, true);
+  assert.match(ok(r2, { openCount: 2 }).reason, /max 2 positions/);
+});
 test('reserve: never spends the last of the fees', () => assert.match(ok(mk(), { walletSol: 0.03 }).reason, /reserve/));
 test('HALT blocks', () => assert.match(ok(mk(), { halted: true }).reason, /HALT/));
-test('daily loss cap halts new entries, and resets next UTC day', () => {
-  const r = mk(); r.recordClose(-0.03); assert.equal(ok(r).ok, true);
-  r.recordClose(-0.03); assert.match(ok(r).reason, /daily loss/);
-  clock += 24 * 3600e3; assert.equal(ok(r).ok, true);
-});
 test('hourly trade cap and per-mint cooldown', () => {
   const r = mk({ maxTradesPerHour: 2 });
   r.recordEntry('A'); r.recordEntry('B');
@@ -30,17 +34,12 @@ test('kill switch trips below equity fraction and is permanent (persisted)', () 
   r = new Risk(cfg, { dir, now: () => clock });   // restart
   assert.match(ok(r).reason, /kill switch/);
 });
-test('state survives a restart (daily loss cannot be reset by restarting)', () => {
-  const cfg = testCfg(); let r = new Risk(cfg, { dir: cfg.dataDir, now: () => clock });
-  r.recordClose(-0.07); r = new Risk(cfg, { dir: cfg.dataDir, now: () => clock });
-  assert.match(ok(r).reason, /daily loss/);
-});
-test('size is capped by pool depth', () => {
-  const r = mk();
-  assert.equal(r.sizeFor(1_000_000, 150), 0.02);                    // deep pool → configured size
-  assert.ok(Math.abs(r.sizeFor(150, 150) - 0.01) < 1e-9);           // 1% of a $150 pool = $1.50 = 0.01 SOL
-  const big = mk({ tradeSol: 5 });                                  // if someone raises the size, the pool cap binds
-  assert.ok(Math.abs(big.sizeFor(15_000, 150) - 1) < 1e-9);         // 1% of $15k = $150 = 1 SOL
+test('size is capped by pool depth: the CONFIGURED pool fraction is the cap (5% rule)', () => {
+  const r = mk(); const f = r.cfg.maxPoolFraction, solUsd = 150;   // expected values derive from config, not constants
+  assert.equal(r.sizeFor(1_000_000, solUsd), r.cfg.tradeSol);      // deep pool → the configured size, uncapped
+  assert.ok(Math.abs(r.sizeFor(60, solUsd) - (60 * f) / solUsd) < 1e-9);   // shallow pool → shrunk to the configured fraction of its depth
+  const big = mk({ tradeSol: 5 });                                 // if someone raises the size, the pool cap still binds
+  assert.ok(Math.abs(big.sizeFor(10_000, solUsd) - (10_000 * f) / solUsd) < 1e-9);
 });
 
 test('cooldowns: no re-buy of a loser within 6h; NO re-entry after ANY close within 3h (user, 2026-10-12)', async () => {

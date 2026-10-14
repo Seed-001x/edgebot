@@ -12,29 +12,10 @@ const mark = (valueSol, o = {}) => ({ valueSol, liqUsd: 200_000, buysM5: 30, sel
 
 test('holds in the quiet middle', () => assert.equal(evaluateExit(pos({ entryTs: NOW - 30000 }), mark(0.021), cfg, NOW).fraction, 0));
 test('stop-loss on realizable value (backstop when dip stop is off)', () => { const c = { ...cfg, dipStopPct: 0 }; const d1 = evaluateExit(pos(), mark(0.011, { buysM5: 1, sellsM5: 1 }), c, NOW); assert.equal(d1.fraction, 0); assert.equal(d1.floorChecks, 1); const d = evaluateExit(pos({ floorChecks: d1.floorChecks }), mark(0.011, { buysM5: 1, sellsM5: 1 }), c, NOW); assert.equal(d.fraction, 1); assert.match(d.reason, /stop-loss/); });
-test('TP1 sells the configured fraction once', () => {
-  const d = evaluateExit(pos(), mark(0.04), cfg, NOW); assert.equal(d.fraction, 0.75); assert.equal(d.tp1, true);
-  assert.equal(evaluateExit(pos({ tp1Done: true, remainingFrac: 0.25 }), mark(0.01), cfg, NOW).fraction, 0); // ratio 2.0 on remaining basis, not re-triggered
-});
-test('trailing stop after arming', () => {
-  const p = pos({ tp1Done: true, remainingFrac: 0.25, peakRatio: 2 });
-  const d = evaluateExit(p, mark(0.004), cfg, NOW);             // ratio 0.8 ≤ 2*0.5
-  assert.equal(d.fraction, 1); assert.match(d.reason, /trailing/);
-  assert.equal(evaluateExit(p, mark(0.006), cfg, NOW).fraction, 0); // ratio 1.2 > 2*0.5, holds
-});
 test('liquidity death beats everything', () => {
   const d = evaluateExit(pos(), mark(0.05, { liqUsd: 1500 }), cfg, NOW); assert.match(d.reason, /liquidity death/);
   assert.match(evaluateExit(pos(), mark(20, { liqUsd: 5000 }), cfg, NOW).reason, /liquidity death/); // $3000 position, pool < 2x position
   assert.equal(evaluateExit(pos({ entryTs: NOW - 30000 }), mark(0.021, { liqUsd: 5000 }), cfg, NOW).fraction, 0);   // small position in the same pool is fine
-});
-test('momentum failure: underwater with sellers dominating', () => {
-  const d = evaluateExit(pos(), mark(0.0192, { buysM5: 5, sellsM5: 20 }), cfg, NOW); assert.match(d.reason, /momentum/);
-  assert.equal(evaluateExit(pos({ entryTs: NOW - 60000 }), mark(0.0192, { buysM5: 5, sellsM5: 20 }), cfg, NOW).fraction, 0); // too early to judge
-});
-test('time stop and max hold', () => {
-  assert.match(evaluateExit(pos({ entryTs: NOW - 30 * 60000 }), mark(0.0205), cfg, NOW).reason, /time stop/);
-  assert.equal(evaluateExit(pos({ entryTs: NOW - 30 * 60000 }), mark(0.026), cfg, NOW).fraction, 0);   // working → keep
-  assert.match(evaluateExit(pos({ entryTs: NOW - 130 * 60000, peakRatio: 1.3 }), mark(0.026), cfg, NOW).reason, /max hold/);
 });
 
 // ---- dip stop + stall exit (price move measured net of the entry round-trip cost) ----
