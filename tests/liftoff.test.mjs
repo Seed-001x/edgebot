@@ -114,6 +114,35 @@ test('liftoff: climb on flat activity does NOT fire — trade count never picked
   assert.equal(detectLiftoff(view(grindView), s, cfg, NOW), null);
 });
 
+test('liftoff: grind shape on dust volume does NOT fire — $543 of 5m volume is two people, not a crowd (STUDIO)', () => {
+  // the grind fixture passes every price/activity leg; only the dollars are missing
+  const s = grindSeries({ priceAt: grindPrice, flowAt: grindFlow });
+  assert.equal(detectLiftoff(view({ ...grindView, volM5: 543 }), s, cfg, NOW), null);
+});
+
+test('liftoff: the same grind with $6,000 of 5m volume fires — a crowd stands behind the twitch', () => {
+  const s = grindSeries({ priceAt: grindPrice, flowAt: grindFlow });
+  const r = detectLiftoff(view({ ...grindView, volM5: 6000 }), s, cfg, NOW);
+  assert.ok(r, 'expected a liftoff signal');
+  assert.equal(r.setup, 'liftoff');
+  assert.equal(r.metrics.volM5, 6000);
+  assert.equal(r.label, 'liftoff: +18% off 27m base, ratio 0.58');
+});
+
+test('liftoff: missing 5m volume does NOT fire — no volume figure, no floor cleared (same as trend freshness)', () => {
+  const s = grindSeries({ priceAt: grindPrice, flowAt: grindFlow });
+  const noVol = view(grindView);
+  delete noVol.volM5;
+  assert.equal(detectLiftoff(noVol, s, cfg, NOW), null);
+});
+
+test('liftoff: LIFTOFF_MIN_VOL_M5=0 turns the floor off — the dusty grind fires again (pre-floor behavior)', () => {
+  const s = grindSeries({ priceAt: grindPrice, flowAt: grindFlow });
+  const r = detectLiftoff(view({ ...grindView, volM5: 543 }), s, testCfg({ liftoffMinVolM5: 0 }), NOW);
+  assert.ok(r, 'expected a liftoff signal with the floor off');
+  assert.equal(r.setup, 'liftoff');
+});
+
 test('liftoff: disabled by LIFTOFF_ENABLED=0', () => {
   const s = grindSeries({ priceAt: grindPrice, flowAt: grindFlow });
   assert.equal(detectLiftoff(view(grindView), s, testCfg({ liftoffEnabled: false }), NOW), null);
@@ -130,7 +159,10 @@ test('liftoff config: defaults on with the specced values, validation rejects a 
   assert.equal(c.liftoffClimbMin, 10);
   assert.equal(c.liftoffMinBuyShare, 0.55);
   assert.equal(c.liftoffTxnBoost, 1.5);
+  assert.equal(c.liftoffMinVolM5, 5000);
   assert.equal(validateConfig(c).length, 0);
   const errs = validateConfig(loadConfig({ LIFTOFF_MIN_BUY_SHARE: '2' }));
   assert.ok(errs.some(e => e.includes('LIFTOFF_MIN_BUY_SHARE')));
+  const volErrs = validateConfig(loadConfig({ LIFTOFF_MIN_VOL_M5: '-1' }));
+  assert.ok(volErrs.some(e => e.includes('LIFTOFF_MIN_VOL_M5')));
 });

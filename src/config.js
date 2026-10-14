@@ -151,6 +151,7 @@ export function loadConfig(env = process.env) {
     liftoffClimbMin: num(env, 'LIFTOFF_CLIMB_MIN', 10),            // the recent window judged for rising lows / activity pickup; the base is everything older in the lookback
     liftoffMinBuyShare: num(env, 'LIFTOFF_MIN_BUY_SHARE', 0.55),   // latest view's trailing-5m buy share floor
     liftoffTxnBoost: num(env, 'LIFTOFF_TXN_BOOST', 1.5),           // climb-window avg trade count must be at least this × the base window's
+    liftoffMinVolM5: num(env, 'LIFTOFF_MIN_VOL_M5', 5000),         // 5m DOLLAR volume floor (user 2026-10-14: liftoff counted trades, not dollars — STUDIO fired on ~$543 of 5m volume; the floor demands a crowd stands behind the twitch; 0 = off)
 
     // ---- 'flow' detector (user 2026-10-14): tracked smart wallets' BUYS are the trigger,
     // not price momentum. Polls each wallet's recent transactions over the existing Helius
@@ -361,6 +362,7 @@ export function validateConfig(cfg) {
   if (cfg.liftoffClimbMin < 0 || cfg.liftoffClimbMin > 120) errs.push('LIFTOFF_CLIMB_MIN must be between 0 and 120');
   if (cfg.liftoffMinBuyShare < 0 || cfg.liftoffMinBuyShare > 1) errs.push('LIFTOFF_MIN_BUY_SHARE must be between 0 and 1');
   if (cfg.liftoffTxnBoost < 0) errs.push('LIFTOFF_TXN_BOOST must be >= 0');
+  if (cfg.liftoffMinVolM5 < 0) errs.push('LIFTOFF_MIN_VOL_M5 must be >= 0');
   if (cfg.flowPollSec < 5 || cfg.flowPollSec > 600) errs.push('FLOW_POLL_SEC must be between 5 and 600');
   if (cfg.flowMinSol < 0) errs.push('FLOW_MIN_SOL must be >= 0');
   if (cfg.flowWalletsConfl < 1 || cfg.flowWalletsConfl > 20) errs.push('FLOW_WALLETS_CONFL must be between 1 and 20');

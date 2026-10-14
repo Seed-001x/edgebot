@@ -185,6 +185,9 @@ export function detectChurn(v, samples, cfg, now) {
 //   the latest view's 5m buy share must be ≥ liftoffMinBuyShare; and the climb
 //   window's average per-sample trade count (buysM5+sellsM5 snapshots — the same
 //   fields churn reads) must be ≥ liftoffTxnBoost × the base window's average.
+//   The latest view's 5m volume must also clear liftoffMinVolM5: trade COUNT
+//   alone lets a dozen dust trades fake a crowd (user 2026-10-14 — STUDIO
+//   fired on ~$543 of 5m volume), so the twitch needs dollars behind it too.
 export function detectLiftoff(v, samples, cfg, now) {
   if (!cfg.liftoffEnabled) return null;
   if (eligible(v, cfg, now).length) return null;
@@ -232,13 +235,19 @@ export function detectLiftoff(v, samples, cfg, now) {
   const ratio5 = buyRatio(v.buysM5 || 0, v.sellsM5 || 0);
   if (ratio5 == null || ratio5 < cfg.liftoffMinBuyShare) return null;
 
+  // DOLLAR VOLUME (user 2026-10-14): the twitch must carry real money — the
+  // legs above count trades, and a dozen dust trades pass them (STUDIO fired
+  // on ~$543 of 5m volume). Same shape as trend's volume-freshness leg:
+  // missing volume does not clear the floor.
+  if (cfg.liftoffMinVolM5 > 0 && (v.volM5 || 0) < cfg.liftoffMinVolM5) return null;
+
   // ACTIVITY PICKUP: the climb must be trading harder than the base did.
   const txAvg = (arr) => arr.reduce((acc, s) => acc + (s.buysM5 || 0) + (s.sellsM5 || 0), 0) / arr.length;
   const baseTx = txAvg(base), climbTx = txAvg(climb);
   if (!(baseTx > 0) || !(climbTx >= cfg.liftoffTxnBoost * baseTx)) return null;
 
   const baseMin = Math.round((base[base.length - 1].ts - base[0].ts) / 60000);
-  const metrics = { gainPct: +gainPct.toFixed(1), baseRangePct: +baseRangePct.toFixed(1), buyRatioM5: +ratio5.toFixed(2), txnBoost: +(climbTx / baseTx).toFixed(2), baseMin };
+  const metrics = { gainPct: +gainPct.toFixed(1), baseRangePct: +baseRangePct.toFixed(1), buyRatioM5: +ratio5.toFixed(2), volM5: v.volM5, txnBoost: +(climbTx / baseTx).toFixed(2), baseMin };
   return {
     setup: 'liftoff',
     // Strength is the gain off the base low itself (10–35 by construction) — the
