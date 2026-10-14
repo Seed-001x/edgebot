@@ -105,6 +105,7 @@ export function loadConfig(env = process.env) {
     trendMinBuyRatio: num(env, 'TREND_MIN_BUY_RATIO', 0.60), // 0.52 → 0.60 (entry-fixes A5) — MageTrail got in at 0.52 and stopped out
     // Trend pause + quality guards (user 2026-10-13, entry-fixes B1–B5; tonight's trend went 0-for-9):
     trendEnabled: num(env, 'TREND_ENABLED', 0),          // B1: 0 = trend detector paused; pop keeps running. Re-enable only with B2–B5 in and a backtest showing trend net positive.
+    trendShadow: num(env, 'TREND_SHADOW', 0),            // shadow-only (user 2026-10-14, forward plan step 1b): 1 = trend signals are journaled + outcome-tracked but never bought; detector keeps running. 0 = live (today's behavior).
     trendMinMc: num(env, 'TREND_MIN_MC', 30000),         // B4: trend needs a real market cap (BORING $15k, Urara $15.6k); 0 = off
     trendMinBuyRatioH1: num(env, 'TREND_MIN_BUY_RATIO_H1', 0.55), // B2: the whole HOUR must be buy-dominated, not just a 14-trade 5m blip (Urara: 411 buys vs 445 sells on the hour); 0 = off
     trendMinTxnsM5: num(env, 'TREND_MIN_TXNS_M5', 30),   // B2: at least this many 5m trades before a ratio counts as demand; 0 = off
@@ -143,6 +144,7 @@ export function loadConfig(env = process.env) {
     // trend's old price-freshness rule for the same reason. Churn catches the base
     // BEFORE any move; liftoff catches the first confirmed leg up off it.
     liftoffEnabled: num(env, 'LIFTOFF_ENABLED', 1) === 1,
+    liftoffShadow: num(env, 'LIFTOFF_SHADOW', 0) === 1,   // shadow-only (user 2026-10-14, forward plan step 1b): true = liftoff signals are journaled + outcome-tracked but never bought; detector keeps running. false = live (today's behavior).
     liftoffMinHistoryMin: num(env, 'LIFTOFF_MIN_HISTORY_MIN', 20), // minutes of sampled history before a base can be judged at all
     liftoffLookbackMin: num(env, 'LIFTOFF_LOOKBACK_MIN', 45),      // base + climb are judged inside this trailing window
     liftoffBaseRangePct: num(env, 'LIFTOFF_BASE_RANGE_PCT', 15),   // (baseHigh − baseLow) / baseLow ceiling for the base to count as "flat"
@@ -363,6 +365,7 @@ export function validateConfig(cfg) {
   if (cfg.paceRelax < 0 || cfg.paceRelax > 1) errs.push('PACE_RELAX must be 0 or 1');
   if (cfg.fastPopMaxGainPct < 0 || cfg.fastPopMaxGainPct > 5000) errs.push('FAST_POP_MAX_GAIN_PCT must be between 0 and 5000 (0 = off)');
   if (cfg.trendEnabled < 0 || cfg.trendEnabled > 1) errs.push('TREND_ENABLED must be 0 or 1');
+  if (cfg.trendShadow < 0 || cfg.trendShadow > 1) errs.push('TREND_SHADOW must be 0 or 1');
   if (cfg.trendMinMc < 0) errs.push('TREND_MIN_MC must be >= 0 (0 = off)');
   if (cfg.trendMinBuyRatioH1 < 0 || cfg.trendMinBuyRatioH1 > 1) errs.push('TREND_MIN_BUY_RATIO_H1 must be between 0 and 1 (0 = off)');
   if (cfg.trendMinTxnsM5 < 0) errs.push('TREND_MIN_TXNS_M5 must be >= 0 (0 = off)');

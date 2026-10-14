@@ -49,7 +49,7 @@ export class Bot {
     this.posFile = path.join(cfg.dataDir, 'positions.json');
     this.positions = this.loadPositions();
     this.busy = { discover: false, poll: false, pos: false };
-    this.stats = { discoverTicks: 0, pollTicks: 0, positionTicks: 0, signals: 0, entries: 0, exits: 0, errors: 0, lastError: null, sourceCounts: {}, lastDiscoverTs: 0, lastPollTs: 0, closesSinceReport: 0, lastReportTs: 0, reportIndex: 0, tempRules: null, fastPop: { fires: 0 }, ratchetShadow: { wouldFire: 0, completed: 0 }, exitConfirm: { confirmed: 0, cancelled: 0 }, liveFeed: { connected: false, events: 0, added: 0, reconnects: 0, lastEventTs: 0, lastError: null } };
+    this.stats = { discoverTicks: 0, pollTicks: 0, positionTicks: 0, signals: 0, entries: 0, exits: 0, errors: 0, lastError: null, sourceCounts: {}, lastDiscoverTs: 0, lastPollTs: 0, closesSinceReport: 0, lastReportTs: 0, reportIndex: 0, tempRules: null, fastPop: { fires: 0 }, ratchetShadow: { wouldFire: 0, completed: 0 }, exitConfirm: { confirmed: 0, cancelled: 0 }, shadowSignals: {}, liveFeed: { connected: false, events: 0, added: 0, reconnects: 0, lastEventTs: 0, lastError: null } };
     this.statsFile = path.join(cfg.dataDir, 'stats.json');
     this.entryTimes = []; // timestamps of entries (for pace keeper)
     this.PACE_TARGET = 120; // target trades per hour (2 per min)
@@ -476,6 +476,19 @@ export class Bot {
     this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'skipped', reasons, price: v.price, mc: v.mc, metrics: sig.metrics, warnings, label: sig.label || null });
   }
 
+  // Setups currently in shadow-only mode (user 2026-10-14, forward plan step 1b):
+  // the detector still fires and the signal is journaled + outcome-tracked, but it
+  // never reaches the gate/risk/buy machinery and never touches the position slot.
+  shadowedSetup(setup) {
+    return (setup === 'trend' && !!this.cfg.trendShadow) || (setup === 'liftoff' && !!this.cfg.liftoffShadow);
+  }
+
+  shadow(v, sig) {
+    this.stats.shadowSignals = this.stats.shadowSignals || {};
+    this.stats.shadowSignals[sig.setup] = (this.stats.shadowSignals[sig.setup] || 0) + 1;
+    this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'shadow', reasons: [`shadow: ${sig.setup} is shadow-only — logged + outcome-tracked, no buy`], price: v.price, mc: v.mc, metrics: sig.metrics, warnings: [], label: sig.label || null });
+  }
+
   // ------------------------------------------------------------ churn basing watch
   // A coin that dumped ≥ churnMinDropPct from its sampled peak gets pinned in the
   // watchlist for churnWatchH hours past the normal TTL, so its basing phase stays
@@ -571,6 +584,16 @@ export class Bot {
     if (blockedWord) {
       console.log(`[nameblock] skip: "${v.name}" contains blocked word "${blockedWord}"`);
       return this.skip(v, sig, [`nameblock: name "${v.name || v.symbol}" contains blocked word "${blockedWord}"`]);
+    }
+    // Shadow-only setups (user 2026-10-14, forward plan step 1b): a shadowed setup's
+    // signal is journaled with decision 'shadow' — journal.signal registers it for the
+    // same r5/r15/r60 outcome tracking every taken/skipped signal gets — and the pipeline
+    // stops here: no extension/fresh/gate checks, no risk check, no buy, no position,
+    // stats.entries untouched. User vetoes above (blacklists, name block) still journal
+    // as ordinary skips, exactly as before.
+    if (this.shadowedSetup(sig.setup)) {
+      console.log(`[shadow] ${v.symbol} (${sig.setup}) — shadow-only: logged + outcome-tracked, no buy`);
+      return this.shadow(v, sig);
     }
     // Extension cap (user 2026-10-13): how far above the trailing-hour sampled low — the base
     // the move broke out from — an entry may sit. OTTO was bought at the ceiling of a long
