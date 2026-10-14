@@ -337,7 +337,7 @@ export function validateConfig(cfg) {
   if (cfg.fastPopMaxDrop < 0 || cfg.fastPopMaxDrop > 0.9) errs.push('FAST_POP_MAX_DROP must be 0..0.9');
   if (cfg.fastPopMaxSubs < 1 || cfg.fastPopMaxSubs > 1000) errs.push('FAST_POP_MAX_SUBS must be 1..1000');
   if (cfg.stopLoss <= 0 || cfg.stopLoss >= 1) errs.push('STOP_LOSS must be between 0 and 1');
-  if (cfg.stopHardPct <= 0 || cfg.stopHardPct >= 1) errs.push('STOP_HARD_PCT must be between 0 and 1');
+  if (cfg.stopHardPct < 0 || cfg.stopHardPct >= 1) errs.push('STOP_HARD_PCT must be 0 (off) or between 0 and 1');
   if (cfg.stopHardConfirmChecks < 1 || cfg.stopHardConfirmChecks > 10) errs.push('STOP_HARD_CONFIRM_CHECKS must be between 1 and 10');
   if (cfg.stopHardConfirmSec < 0 || cfg.stopHardConfirmSec > 60) errs.push('STOP_HARD_CONFIRM_SEC must be between 0 and 60');
   if (cfg.stopGraceSec < 0 || cfg.stopGraceSec > 120) errs.push('STOP_GRACE_SEC must be between 0 and 120');
