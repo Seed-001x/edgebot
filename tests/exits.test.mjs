@@ -265,3 +265,62 @@ test('moonbag: post-TP2 remainder rides a 15% trail under its recorded peak, imm
   const d = evaluateExit(p, mark(0.02 * 0.25 * 2.35), cfg, NOW);                    // 2.35x: 16.1% off peak — past the -15% line
   assert.equal(d.fraction, 1); assert.match(d.reason, /moonbag trail/);
 });
+
+// ---- break-even ratchet (user 2026-10-14, "Build it — arm at +5%"): a pre-TP1 position whose
+//      peak realizable move reached +5% can no longer become a loser — a fall back to +2%
+//      sells it in full at ~scratch. Judged on move/peakMove (round-trip-adjusted), never the
+//      chart. beCfg isolates the ratchet: dip stop off, probation off (shared cfg), young ages
+//      keep the stall/momentum/time sections out of the way except where a test says so. ----
+const beCfg = { ...cfg, dipStopPct: 0 };
+test('break-even ratchet: peaked +12.4%, back at the +2% trigger — sells in full, reason names both prints', () => {
+  // round-trip 0.95: the +1.8% is a MOVE print (ratio 0.9671 under water on raw value) —
+  // the ratchet judges the price path, not the sunk round-trip cost, and fires at 30s old,
+  // long before any stall deadline (the DOG shape: peaked +22%, dead inside a minute).
+  const p = pos({ entryTs: NOW - 30 * S, entryRoundTrip: 0.95, peakRatio: 1.068, peakMove: 1.124 });
+  const d = evaluateExit(p, mark(0.019342), beCfg, NOW);   // move = 0.9671 / 0.95 = 1.018
+  assert.equal(d.fraction, 1);
+  assert.equal(d.reason, 'break-even ratchet (peaked +12.4%, back to +1.8%)');
+});
+test('break-even ratchet: arms at exactly +5% peak, fires at exactly +2%', () => {
+  const d = evaluateExit(pos({ entryTs: NOW - 30 * S, peakMove: 1.05 }), mark(0.0204), beCfg, NOW); // move 1.02
+  assert.equal(d.fraction, 1);
+  assert.equal(d.reason, 'break-even ratchet (peaked +5.0%, back to +2.0%)');
+});
+test('break-even ratchet: peak only +4% never arms — +2% and below still hold, other exits keep it', () => {
+  const p = pos({ entryTs: NOW - 30 * S, peakMove: 1.04 });
+  assert.equal(evaluateExit(p, mark(0.0204), beCfg, NOW).fraction, 0);  // back at +2%: no arm, no fire
+  assert.equal(evaluateExit(p, mark(0.0194), beCfg, NOW).fraction, 0);  // through break-even to -3%: still not the ratchet's
+});
+test('break-even ratchet: armed, dips only to +3% — no fire', () => {
+  assert.equal(evaluateExit(pos({ entryTs: NOW - 30 * S, peakMove: 1.12 }), mark(0.0206), beCfg, NOW).fraction, 0); // move 1.03
+});
+test('break-even ratchet: armed and still rising — untouched', () => {
+  assert.equal(evaluateExit(pos({ entryTs: NOW - 30 * S, peakMove: 1.12 }), mark(0.024), beCfg, NOW).fraction, 0); // move 1.20, under the TP1 arm
+});
+test('break-even ratchet: TP1 done — never fires even at +2%, the ladder owns the remainder', () => {
+  const p = pos({ entryTs: NOW - 30 * S, tp1Done: true, remainingFrac: 0.6, peakRatio: 1.30, peakMove: 1.30 });
+  const d = evaluateExit(p, mark(0.02 * 0.6 * 1.02), { ...beCfg, lockKeep: 0 }, NOW); // ratio 1.02 on the remaining basis
+  assert.equal(d.fraction, 0);
+});
+test('break-even ratchet: BE_ARM_PCT=0 disables it entirely', () => {
+  const p = pos({ entryTs: NOW - 30 * S, peakMove: 1.124 });
+  assert.equal(evaluateExit(p, mark(0.02036), { ...beCfg, beArmPct: 0 }, NOW).fraction, 0); // move 1.018, would fire if on
+});
+test('break-even ratchet vs probation: deadline check starts probation first; on probation the +2% fade scratches here, the deep dive keeps the leash label', () => {
+  const probBeCfg = { ...cfg, stallSec: 180, stallProbationSec: 300, stallLeashPct: 0.07, stallBandPct: 0.05, stallBandUpPct: 0.03, dipStopPct: 0 };
+  // deadline check, in band at +0.5%: probation starts — the stall section returns first, ratchet defers to the next check
+  const start = evaluateExit(pos({ entryTs: NOW - 180 * S, peakMove: 1.10 }), mark(0.0201), probBeCfg, NOW);
+  assert.equal(start.fraction, 0); assert.equal(start.probationSince, NOW);
+  // on probation, faded to +1.8% (inside the band, leash/expiry unmet): the ratchet scratches it
+  const faded = evaluateExit(pos({ entryTs: NOW - 204 * S, peakMove: 1.10, probationSince: NOW - 24 * S }), mark(0.02036), probBeCfg, NOW);
+  assert.equal(faded.fraction, 1); assert.match(faded.reason, /break-even ratchet/);
+  // on probation, deep dive to -8.5%: the leash (judged inside the stall block, before the ratchet) keeps its own label
+  const dive = evaluateExit(pos({ entryTs: NOW - 204 * S, peakMove: 1.10, probationSince: NOW - 24 * S }), mark(0.0183), probBeCfg, NOW);
+  assert.equal(dive.fraction, 1); assert.match(dive.reason, /probation leash/);
+});
+test('break-even ratchet: no recorded peakMove (legacy position) never arms — the round-trip seed cannot fake a breakout', () => {
+  // round-trip 0.90 with no stored peakMove: the peakRatio seed would read 1/0.9 = +11%,
+  // but the ratchet arms only off a peak the position actually tracked — a flat print holds.
+  const p = pos({ entryTs: NOW - 30 * S, entryRoundTrip: 0.9 });
+  assert.equal(evaluateExit(p, mark(0.018), beCfg, NOW).fraction, 0); // flat: move 1.00
+});

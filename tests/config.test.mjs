@@ -47,6 +47,20 @@ test('shallow-dip veto 2026-10-14: defaults 0.10 / 60 min, 0 = off accepted, bad
   assert.ok(validateConfig(loadConfig({ SHALLOW_DIP_WINDOW_MIN: '721' })).some(e => e.includes('SHALLOW_DIP_WINDOW_MIN')));
 });
 
+test('break-even ratchet 2026-10-14: defaults +5% arm / +2% trigger, 0 = off accepted, trigger must sit below arm', () => {
+  const c = loadConfig({});
+  assert.equal(c.beArmPct, 0.05);
+  assert.equal(c.beTriggerPct, 0.02);
+  assert.equal(validateConfig(c).length, 0);
+  assert.equal(validateConfig(loadConfig({ BE_ARM_PCT: '0' })).length, 0); // 0 = ratchet off, valid — never a boot poison
+  assert.equal(loadConfig({ BE_ARM_PCT: '0.08' }).beArmPct, 0.08);
+  assert.equal(loadConfig({ BE_TRIGGER_PCT: '0.01' }).beTriggerPct, 0.01);
+  assert.ok(validateConfig(loadConfig({ BE_ARM_PCT: '-0.1' })).some(e => e.includes('BE_ARM_PCT')));
+  assert.ok(validateConfig(loadConfig({ BE_TRIGGER_PCT: '-0.01' })).some(e => e.includes('BE_TRIGGER_PCT')));
+  assert.ok(validateConfig(loadConfig({ BE_TRIGGER_PCT: '0.05' })).some(e => e.includes('BE_TRIGGER_PCT'))); // trigger == default arm: no cushion, rejected
+  assert.ok(validateConfig(loadConfig({ BE_ARM_PCT: '0.03', BE_TRIGGER_PCT: '0.04' })).some(e => e.includes('BE_TRIGGER_PCT')));
+});
+
 test('probation leash 2026-10-14: defaults 300s probation / 7% leash, 0 accepted as off, bad values rejected', () => {
   const c = loadConfig({});
   assert.equal(c.stallProbationSec, 300);

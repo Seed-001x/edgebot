@@ -276,6 +276,8 @@ export function loadConfig(env = process.env) {
     stallBandUpPct: num(env, 'STALL_BAND_UP_PCT', 0.03),  // stall dead-zone UPPER edge only — tighter than the downside: at stallSec, up more than +3% is working, not stalled; the lower edge stays stallBandPct (user 2026-10-14: UNTXED stalled out at +2.2% and then ripped)
     stallProbationSec: num(env, 'STALL_PROBATION_SEC', 300), // probation leash (user 2026-10-14, Musclecat): with this > 0, a position inside the band at the stall deadline is NOT sold — it goes on probation until this many seconds FROM ENTRY (then sells if still in the range); 0 = probation OFF (sell at the deadline, pre-leash behavior)
     stallLeashPct: num(env, 'STALL_LEASH_PCT', 0.07),     // while on probation, a price move to/below −this from entry sells instantly — the tight leash stands in for the distant −17% hard floor, which was the only other owner of a band-sitter (Musclecat: flat past the 180s deadline, dove to the floor in ~20s, −0.0169); 0 = no leash, expiry only
+    beArmPct: num(env, 'BE_ARM_PCT', 0.05),               // break-even ratchet ARM (user 2026-10-14, "Build it — arm at +5%"): once a pre-TP1 position's peak realizable move reaches +this, the trade can no longer become a loser; 0 = ratchet off
+    beTriggerPct: num(env, 'BE_TRIGGER_PCT', 0.02),       // ...an armed position sells in full when the move falls back to +this — the cushion above break-even exists so the executed fill lands at true scratch after the sell's own slippage (user approved +1-2%)
     tp1Pct: num(env, 'TP1_PCT', 0.25),                    // bank part on the jump: +25% in your pocket after slippage + SOL fees
     tp1Frac: num(env, 'TP1_FRAC', 0.65),                  // ...sell 65% of it
     // TP ladder (user 2026-10-13): TP1 is adaptive — it ARMS at tp1Pct and the bank target slides up
@@ -407,6 +409,9 @@ export function validateConfig(cfg) {
   if (cfg.stallBandUpPct < 0 || cfg.stallBandUpPct > 1) errs.push('STALL_BAND_UP_PCT must be between 0 and 1 (upside edge of the entry-stall dead zone)');
   if (cfg.stallProbationSec < 0) errs.push('STALL_PROBATION_SEC must be >= 0 (0 = probation off, sell at the stall deadline)');
   if (cfg.stallLeashPct < 0 || cfg.stallLeashPct > 0.9) errs.push('STALL_LEASH_PCT must be between 0 and 0.9 (0 = no leash, probation expiry only)');
+  if (cfg.beArmPct < 0 || cfg.beArmPct >= 1) errs.push('BE_ARM_PCT must be 0 (off) or between 0 and 1');
+  if (cfg.beTriggerPct < 0 || cfg.beTriggerPct >= 1) errs.push('BE_TRIGGER_PCT must be between 0 and 1');
+  if (cfg.beArmPct > 0 && cfg.beTriggerPct >= cfg.beArmPct) errs.push('BE_TRIGGER_PCT must be below BE_ARM_PCT when the break-even ratchet is on');
   if (cfg.realMode && cfg.rpcUrls.length === 0) errs.push('RPC_URLS required in real mode');
   return errs;
 }

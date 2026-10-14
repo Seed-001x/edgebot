@@ -187,6 +187,35 @@ export function evaluateExit(pos, mark, cfg, now) {
     }
   }
 
+  // 4c. break-even ratchet (user 2026-10-14, "Build it — arm at +5%", guarding UNDER the TP
+  //     ladder): mined from the user's own pre-TP1 closes — of 22 measurable positions
+  //     reconstructed candle-by-candle, EVERY one that peaked >= +5% on the realizable move
+  //     and then returned to break-even closed red (9 of 9, ~0.142 SOL of losses at a +5%
+  //     arm; DOG peaked +22% and died at the old hard floor, LURK peaked +28% and closed
+  //     -0.018). So once the tracked peak move (peakMove, judged on `move` like the stall,
+  //     never the raw chart) reaches beArmPct, the trade can no longer become a loser: a
+  //     fall back to beTriggerPct sells the FULL position at ~scratch — the +2% cushion over
+  //     break-even exists so the executed fill lands at true scratch after the sell's own
+  //     slippage (user approved +1-2%). Pre-TP1 ONLY: once TP1 fires, the ladder's own
+  //     machinery (post-TP1 trail with its entry floor) owns the remainder and this never
+  //     fires. Judged on the position's own peak path, independent of the stall/probation
+  //     timeline — it can fire inside the first minute. It sits AFTER the stall block so a
+  //     probationed position keeps the leash's own label on a deep dive (the leash's -7%
+  //     condition is met first inside 4b), while an armed position on probation still
+  //     scratches here when it fades to the trigger line. Arming needs no extra persisted
+  //     state: it derives from peakMove, which bot.js already persists every check.
+  //     Arming requires the position's OWN recorded peakMove: a position carrying none
+  //     (legacy) never arms — the peakRatio-derived seed used elsewhere would fake a
+  //     breakout off the round-trip (peakRatio floored at 1 / base < 1), so the ratchet
+  //     fails open on untracked peaks like every other sampled-data check in this bot.
+  //     beArmPct = 0 disables the ratchet. (The mining undercounts the shakeout cost —
+  //     winners that dipped to break-even and then ran usually TP1'd out of the measured
+  //     set — the user took the +5% arm with that caveat on the table.)
+  if (!pos.tp1Done && cfg.beArmPct > 0 && pos.peakMove != null && peakMove >= 1 + cfg.beArmPct && move <= 1 + cfg.beTriggerPct) {
+    const pctFmt = (x) => `${x >= 0 ? '+' : ''}${(x * 100).toFixed(1)}%`;
+    return out(1, `break-even ratchet (peaked ${pctFmt(peakMove - 1)}, back to ${pctFmt(move - 1)})`);
+  }
+
   // 5. momentum failure: underwater, 10 min in, essentially no buyers (only sell when truly dead)
   if (heldMin >= 10 && ratio < 1 && mark.buysM5 != null && mark.buysM5 <= 1 && mark.sellsM5 > mark.buysM5 * 3) return out(1, 'momentum failure (no buyers)');
 
