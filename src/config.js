@@ -168,6 +168,7 @@ export function loadConfig(env = process.env) {
     cloneMinVolMultiple: num(env, 'CLONE_MIN_VOL_MULTIPLE', 2),
     linkedDumpMaxDrain: num(env, 'LINKED_DUMP_MAX_DRAIN', 0.35),
     creatorMaxDrain: num(env, 'CREATOR_MAX_DRAIN', 0.25), // creator-dump gate cap (was hardcoded 0.25 in gate.js)
+    creatorVolBypassUsd: num(env, 'CREATOR_VOL_BYPASS_USD', 25000), // creator veto becomes a warning when 5m volume >= this — real flow can absorb the stack (user 2026-10-14, Eikon: skipped at $53K on this gate with $39.1K/5m volume, then bought at $307K and lost). 0 = off (veto always fires).
     insiderCountMax: num(env, 'INSIDER_COUNT_MAX', 50),
     insiderMaxPct: num(env, 'INSIDER_MAX_PCT', 10), // linked-wallet supply cap in the insiders gate (loosened to 15 by env 2026-10-12: skipped coins averaged +16%)
     minQuoteLiqUsd: num(env, 'MIN_QUOTE_LIQ_USD', 1200),
@@ -321,6 +322,7 @@ export function validateConfig(cfg) {
   if (cfg.flowMinSol < 0) errs.push('FLOW_MIN_SOL must be >= 0');
   if (cfg.flowWalletsConfl < 1 || cfg.flowWalletsConfl > 20) errs.push('FLOW_WALLETS_CONFL must be between 1 and 20');
   if (cfg.flowWindowMin < 1 || cfg.flowWindowMin > 240) errs.push('FLOW_WINDOW_MIN must be between 1 and 240');
+  if (cfg.creatorVolBypassUsd < 0) errs.push('CREATOR_VOL_BYPASS_USD must be >= 0 (0 = off)');
   if (cfg.streakPauseN < 0 || cfg.streakPauseN > 50) errs.push('STREAK_PAUSE_N must be between 0 and 50 (0 = off)');
   if (cfg.streakPauseMinMin < 0 || cfg.streakPauseMinMin > 1440) errs.push('STREAK_PAUSE_MIN_MIN must be between 0 and 1440');
   if (cfg.streakHeatPct <= 0 || cfg.streakHeatPct > 1) errs.push('STREAK_HEAT_PCT must be between 0 and 1');

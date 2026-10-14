@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { runGates, cloneCheck } from '../src/gate.js';
-import { testCfg, view } from './helpers.mjs';
+import { testCfg, view, tmp } from './helpers.mjs';
 
 const cfg = testCfg();
 const NOW = 1_000_000_000_000;
@@ -9,7 +9,7 @@ const clones = (n, amount) => Array.from({ length: n }, (_, i) => ({ owner: 'w' 
 
 // Fixtures rebuilt from the RugCheck / DexScreener numbers pulled for DOTF and QI.
 const DOTF = {
-  view: view({ address: 'DOTF', name: 'Digital Oil Trust Fund', symbol: 'DOTF', mc: 159_580_176, liq: 1_104_583, chgH1: 353145, createdAt: NOW - 11 * 60000, volH24: 544_087 }),
+  view: view({ address: 'DOTF', name: 'Digital Oil Trust Fund', symbol: 'DOTF', mc: 159_580_176, liq: 1_104_583, chgH1: 353145, createdAt: NOW - 11 * 60000, volH24: 544_087, volM5: 0 }), // volM5 pinned: the fixture never carried real 5m volume (helper default) — the volume-bypass case is the Eikon suite below
   rug: {
     token: { supply: 999987875747397, decimals: 6, mintAuthority: null, freezeAuthority: null }, creatorBalance: 158144377812626, totalHolders: 2208,
     markets: [{ pubkey: 'POOL', lp: { base: 3467957.25, quote: 5063.08, lpLockedUSD: 1.1e6, lpLockedPct: 100 } }],
@@ -159,4 +159,86 @@ test('A3: thin history with calm aggregates passes; ample history is judged by t
   const samples = Array.from({ length: 12 }, (_, i) => ({ ts: NOW - (11 - i) * 60000, price: 1 }));
   const r = freshHistoryCheck(samples, { chgM5: 90, chgH1: 95, mc: 14_000 }, NOW);
   assert.equal(r.pass, true); assert.equal(r.judged, true);
+});
+
+// ---- Creator-veto volume bypass (user 2026-10-14, Eikon) ----
+// Eikon was skipped at $53K purely on the creator gate (15.7% of supply, could pull
+// 44.9% of pool SOL) while doing $39,103 of volume in 5 minutes; it then ran ~5.8x
+// and the bot bought it at $307K and lost. The veto now lifts when 5m volume >=
+// CREATOR_VOL_BYPASS_USD (default $25,000) and leaves a warning on the record.
+// linkedDumpMaxDrain is raised in this fixture ONLY to isolate the creator gate:
+// the same stack also drives linkedDump, which stays a hard gate on its own cap.
+const eikonCfg = (over = {}, env = {}) => testCfg({ linkedDumpMaxDrain: 0.5, ...over }, env);
+const EIKON_RUG = {
+  token: { supply: 1e12, decimals: 6, mintAuthority: null, freezeAuthority: null },
+  creatorBalance: 157_000_000_000, // 157,000 UI of a 1,000,000 UI supply = 15.7%
+  totalHolders: 850,
+  markets: [{ pubkey: 'POOL', lp: { base: 192_666, quote: 2_900, lpLockedUSD: 55_000, lpLockedPct: 100 } }],
+  knownAccounts: { POOL: { type: 'AMM' } },
+  topHolders: [
+    { owner: 'POOL', address: 'p', amount: 192_666_000_000, pct: 19.3 },
+    { owner: 'CREATOR', address: 'c', amount: 157_000_000_000, pct: 15.7 },
+    { owner: 'h1', address: 'h1', amount: 40_000_000_000, pct: 4.0 },
+    { owner: 'h2', address: 'h2', amount: 31_000_000_000, pct: 3.1 },
+    { owner: 'h3', address: 'h3', amount: 22_000_000_000, pct: 2.2 },
+    { owner: 'h4', address: 'h4', amount: 13_000_000_000, pct: 1.3 },
+    { owner: 'h5', address: 'h5', amount: 7_000_000_000, pct: 0.7 },
+  ],
+  insiderNetworks: [],
+};
+const eikonView = (o = {}) => view({ address: '63A9mFGpX4Mws6TznZm4287P4vTsTxQ5NvcJPsbXpump', name: 'Eikon', symbol: 'EIKON', mc: 53_064, liq: 26_000, volM5: 39_103, volH1: 39_905, buysH1: 400, sellsH1: 237, chgH1: 30, createdAt: NOW - 3 * 3600e3, ...o });
+
+test('creator bypass: Eikon fixture — 15.7% creator + $39,103/5m volume is NOT vetoed, warning attached', () => {
+  const g = runGates({ view: eikonView(), rug: EIKON_RUG, cfg: eikonCfg(), now: NOW });
+  assert.equal(g.checks.creator.pass, true);
+  assert.equal(g.checks.creator.bypassed, true);
+  assert.ok(!g.fails.some(f => f.startsWith('creator')), `creator fail leaked: ${g.fails}`);
+  assert.ok(g.warnings.some(w => w === 'creator: holds 15.7% — veto bypassed by 5m volume $39,103 (>= $25,000)'), `warnings: ${g.warnings}`);
+  assert.equal(g.pass, true);
+});
+test('creator bypass: volume exactly at the $25,000 bar also bypasses (>=)', () => {
+  const g = runGates({ view: eikonView({ volM5: 25_000 }), rug: EIKON_RUG, cfg: eikonCfg(), now: NOW });
+  assert.equal(g.checks.creator.pass, true);
+  assert.equal(g.checks.creator.bypassed, true);
+});
+test('creator bypass: same creator stack with only $10,000/5m volume is still vetoed with the original reason', () => {
+  const g = runGates({ view: eikonView({ volM5: 10_000 }), rug: EIKON_RUG, cfg: eikonCfg(), now: NOW });
+  assert.equal(g.pass, false);
+  assert.equal(g.checks.creator.pass, false);
+  assert.match(g.fails.find(f => f.startsWith('creator')), /creator holds 15\.7% of supply, could pull 44\.9% of pool SOL/);
+  assert.ok(!g.warnings.some(w => w.includes('veto bypassed')));
+});
+test('creator bypass: zero or missing 5m volume never bypasses', () => {
+  const zero = runGates({ view: eikonView({ volM5: 0 }), rug: EIKON_RUG, cfg: eikonCfg(), now: NOW });
+  assert.equal(zero.checks.creator.pass, false);
+  const v = eikonView(); delete v.volM5;
+  const missing = runGates({ view: v, rug: EIKON_RUG, cfg: eikonCfg(), now: NOW });
+  assert.equal(missing.checks.creator.pass, false);
+});
+test('creator bypass: CREATOR_VOL_BYPASS_USD=0 disables the bypass (today\'s behavior); default is 25000', () => {
+  const off = eikonCfg({}, { CREATOR_VOL_BYPASS_USD: '0' });
+  assert.equal(off.creatorVolBypassUsd, 0);
+  const g = runGates({ view: eikonView(), rug: EIKON_RUG, cfg: off, now: NOW });
+  assert.equal(g.checks.creator.pass, false);
+  assert.match(g.fails.find(f => f.startsWith('creator')), /could pull 44\.9% of pool SOL/);
+  assert.equal(testCfg().creatorVolBypassUsd, 25000);
+});
+test('creator bypass: a small creator stack (5%) passes on its own at any volume, with no bypass warning', () => {
+  const rug = {
+    ...EIKON_RUG,
+    creatorBalance: 50_000_000_000, // 5% of supply
+    markets: [{ pubkey: 'POOL', lp: { base: 1_000_000, quote: 19_000, lpLockedUSD: 55_000, lpLockedPct: 100 } }],
+    topHolders: EIKON_RUG.topHolders.map(h => h.owner === 'CREATOR' ? { ...h, amount: 50_000_000_000, pct: 5.0 } : h),
+  };
+  for (const volM5 of [0, 100_000]) {
+    const g = runGates({ view: eikonView({ volM5 }), rug, cfg: eikonCfg(), now: NOW });
+    assert.equal(g.checks.creator.pass, true);
+    assert.equal(g.checks.creator.bypassed, undefined);
+    assert.ok(!g.warnings.some(w => w.includes('veto bypassed')));
+  }
+});
+test('creator bypass: negative CREATOR_VOL_BYPASS_USD is a config error', async () => {
+  const { loadConfig, validateConfig } = await import('../src/config.js');
+  const bad = { ...loadConfig({ DATA_DIR: tmp(), CREATOR_VOL_BYPASS_USD: '-5' }) };
+  assert.ok(validateConfig(bad).some(e => e.includes('CREATOR_VOL_BYPASS_USD')));
 });

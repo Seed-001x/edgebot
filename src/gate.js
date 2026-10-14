@@ -110,7 +110,7 @@ export function creatorDumpCheck({ creatorUi, poolBaseUi, poolQuoteUi, supplyUi 
   if (!(B > 0) || !(Q > 0)) return { pass: false, reason: 'creator holds tokens and pool data is missing' };
   const drain = x / (B + x);
   const pct = supplyUi > 0 ? (x / supplyUi) * 100 : null;
-  return { pass: drain <= maxDrain, reason: drain <= maxDrain ? 'creator stack cannot drain the pool' : `creator holds ${pct != null ? pct.toFixed(1) + '% of supply, ' : ''}could pull ${(drain * 100).toFixed(1)}% of pool SOL` };
+  return { pass: drain <= maxDrain, drain, pct, reason: drain <= maxDrain ? 'creator stack cannot drain the pool' : `creator holds ${pct != null ? pct.toFixed(1) + '% of supply, ' : ''}could pull ${(drain * 100).toFixed(1)}% of pool SOL` };
 }
 
 // 4. Linked-wallet networks.
@@ -293,6 +293,19 @@ export function runGates({ view, rug, others = [], curve = null, cfg, now = Date
     checks.clones = cloneHolderCheck(rug.topHolders, skip);
     checks.farm = farmTiersCheck(rug.topHolders, skip, { tol: cfg.farmTolPct, minCluster: cfg.farmMinCluster, maxWallets: cfg.farmMaxWallets, maxSupplyPct: cfg.farmMaxSupplyPct });
     checks.creator = creatorDumpCheck({ creatorUi: num(rug.creatorBalance) / 10 ** dec, poolBaseUi: lp.base, poolQuoteUi: lp.quote, supplyUi }, cfg.creatorMaxDrain ?? 0.25);
+    // Creator-veto volume bypass (user 2026-10-14, Eikon): the veto exists because the dev can
+    // dump their stack — but when 5m volume is deep, real flow is already absorbing sells, and
+    // the veto only delayed entry into the top (Eikon: skipped at $53K with $39.1K of 5m volume,
+    // bought later at $307K, lost). Above CREATOR_VOL_BYPASS_USD the holdings veto becomes a
+    // warning; the stack stays visible on the signal record. Only the computed-drain fail can be
+    // bypassed — a missing-pool-data fail still blocks (we could not judge the stack at all).
+    const creatorBypassUsd = cfg.creatorVolBypassUsd ?? 25000;
+    if (!checks.creator.pass && checks.creator.drain != null && creatorBypassUsd > 0 && num(view.volM5) >= creatorBypassUsd) {
+      const volTxt = Math.round(num(view.volM5)).toLocaleString('en-US');
+      const barTxt = Number(creatorBypassUsd).toLocaleString('en-US');
+      warnings.push(`creator: holds ${checks.creator.pct != null ? checks.creator.pct.toFixed(1) + '%' : 'a large stack'} — veto bypassed by 5m volume $${volTxt} (>= $${barTxt})`);
+      checks.creator = { ...checks.creator, pass: true, bypassed: true };
+    }
     checks.insiders = insiderCheck(rug.insiderNetworks, supplyRaw, cfg.insiderMaxPct);
     checks.linkedDump = linkedDumpCheck({ creatorUi: num(rug.creatorBalance) / 10 ** dec, networks: rug.insiderNetworks, dec, poolBaseUi: lp.base, poolQuoteUi: lp.quote }, cfg.linkedDumpMaxDrain);
     checks.concentration = concentrationCheck(rug.topHolders, skip);
