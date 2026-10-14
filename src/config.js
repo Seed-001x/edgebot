@@ -53,6 +53,7 @@ export function loadConfig(env = process.env) {
     jupTokensBase: env.JUP_TOKENS_BASE || 'https://lite-api.jup.ag/tokens/v2',
     jupApiKey: env.JUP_API_KEY || '',
     rpcUrls: (env.RPC_URLS || 'https://api.mainnet-beta.solana.com').split(',').map(s => s.trim()).filter(Boolean),
+    holderDas: env.HOLDER_DAS !== '0',                  // record-only holder sampling via Helius DAS getTokenAccounts (rides RPC_URLS): every gate/shadow/snapshot eval also leaves a token-account-count sample in gate.js's holder series, so holderGrowth fills on coins RugCheck has no report for. 0 = off (RugCheck-only sampling, the pre-DAS behavior). Fail-silent either way; nothing trades on it.
 
     // ---- eligibility ----
     minMc: num(env, 'MIN_MC', 10000),

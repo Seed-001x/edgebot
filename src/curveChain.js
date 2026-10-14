@@ -56,7 +56,9 @@ export function countCurveHistory(classified) {
   return { buys, buyIxs, sells };
 }
 
-async function rpc(rpcUrls, method, params, timeout = 12000) {
+/** JSON-RPC over the configured RPC URLs, first success wins; throws when every
+ *  URL fails. Shared plumbing: gate.js's DAS holder-count read rides it too. */
+export async function rpc(rpcUrls, method, params, timeout = 12000) {
   let last;
   for (const url of rpcUrls || []) {
     try {

@@ -8,30 +8,37 @@
 // where rigging lives) and only warns for older, high-volume ones.
 
 import { fetchJson } from './util.js';
+import { rpc } from './curveChain.js';
 
 const RC = 'https://api.rugcheck.xyz/v1';
 const cache = new Map(); // mint -> { ts, report }
 const TTL = 120000;
 
-// Holder-count observation log (record-only, 2026-10-14): every RugCheck
-// report this process reads leaves a timestamped totalHolders sample here.
-// It is the ONLY holder series the bot has — holder counts are not in the
-// DexScreener views the poll samples — and it exists so signal records can
-// carry a holder-growth field (src/signalFields.js) computed from reads the
-// bot already made. Nothing reads this for a trading decision; fetchRug's
-// return value and cache behavior are unchanged.
+// Holder-count observation log (record-only, 2026-10-14): holder-count reads
+// this process makes leave timestamped samples here, from TWO sources writing
+// the same series — every RugCheck report read (fetchRug → noteHolders) and
+// every Helius DAS count (fetchHolderCount → noteHolderCount). Holder counts
+// are not in the DexScreener views the poll samples, so this log exists so
+// signal records can carry a holder-growth field (src/signalFields.js)
+// computed from reads the bot already made. Nothing reads this for a trading
+// decision; fetchRug's return value and cache behavior are unchanged.
 const holderLog = new Map(); // mint -> [{ ts, holders }] oldest first
 const HOLDER_LOG_MAX = 288;
-function noteHolders(mint, ts, report) {
-  const h = report ? Number(report.totalHolders) : NaN;
-  if (!mint || !Number.isFinite(h) || h <= 0) return;
+/** Append one holder-count sample. Implausible readings (non-finite, ≤ 0, no
+ *  mint) are dropped; a re-read at the same timestamp replaces, never stacks. */
+export function noteHolderCount(mint, ts, n) {
+  const h = Number(n);
+  if (!mint || !Number.isFinite(ts) || !Number.isFinite(h) || h <= 0) return;
   let a = holderLog.get(mint);
   if (!a) { a = []; holderLog.set(mint, a); }
   if (a.length && a[a.length - 1].ts === ts) { a[a.length - 1] = { ts, holders: h }; return; }
   a.push({ ts, holders: h });
   while (a.length > HOLDER_LOG_MAX) a.shift();
 }
-/** Timestamped holder-count samples from this process's own RugCheck reads. */
+function noteHolders(mint, ts, report) {
+  noteHolderCount(mint, ts, report ? Number(report.totalHolders) : NaN);
+}
+/** Timestamped holder-count samples from this process's own reads (RugCheck + DAS). */
 export function holderSamples(mint) {
   const a = holderLog.get(mint);
   return a ? a.slice() : [];
@@ -44,6 +51,32 @@ export async function fetchRug(mint, now = Date.now()) {
   cache.set(mint, { ts: now, report });
   noteHolders(mint, now, report);
   return report;
+}
+
+// Holder-count sampling, second source (record-only, 2026-10-14): Helius DAS
+// getTokenAccounts with limit 1 — the response's `total` is the mint's
+// token-account count, so one call prices the whole series point without
+// paging accounts. It rides the SAME Helius endpoint + key the bot already
+// uses (cfg.rpcUrls, via curveChain's rpc helper). Why it exists: RugCheck
+// has no report at all for many young coins, so those mints accumulated zero
+// holder samples and holderGrowth stayed null; DAS indexes Token-2022
+// accounts from a mint's first buy, so every gated evaluation can leave a
+// sample. `total` counts token ACCOUNTS, not unique owners (one ATA per
+// owner per mint is the norm on pump.fun; curve/fee accounts add a small
+// near-constant offset) — accepted, because the field is a growth DELTA over
+// ≥5 min, where a constant offset cancels. FAIL-SILENT by contract: any RPC
+// error, timeout, or implausible total returns null and writes nothing — the
+// caller never branches on the result. The HOLDER_DAS knob is enforced at
+// the bot's call sites (cfg.holderDas), not here.
+export async function fetchHolderCount(mint, { rpcUrls, now = Date.now(), timeout = 8000 } = {}) {
+  if (!mint || !rpcUrls || !rpcUrls.length) return null;
+  try {
+    const result = await rpc(rpcUrls, 'getTokenAccounts', { mint, limit: 1 }, timeout);
+    const total = result ? Number(result.total) : NaN;
+    if (!Number.isFinite(total) || total <= 0) return null;
+    noteHolderCount(mint, now, total);
+    return total;
+  } catch { return null; }
 }
 
 const num = (v, d = 0) => (Number.isFinite(Number(v)) ? Number(v) : d);

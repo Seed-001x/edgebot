@@ -651,6 +651,21 @@ export class Bot {
     catch { return null; }
   }
 
+  // Holder-count sampling, second source (record-only, 2026-10-14): a Helius
+  // DAS token-account count (gate.js fetchHolderCount, wired as a dep) rides
+  // alongside every RugCheck fetch that feeds the holder series — gate eval,
+  // shadow gate record, manual-exit snapshot — so mints RugCheck has no
+  // report for still accumulate holder samples and holderGrowth can fill.
+  // The result is NEVER read: no gate, skip, or buy branches on it, and the
+  // helper resolves null on knob-off, missing dep, or any DAS failure, so a
+  // dark DAS leaves behavior byte-identical to the RugCheck-only path.
+  async _dasHolderSample(mint) {
+    try {
+      if (!this.cfg.holderDas || !this.d.fetchHolderCount) return null;
+      return await this.d.fetchHolderCount(mint);
+    } catch { return null; }
+  }
+
   skip(v, sig, reasons, warnings = [], gates = null, gatePass = null, shadowGates = null, shadowGatePass = null) {
     this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'skipped', reasons, price: v.price, mc: v.mc, metrics: sig.metrics, warnings, label: sig.label || null, gates, gatePass, fields: this._signalFields(v), shadowGates, shadowGatePass });
   }
@@ -700,6 +715,7 @@ export class Bot {
       const [rug, curve] = await Promise.all([
         this.d.fetchRug(v.address).catch(() => null),
         this.d.fetchCurve ? this.d.fetchCurve(v.address).catch(() => null) : null,
+        this._dasHolderSample(v.address),
       ]);
       const { cfg: gateCfg } = this.paceCfg(n);
       const g = runGates({ view: v, rug, curve, cfg: gateCfg, now: n });
@@ -921,10 +937,12 @@ export class Bot {
       if (violation) { checks.tempRule = { pass: false, reason: violation }; return this.skip(v, sig, [violation], [], checks); }
     }
 
-    // gates: RugCheck + curve history in parallel
+    // gates: RugCheck + curve history in parallel (the DAS holder sample rides
+    // along record-only; its result is deliberately not destructured or read)
     const [rug, curve] = await Promise.all([
       this.d.fetchRug(v.address).catch(() => null),
       this.d.fetchCurve ? this.d.fetchCurve(v.address).catch(() => null) : null,
+      this._dasHolderSample(v.address),
     ]);
     // Pace keeper: if behind the hourly target, use relaxed gate thresholds
     const { cfg: gateCfg, boosted, pace } = this.paceCfg(n);
@@ -1248,6 +1266,7 @@ export class Bot {
       const f30 = win(n - 30000, n), f60 = win(n - 60000, n), fPrior = win(n - 120000, n - 60000);
       let holdersNow = null;
       try { const rug = await this.d.fetchRug(pos.mint); holdersNow = rug && rug.totalHolders != null ? rug.totalHolders : null; } catch { /* holder count is best-effort */ }
+      await this._dasHolderSample(pos.mint); // record-only: the snapshot read also leaves a DAS holder sample in the series
       const holdersEntry = pos.entry && pos.entry.holders != null ? pos.entry.holders : null;
       return {
         path, pathSec: 120,
