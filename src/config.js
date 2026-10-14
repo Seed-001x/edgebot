@@ -24,7 +24,8 @@ export function loadConfig(env = process.env) {
     killEquityFrac: num(env, 'KILL_EQUITY_FRAC', 0.5),  // wallet SOL below this fraction of starting → permanent halt
     minReserveSol: num(env, 'MIN_RESERVE_SOL', 0.02),   // never spend the last of the fees
     maxTradesPerHour: num(env, 'MAX_TRADES_PER_HOUR', 120),
-    mandatoryApesPerHour: num(env, 'MANDATORY_APES_PER_HOUR', 5),
+    mandatoryApesPerHour: num(env, 'MANDATORY_APES_PER_HOUR', 0), // user 2026-10-13 (entry-fixes A1): default OFF — forcing gate-failed signals through to hit an hourly quota made the bot lower its standards exactly when nobody was watching. Was 5 in code / 10 in live env.
+    paceRelax: num(env, 'PACE_RELAX', 0),               // user 2026-10-13 (entry-fixes A2): 1 = paceCfg loosens gate thresholds (liq/mc floors cut, maxMc ×1.5). Default 0 = gates run at face value, always.
     mintCooldownMin: num(env, 'MINT_COOLDOWN_MIN', 20),
     loserCooldownH: num(env, 'LOSER_COOLDOWN_H', 6),    // don't re-buy a coin that closed at a loss within this many hours (0 = off)
     closedCooldownH: num(env, 'CLOSED_COOLDOWN_MIN', 0) > 0 ? num(env, 'CLOSED_COOLDOWN_MIN', 0) / 60 : num(env, 'CLOSED_COOLDOWN_H', 3),  // don't re-buy a coin that closed AT ALL (win or loss) within the cooldown (0 = off). Added 2026-10-12 at 3h (the journal's only 2 re-entries both lost); user cooled it to 5 minutes on 2026-10-13 (it blocked an OSPREY re-entry) — CLOSED_COOLDOWN_MIN overrides in minutes when set.
@@ -61,7 +62,7 @@ export function loadConfig(env = process.env) {
     popMaxBelowHigh: num(env, 'POP_MAX_BELOW_HIGH', 0.30), // skip if price is >30% under its 1h high (dead-cat bounce)
     popMaxDropH6: num(env, 'POP_MAX_DROP_H6', 40),    // skip pops on coins down 40%+ over 6h (for young pools: since launch) — a crash
                                                       // that already left the 1h window still counts (0 = off)
-    minBuyRatioM5: num(env, 'MIN_BUY_RATIO_M5', 0.55),
+    minBuyRatioM5: num(env, 'MIN_BUY_RATIO_M5', 0.60), // user 2026-10-13 (entry-fixes A5): 0.55 → 0.60 — ARCADES (0.56) and MEMEOS (0.57) barely cleared the old bar and died
     maxDrawFromPeak: num(env, 'MAX_DRAW_FROM_PEAK', 0.15), // enter on strength, not on the way down
 
     // ---- 'fast pop' detector (live trade stream, user 2026-10-13) ----
@@ -73,9 +74,10 @@ export function loadConfig(env = process.env) {
     fastPop: num(env, 'FAST_POP', 1),                        // 1 = on (stream detection active)
     fastPopWindowSec: num(env, 'FAST_POP_WINDOW_SEC', 90),   // rolling window judged on stream trades
     fastPopGainPct: num(env, 'FAST_POP_GAIN_PCT', 30),       // price gain from the window low, %
+    fastPopMaxGainPct: num(env, 'FAST_POP_MAX_GAIN_PCT', 0), // entry-fixes A4 knob, shipped OFF: a ceiling here kills the OSPREY shape fast pop was built for — a V-recovery reads +91% off the 90s window low and is a catch, not a chase (the window low is 90 seconds old, not a 5m base). Set FAST_POP_MAX_GAIN_PCT=75 to apply the classic cap here too.
     fastPopMinVolSol: num(env, 'FAST_POP_MIN_VOL_SOL', 2.5), // total SOL traded inside the window
     fastPopMinBuys: num(env, 'FAST_POP_MIN_BUYS', 8),        // distinct buy trades inside the window
-    fastPopMinBuyShare: num(env, 'FAST_POP_MIN_BUY_SHARE', 0.55), // buys / (buys + sells), live flow
+    fastPopMinBuyShare: num(env, 'FAST_POP_MIN_BUY_SHARE', 0.60), // buys / (buys + sells), live flow (0.55 → 0.60, entry-fixes A5)
     fastPopMaxDrop: num(env, 'FAST_POP_MAX_DROP', 0.08),     // last price may be at most this below the window peak
     fastPopMinTrades: num(env, 'FAST_POP_MIN_TRADES', 12),   // total trades inside the window
     fastPopRecentSec: num(env, 'FAST_POP_RECENT_SEC', 15),   // the move must still be printing…
@@ -88,7 +90,15 @@ export function loadConfig(env = process.env) {
     trendMaxH1: num(env, 'TREND_MAX_H1', 400),
     trendMinM5: num(env, 'TREND_MIN_M5', 2),
     trendMinVolH1: num(env, 'TREND_MIN_VOL_H1', 100000),
-    trendMinBuyRatio: num(env, 'TREND_MIN_BUY_RATIO', 0.52),
+    trendMinBuyRatio: num(env, 'TREND_MIN_BUY_RATIO', 0.60), // 0.52 → 0.60 (entry-fixes A5) — MageTrail got in at 0.52 and stopped out
+    // Trend pause + quality guards (user 2026-10-13, entry-fixes B1–B5; tonight's trend went 0-for-9):
+    trendEnabled: num(env, 'TREND_ENABLED', 0),          // B1: 0 = trend detector paused; pop keeps running. Re-enable only with B2–B5 in and a backtest showing trend net positive.
+    trendMinMc: num(env, 'TREND_MIN_MC', 30000),         // B4: trend needs a real market cap (BORING $15k, Urara $15.6k); 0 = off
+    trendMinBuyRatioH1: num(env, 'TREND_MIN_BUY_RATIO_H1', 0.55), // B2: the whole HOUR must be buy-dominated, not just a 14-trade 5m blip (Urara: 411 buys vs 445 sells on the hour); 0 = off
+    trendMinTxnsM5: num(env, 'TREND_MIN_TXNS_M5', 30),   // B2: at least this many 5m trades before a ratio counts as demand; 0 = off
+    trendMaxVolToMc: num(env, 'TREND_MAX_VOL_TO_MC', 3), // B3: wash reject — small cap (below FRESH_SMALL_MC) with hourly volume > this × its cap is churn, not demand (Urara: $71k on $15.6k = 4.5×); applies to pop too; 0 = off
+    revivalMinAgeD: num(env, 'REVIVAL_MIN_AGE_D', 7),    // B5: pool at least this many days old…
+    revivalMaxChgH6: num(env, 'REVIVAL_MAX_CHG_H6', 300), // …and up this much in 6h = dead-coin revival, skip (Urara's pool was ~67 days old, +550% h6); 0 = off
     trendMinBuysM5: num(env, 'TREND_MIN_BUYS_M5', 5),
     // Fresh momentum only: the 5m move must be a real share of the 1h move.
     // A coin up 50% on the hour but only +5% in the last 5m already made its move — that's chasing.
@@ -146,6 +156,14 @@ export function loadConfig(env = process.env) {
     // extension cap: skip classic entries priced more than this fraction above the trailing-1h
     // sampled low (the breakout base) — user 2026-10-13 (OTTO). 0 = off.
     extMaxFromBase: num(env, 'EXT_MAX_FROM_BASE', 1.5),
+    // fresh-history fail-closed (user 2026-10-13, entry-fixes A3): when a coin arrives from the
+    // trending/movers lists with too little sampled history to judge, the anti-chase guards used
+    // to wave it through. Now DexScreener's own aggregates decide: a >FRESH_MAX_CHG_M5 5-minute
+    // move already printed = skip; and a small cap whose whole hourly move is one 5m candle
+    // (chgM5 ≥ FRESH_M5_SHARE_H1 × chgH1) = skip. BORING: +41.6% m5 vs +13.8% h1 at $14.5k, no samples.
+    freshMaxChgM5: num(env, 'FRESH_MAX_CHG_M5', 25),     // 0 = off
+    freshSmallMc: num(env, 'FRESH_SMALL_MC', 30000),     // "small cap" line for the fresh check and the B3 wash reject
+    freshM5ShareH1: num(env, 'FRESH_M5_SHARE_H1', 0.7),  // 0 = off
 
     // ---- exits (judged on REALIZABLE value = Jupiter sell quote, not screen price) ----
     stopLoss: num(env, 'STOP_LOSS', 0.15),                // grace-stop ARM line on realizable value (user 2026-10-13: 0.10 live via env)
@@ -228,6 +246,18 @@ export function validateConfig(cfg) {
   if (cfg.popStaleSec < 0 || cfg.popStaleSec > 600) errs.push('POP_STALE_SEC must be between 0 and 600 (0 = off)');
   if (cfg.popStaleDropPct < 0 || cfg.popStaleDropPct >= 0.9) errs.push('POP_STALE_DROP_PCT must be between 0 and 0.9');
   if (cfg.extMaxFromBase < 0 || cfg.extMaxFromBase > 20) errs.push('EXT_MAX_FROM_BASE must be between 0 and 20 (0 = off)');
+  if (cfg.paceRelax < 0 || cfg.paceRelax > 1) errs.push('PACE_RELAX must be 0 or 1');
+  if (cfg.fastPopMaxGainPct < 0 || cfg.fastPopMaxGainPct > 5000) errs.push('FAST_POP_MAX_GAIN_PCT must be between 0 and 5000 (0 = off)');
+  if (cfg.trendEnabled < 0 || cfg.trendEnabled > 1) errs.push('TREND_ENABLED must be 0 or 1');
+  if (cfg.trendMinMc < 0) errs.push('TREND_MIN_MC must be >= 0 (0 = off)');
+  if (cfg.trendMinBuyRatioH1 < 0 || cfg.trendMinBuyRatioH1 > 1) errs.push('TREND_MIN_BUY_RATIO_H1 must be between 0 and 1 (0 = off)');
+  if (cfg.trendMinTxnsM5 < 0) errs.push('TREND_MIN_TXNS_M5 must be >= 0 (0 = off)');
+  if (cfg.trendMaxVolToMc < 0) errs.push('TREND_MAX_VOL_TO_MC must be >= 0 (0 = off)');
+  if (cfg.revivalMinAgeD < 0) errs.push('REVIVAL_MIN_AGE_D must be >= 0 (0 = off)');
+  if (cfg.revivalMaxChgH6 < 0) errs.push('REVIVAL_MAX_CHG_H6 must be >= 0');
+  if (cfg.freshMaxChgM5 < 0) errs.push('FRESH_MAX_CHG_M5 must be >= 0 (0 = off)');
+  if (cfg.freshSmallMc < 0) errs.push('FRESH_SMALL_MC must be >= 0');
+  if (cfg.freshM5ShareH1 < 0 || cfg.freshM5ShareH1 > 1) errs.push('FRESH_M5_SHARE_H1 must be between 0 and 1 (0 = off)');
   if (cfg.dipStopPct < 0 || cfg.dipStopPct >= 1) errs.push('DIP_STOP_PCT must be between 0 and 1 (0 = off)');
   if (cfg.stallSec < 0) errs.push('STALL_SEC must be >= 0 (0 = off)');
   if (cfg.lockKeep < 0 || cfg.lockKeep >= 1) errs.push('PROFIT_LOCK_KEEP must be between 0 and 1 (0 = off)');

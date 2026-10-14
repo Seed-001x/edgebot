@@ -110,3 +110,13 @@ test('positions persist across restarts', async () => {
   const again = new Bot(r.cfg, { now: () => r.clock.t, exec: r.bot.exec, discover: async () => new Map(), fetchViews: async () => new Map(), fetchSolUsd: async () => 150, fetchRug: async () => null, searchByName: async () => [] });
   assert.equal(again.positions.length, 1); assert.equal(again.positions[0].mint, 'MINT1');
 });
+
+test('A1+A2: paceCfg no longer loosens gates (PACE_RELAX off) and mandatory ape defaults off', () => {
+  const bot = new Bot(testCfg(), { now: () => T0, exec: {}, discover: async () => new Map(), fetchViews: async () => new Map(), fetchSolUsd: async () => 150, fetchRug: async () => null, searchByName: async () => [] });
+  const out = bot.paceCfg(T0);
+  assert.equal(out.boosted, false);
+  assert.equal(out.cfg.minLiqUsd, 15000);
+  assert.equal(out.cfg.maxMc, testCfg().maxMc);
+  const relaxedBot = new Bot(testCfg({ paceRelax: 1 }), { now: () => T0, exec: {}, discover: async () => new Map(), fetchViews: async () => new Map(), fetchSolUsd: async () => 150, fetchRug: async () => null, searchByName: async () => [] });
+  assert.equal(relaxedBot.paceCfg(T0).boosted, true);
+});

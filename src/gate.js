@@ -207,6 +207,35 @@ export function extensionCheck(samples, price, now, { maxExt = 1.5, windowMin = 
   };
 }
 
+// 7e. Fresh-history fail-closed (user 2026-10-13, entry-fixes A3): coins discovered mid-run
+//     from the trending/movers lists arrive with little or no sampled history, and both
+//     sample-judged guards above (stale pop, extension) fail OPEN on thin data — they waved
+//     BORING through (+41.6% in 5m against +13.8% on the hour at a $14.5k cap, a 3-hour-old
+//     corpse mid-bounce). When there isn't enough history to judge, DexScreener's own
+//     aggregates decide instead: a 5-minute move that has ALREADY printed beyond the cap is
+//     a chase, and a small cap whose entire hourly move is one 5-minute candle is a blip.
+//     With enough samples this check passes untouched — the sampled guards do the judging.
+export function freshHistoryCheck(samples, view, now, { maxChgM5 = 25, smallMc = 30000, m5ShareH1 = 0.7, windowMin = 60, minSamples = 10, minSpanSec = 180 } = {}) {
+  if (!(maxChgM5 > 0) && !(m5ShareH1 > 0)) return { pass: true, reason: 'fresh check off' };
+  const win = (samples || []).filter(s => s && s.price > 0 && now - s.ts <= windowMin * 60000);
+  if (win.length >= minSamples) {
+    const tsList = win.map(s => s.ts);
+    if ((Math.max(...tsList) - Math.min(...tsList)) / 1000 >= minSpanSec) {
+      return { pass: true, judged: true, reason: 'enough sampled history — sampled guards judge this one' };
+    }
+  }
+  const chgM5 = view ? view.chgM5 : null;
+  const chgH1 = view ? view.chgH1 : null;
+  const mc = view ? view.mc : null;
+  if (maxChgM5 > 0 && chgM5 != null && chgM5 > maxChgM5) {
+    return { pass: false, reason: `fresh coin, no sampled history, and already +${Math.round(chgM5)}% in 5m (cap +${Math.round(maxChgM5)}%) — the move already happened` };
+  }
+  if (m5ShareH1 > 0 && mc != null && mc < smallMc && chgM5 != null && chgH1 != null && chgH1 > 0 && chgM5 >= m5ShareH1 * chgH1) {
+    return { pass: false, reason: `fresh small cap ($${Math.round(mc)}): the whole hourly move (+${Math.round(chgH1)}%) is one 5m candle (+${Math.round(chgM5)}%) — a blip, not a trend` };
+  }
+  return { pass: true, judged: false, reason: 'thin history, but aggregates are not extended' };
+}
+
 // One-go dump simulation: ALL linked supply (creator + linked networks) sold into the pool at once.
 // drain = share of the pool's SOL they could pull.
 export function linkedDumpCheck({ creatorUi, networks, dec, poolBaseUi, poolQuoteUi }, maxDrain = 0.35) {

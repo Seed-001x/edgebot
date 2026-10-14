@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { History } from './history.js';
 import { detect, eligible, fastPop } from './detect.js';
-import { runGates, hasHardFail, tempRuleViolation, blockedNameWord, stalePopCheck, extensionCheck } from './gate.js';
+import { runGates, hasHardFail, tempRuleViolation, blockedNameWord, stalePopCheck, extensionCheck, freshHistoryCheck } from './gate.js';
 import { evaluateExit } from './exits.js';
 import { bundleRisk, bundleDecision, pickTracked, linkedWeights, CREATOR_KEY } from './bundleWatch.js';
 import { Journal } from './journal.js';
@@ -81,7 +81,10 @@ export class Bot {
     const hourAgo = n - 3600000;
     this.entryTimes = this.entryTimes.filter(t => t > hourAgo);
     const pace = this.entryTimes.length;
-    // Gates stay loosened permanently per user (2026-10-10) — bot's been entering good ones
+    // Entry-fixes A2 (user 2026-10-13): the pace relaxer is OFF unless PACE_RELAX=1 — gates
+    // run at face value. The always-on loosening (liq/mc floors ×0.6–0.7, maxMc ×1.5) is what
+    // let BORING's $9.2k liquidity pass a $15k floor (relaxed bar: $9k).
+    if (!this.cfg.paceRelax) return { cfg: this.cfg, boosted: false, pace };
     const relaxed = { ...this.cfg };
     if (relaxed.minVolH1) relaxed.minVolH1 *= 0.6;
     if (relaxed.minLiqUsd) relaxed.minLiqUsd *= 0.6;
@@ -451,6 +454,18 @@ export class Bot {
       if (!ex.pass) {
         console.log(`[extension] skip: ${v.symbol} — ${ex.reason}`);
         return this.skip(v, sig, [`extension: ${ex.reason}`]);
+      }
+    }
+    // Fresh-history fail-closed (user 2026-10-13, entry-fixes A3): a coin discovered mid-run
+    // (trending/movers lists) with too little sampled history for the guards above to judge
+    // gets judged on DexScreener's aggregates instead of waved through — BORING arrived with
+    // no samples at +41.6% in 5m on a $14.5k cap and both sample guards passed it by default.
+    // Fast-stream pops exempt (same reasoning as the stale-pop veto: the stream IS the history).
+    if (!(sig.metrics && sig.metrics.fastStream)) {
+      const fc = freshHistoryCheck(this.history.get(v.address), v, n, { maxChgM5: this.cfg.freshMaxChgM5, smallMc: this.cfg.freshSmallMc, m5ShareH1: this.cfg.freshM5ShareH1 });
+      if (!fc.pass) {
+        console.log(`[fresh] skip: ${v.symbol} — ${fc.reason}`);
+        return this.skip(v, sig, [`fresh: ${fc.reason}`]);
       }
     }
     // Re-entry quality: same coin signaled again — only re-enter on a dip, never the top of a green candle.

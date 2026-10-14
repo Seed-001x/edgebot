@@ -37,6 +37,9 @@ export function detect(v, samples, cfg, now) {
   if (eligible(v, cfg, now).length) return null;
 
   const ratio5 = buyRatio(v.buysM5, v.sellsM5);
+  // B3 wash reject (shared): a small cap whose hourly volume is a multiple of its whole
+  // market cap is being churned, not accumulated (Urara: $71k volH1 on a $15.6k cap).
+  const washVol = cfg.trendMaxVolToMc > 0 && v.mc > 0 && v.mc < cfg.freshSmallMc && v.volH1 > cfg.trendMaxVolToMc * v.mc;
 
   // ---- POP ----
   const win = (samples || []).filter(s => now - s.ts <= cfg.popWindowSec * 1000);
@@ -52,7 +55,7 @@ export function detect(v, samples, cfg, now) {
     const notBouncing = notCrashedH6 && v.chgH1 != null && v.chgH1 >= cfg.popMinChgH1 && last >= hourHigh * (1 - cfg.popMaxBelowHigh);
     if (
       gain >= cfg.popGainPct && gain <= cfg.popMaxGainPct &&
-      draw <= cfg.maxDrawFromPeak && notBouncing &&
+      draw <= cfg.maxDrawFromPeak && notBouncing && !washVol &&
       v.volM5 >= cfg.popMinVolM5 &&
       v.buysM5 >= cfg.popMinBuysM5 &&
       ratio5 != null && ratio5 >= cfg.minBuyRatioM5
@@ -64,20 +67,34 @@ export function detect(v, samples, cfg, now) {
   // ---- TREND ----
   // Fresh momentum only: most of the hourly move must be happening NOW (chgM5 a real share of chgH1),
   // not a spike from 40 minutes ago that's just drifting at the top.
-  if (
-    v.chgH1 != null && v.chgM5 != null &&
-    v.chgH1 >= cfg.trendMinH1 && v.chgH1 <= cfg.trendMaxH1 &&
-    v.chgM5 >= cfg.trendMinM5 &&
-    v.chgM5 >= v.chgH1 * cfg.trendFreshM5Ratio &&
-    v.volH1 >= cfg.trendMinVolH1 &&
-    v.buysM5 >= cfg.trendMinBuysM5 &&
-    ratio5 != null && ratio5 >= cfg.trendMinBuyRatio
-  ) {
+  // PAUSED by default (B1, user 2026-10-13): tonight's trend went 0-for-9 (−0.091) while pop
+  // produced the day's wins. TREND_ENABLED=1 revives it — with the B2–B5 guards below standing.
+  if (cfg.trendEnabled) {
+    // B2: the whole hour must be buy-dominated (a 0.75 ratio from 14 trades is not demand),
+    // and the 5m window must hold enough trades for any ratio to mean anything.
+    const ratioH1 = buyRatio(v.buysH1, v.sellsH1);
+    const hourDemand = !(cfg.trendMinBuyRatioH1 > 0) || (ratioH1 != null && ratioH1 >= cfg.trendMinBuyRatioH1);
+    const enoughTxns = !(cfg.trendMinTxnsM5 > 0) || ((v.buysM5 || 0) + (v.sellsM5 || 0) >= cfg.trendMinTxnsM5);
+    // B5: dead-coin revival — an old pool suddenly up huge over 6h is a zombie pump, not a runner.
+    const ageD = v.createdAt ? (now - v.createdAt) / 86400000 : 0;
+    const revival = cfg.revivalMinAgeD > 0 && ageD >= cfg.revivalMinAgeD && v.chgH6 != null && v.chgH6 >= cfg.revivalMaxChgH6;
+    if (
+      v.chgH1 != null && v.chgM5 != null &&
+      v.chgH1 >= cfg.trendMinH1 && v.chgH1 <= cfg.trendMaxH1 &&
+      v.chgM5 >= cfg.trendMinM5 &&
+      v.chgM5 >= v.chgH1 * cfg.trendFreshM5Ratio &&
+      v.volH1 >= cfg.trendMinVolH1 &&
+      v.buysM5 >= cfg.trendMinBuysM5 &&
+      ratio5 != null && ratio5 >= cfg.trendMinBuyRatio &&
+      !(cfg.trendMinMc > 0 && v.mc < cfg.trendMinMc) &&
+      hourDemand && enoughTxns && !washVol && !revival
+    ) {
     // don't buy a coin that already rolled over from a recent high
     const recent = (samples || []).filter(s => now - s.ts <= 15 * 60 * 1000);
     const high = recent.length ? Math.max(...recent.map(s => s.price)) : v.price;
     if (v.price >= high * 0.85) {
       return { setup: 'trend', strength: v.chgH1 / 10, metrics: { chgH1: v.chgH1, chgM5: v.chgM5, buyRatioM5: +ratio5.toFixed(2), volH1: v.volH1 } };
+    }
     }
   }
   return null;
@@ -108,6 +125,7 @@ export function fastPop(samples, cfg, now) {
   const volSol = win.reduce((a, s) => a + (s.sol || 0), 0);
   if (
     gain >= cfg.fastPopGainPct &&
+    !(cfg.fastPopMaxGainPct > 0 && gain > cfg.fastPopMaxGainPct) &&
     draw <= cfg.fastPopMaxDrop &&
     volSol >= cfg.fastPopMinVolSol &&
     buys >= cfg.fastPopMinBuys &&

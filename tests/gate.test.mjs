@@ -141,3 +141,22 @@ test('extensionCheck: extreme extension above the 1h base vetoed, near-base entr
   // disabled
   assert.equal(extensionCheck(otto, 86, now, { maxExt: 0 }).pass, true);
 });
+
+// ---- A3 fresh-history fail-closed (entry fixes 2026-10-13) ----
+test('A3: BORING replay — no samples, +41.6% in 5m vs +13.8% on the hour at $14.5k — is rejected', async () => {
+  const { freshHistoryCheck } = await import('../src/gate.js');
+  const r = freshHistoryCheck([], { chgM5: 41.6, chgH1: 13.78, mc: 14_494 }, NOW);
+  assert.equal(r.pass, false);
+});
+test('A3: a small cap whose whole hour is one 5m candle is rejected even under the m5 cap', async () => {
+  const { freshHistoryCheck } = await import('../src/gate.js');
+  const r = freshHistoryCheck([], { chgM5: 20, chgH1: 24, mc: 20_000 }, NOW);
+  assert.equal(r.pass, false);
+});
+test('A3: thin history with calm aggregates passes; ample history is judged by the sampled guards', async () => {
+  const { freshHistoryCheck } = await import('../src/gate.js');
+  assert.equal(freshHistoryCheck([], { chgM5: 10, chgH1: 40, mc: 50_000 }, NOW).pass, true);
+  const samples = Array.from({ length: 12 }, (_, i) => ({ ts: NOW - (11 - i) * 60000, price: 1 }));
+  const r = freshHistoryCheck(samples, { chgM5: 90, chgH1: 95, mc: 14_000 }, NOW);
+  assert.equal(r.pass, true); assert.equal(r.judged, true);
+});

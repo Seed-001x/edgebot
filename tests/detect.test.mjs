@@ -40,24 +40,25 @@ test('pop: twenty buys with the same move is momentum (five is not)', () => {
   const r = detect(view({ price: 1.5, buysM5: 20, sellsM5: 4 }), series(prices), cfg, NOW);
   assert.equal(r.setup, 'pop');
 });
+const tcfg = testCfg({ trendEnabled: 1 });
 test('trend: already-ranked runner still green, no history needed', () => {
-  const r = detect(view({ chgH1: 80, chgM5: 30, volH1: 300_000 }), [], cfg, NOW);
+  const r = detect(view({ chgH1: 80, chgM5: 30, volH1: 300_000 }), [], tcfg, NOW);
   assert.equal(r.setup, 'trend');
 });
 test('trend: stale move is chasing — most of the 1h move must be in the last 5m', () => {
-  assert.equal(detect(view({ chgH1: 80, chgM5: 10, volH1: 300_000 }), [], cfg, NOW), null);
-  const r = detect(view({ chgH1: 80, chgM5: 30, volH1: 300_000 }), [], cfg, NOW);
+  assert.equal(detect(view({ chgH1: 80, chgM5: 10, volH1: 300_000 }), [], tcfg, NOW), null);
+  const r = detect(view({ chgH1: 80, chgM5: 30, volH1: 300_000 }), [], tcfg, NOW);
   assert.equal(r.setup, 'trend');
 });
 test('trend: skipped if it already rolled over >15% from a recent high', () => {
-  const r = detect(view({ price: 1, chgH1: 80, chgM5: 30, volH1: 300_000 }), series([1.4, 1.4, 1.3, 1.1, 1]), cfg, NOW);
+  const r = detect(view({ price: 1, chgH1: 80, chgM5: 30, volH1: 300_000 }), series([1.4, 1.4, 1.3, 1.1, 1]), tcfg, NOW);
   assert.equal(r, null);
 });
 test('trend: skipped when M5 is red', () => {
-  assert.equal(detect(view({ chgH1: 80, chgM5: -3, volH1: 300_000 }), [], cfg, NOW), null);
+  assert.equal(detect(view({ chgH1: 80, chgM5: -3, volH1: 300_000 }), [], tcfg, NOW), null);
 });
 test('trend: one single buy is not momentum', () => {
-  assert.equal(detect(view({ chgH1: 80, chgM5: 30, volH1: 300_000, buysM5: 1, sellsM5: 0 }), [], cfg, NOW), null);
+  assert.equal(detect(view({ chgH1: 80, chgM5: 30, volH1: 300_000, buysM5: 1, sellsM5: 0 }), [], tcfg, NOW), null);
 });
 test('eligibility: thin pool and tiny cap are rejected', () => {
   assert.ok(eligible(view({ liq: 5000 }), cfg).length > 0);
@@ -135,4 +136,54 @@ test('fastpop: a move that stopped printing does not fire', () => {
 });
 test('fastpop: too few trades does not fire', () => {
   assert.equal(fastPop(fTrades(ramp(1, 1.5, 6), { stepMs: 10000 }), cfg, NOW), null);
+});
+
+// ---- entry fixes 2026-10-13 (killswitch-entry-fixes.md, verified against the bot's own losers) ----
+test('B1: trend is paused by default — the same view that fired all day returns nothing', () => {
+  assert.equal(detect(view({ chgH1: 80, chgM5: 30, volH1: 300_000 }), [], cfg, NOW), null);
+});
+test('B4: trend needs a $30k market cap (BORING was $15k)', () => {
+  assert.equal(detect(view({ chgH1: 80, chgM5: 30, volH1: 300_000, mc: 15_000 }), [], tcfg, NOW), null);
+});
+test('B2: Urara replay — a 0.71 5m ratio from 14 trades while the HOUR was sell-heavy (411 buys / 445 sells) is rejected', () => {
+  const v = view({ chgH1: 30.06, chgM5: 20, volH1: 171_303, buysH1: 411, sellsH1: 445, buysM5: 10, sellsM5: 4 }); // volH1 raised past the floor so the B2 teeth are what bite
+  assert.equal(detect(v, [], tcfg, NOW), null);
+});
+test('B2: hour buy-dominated but only 14 trades in 5m is still not demand', () => {
+  const v = view({ chgH1: 80, chgM5: 30, volH1: 300_000, buysH1: 500, sellsH1: 400, buysM5: 10, sellsM5: 4 });
+  assert.equal(detect(v, [], tcfg, NOW), null);
+});
+test('B2: hour buy-dominated with real 5m flow passes', () => {
+  const v = view({ chgH1: 80, chgM5: 30, volH1: 300_000, buysH1: 500, sellsH1: 400, buysM5: 30, sellsM5: 10 });
+  assert.equal(detect(v, [], tcfg, NOW).setup, 'trend');
+});
+test('B5: Urara revival replay — 67-day-old pool, +550% in 6h, is skipped', () => {
+  const v = view({ chgH1: 80, chgM5: 30, volH1: 300_000, chgH6: 550, createdAt: NOW - 67 * 86400000 });
+  assert.equal(detect(v, [], tcfg, NOW), null);
+  const young = view({ chgH1: 80, chgM5: 30, volH1: 300_000, chgH6: 550, createdAt: NOW - 3600000 });
+  assert.equal(detect(young, [], tcfg, NOW).setup, 'trend');
+});
+test('B3: wash volume on a small cap is not a pop (Urara shape: $71k hourly volume on a $15.6k cap)', () => {
+  const v = view({ price: 1.5, mc: 15_600, liq: 20_000, volH1: 71_303, chgH1: 30 });
+  assert.equal(detect(v, series(popPrices), cfg, NOW), null);
+  const real = view({ price: 1.5, mc: 15_600, liq: 20_000, volH1: 40_000, chgH1: 30 });
+  assert.equal(detect(real, series(popPrices), cfg, NOW).setup, 'pop');
+});
+test('A5: pop buy-ratio floor is 0.60 — 0.56 (ARCADES) is skipped, 0.61 passes', () => {
+  assert.equal(detect(view({ price: 1.5, buysM5: 28, sellsM5: 22 }), series(popPrices), cfg, NOW), null);
+  assert.equal(detect(view({ price: 1.5, buysM5: 61, sellsM5: 39 }), series(popPrices), cfg, NOW).setup, 'pop');
+});
+test('A5: trend buy-ratio floor is 0.60 — 0.56 is skipped', () => {
+  const v = view({ chgH1: 80, chgM5: 30, volH1: 300_000, buysM5: 28, sellsM5: 22 });
+  assert.equal(detect(v, [], tcfg, NOW), null);
+});
+test('A4: the fast-pop ceiling knob works when enabled — and is off by default so OSPREY lives', () => {
+  const mk = (top) => Array.from({ length: 20 }, (_, i) => ({
+    ts: NOW - (19 - i) * 2000, price: 1 + (top - 1) * (i / 19), sol: 0.2, side: i % 5 === 4 ? 'sell' : 'buy',
+  }));
+  const capped = testCfg({ fastPopMaxGainPct: 75 });
+  assert.equal(fastPop(mk(2.2), capped, NOW), null); // +120% over a 75 ceiling
+  const r = fastPop(mk(1.5), capped, NOW);
+  assert.equal(r.setup, 'pop'); assert.equal(r.metrics.fastStream, 1);
+  assert.ok(fastPop(mk(2.2), cfg, NOW)); // default cfg: no ceiling — V-recoveries still fire
 });
