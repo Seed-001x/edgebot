@@ -153,6 +153,21 @@ export function loadConfig(env = process.env) {
     flowWalletsConfl: num(env, 'FLOW_WALLETS_CONFL', 2),  // …or this many distinct wallets buying the same mint…
     flowWindowMin: num(env, 'FLOW_WINDOW_MIN', 15),       // …inside this window (any size above the 0.1 SOL dust floor)
 
+    // ---- 'graduation watch' (user 2026-10-14: "do that every 2 minutes then not 3hrs") ----
+    // Post-graduation runners were structurally invisible: Plois graduated and ran +41%
+    // in 5m while the bot had never seen the mint — the /reallists graduated list arrives
+    // EMPTY (mirror gap) and the movers/trending scrape is 3-hourly. This poller asks
+    // pump.fun's v3 API for recently COMPLETED coins every GRAD_POLL_SEC and feeds fresh
+    // graduations into the watchlist through noteMint's reserved slice (source
+    // 'graduated'). GRAD_FRESH_MIN is the activity window: a first-observed completion
+    // only counts while the coin's last trade is inside it. There is no graduation
+    // timestamp in the v3 payload and created_timestamp cannot judge freshness (Plois
+    // sat on the curve 49 minutes before graduating) — the first-observed-completion
+    // transition is the freshness signal; the first poll after boot only primes it.
+    gradWatchEnabled: num(env, 'GRAD_WATCH_ENABLED', 1) === 1,
+    gradPollSec: num(env, 'GRAD_POLL_SEC', 120),          // how often to ask pump.fun for fresh completions
+    gradFreshMin: num(env, 'GRAD_FRESH_MIN', 30),         // a first-seen completion counts while its last trade is within this window
+
     // Pre-buy freshness guard: abort if the price moved hard between signal and execution (stale quote).
     prebuyMaxDumpPct: num(env, 'PREBUY_MAX_DUMP_PCT', 30), // fresh < signal*(1-30%) → dumped, abort
     prebuyMaxPumpPct: num(env, 'PREBUY_MAX_PUMP_PCT', 100), // fresh > signal*2 → chasing, abort
@@ -322,6 +337,8 @@ export function validateConfig(cfg) {
   if (cfg.flowMinSol < 0) errs.push('FLOW_MIN_SOL must be >= 0');
   if (cfg.flowWalletsConfl < 1 || cfg.flowWalletsConfl > 20) errs.push('FLOW_WALLETS_CONFL must be between 1 and 20');
   if (cfg.flowWindowMin < 1 || cfg.flowWindowMin > 240) errs.push('FLOW_WINDOW_MIN must be between 1 and 240');
+  if (cfg.gradPollSec < 30 || cfg.gradPollSec > 3600) errs.push('GRAD_POLL_SEC must be between 30 and 3600');
+  if (cfg.gradFreshMin < 1 || cfg.gradFreshMin > 1440) errs.push('GRAD_FRESH_MIN must be between 1 and 1440');
   if (cfg.creatorVolBypassUsd < 0) errs.push('CREATOR_VOL_BYPASS_USD must be >= 0 (0 = off)');
   if (cfg.streakPauseN < 0 || cfg.streakPauseN > 50) errs.push('STREAK_PAUSE_N must be between 0 and 50 (0 = off)');
   if (cfg.streakPauseMinMin < 0 || cfg.streakPauseMinMin > 1440) errs.push('STREAK_PAUSE_MIN_MIN must be between 0 and 1440');

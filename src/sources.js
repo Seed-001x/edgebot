@@ -35,13 +35,42 @@ export function viewOf(pair) {
   };
 }
 
-/** Latest view per mint (best-liquidity pair). Chunks of 30, fetched with bounded
+/**
+ * Pure: pick the ONE view that represents a mint from all its DexScreener pairs.
+ * Default rule (unchanged): the best-liquidity pair wins.
+ *
+ * Graduation exception: a graduated coin keeps a CORPSE bonding-curve pair beside
+ * its live PumpSwap pair, and DexScreener can keep showing the corpse with phantom
+ * liquidity for a while after the flip — a best-liq read then serves frozen curve
+ * aggregates and the detectors go blind on exactly the coins that just graduated
+ * (Plois, 2026-10-14). So when a non-curve (AMM) pair exists AND is actually
+ * trading (5m txns > 0), the best-liquidity LIVE AMM pair wins over any curve
+ * pair, whatever the corpse claims. A dead AMM pair (no 5m trades) never
+ * displaces a live curve pair — a still-curving coin with a random empty pool
+ * keeps its curve view, exactly as before.
+ */
+export function selectView(pairs) {
+  let best = null, bestLiveAmm = null;
+  for (const p of pairs || []) {
+    const v = viewOf(p);
+    if (!v) continue;
+    if (!best || v.liq > best.liq) best = v;
+    if (p.dexId && p.dexId !== 'pumpfun') {
+      const tx = (p.txns && p.txns.m5) || {};
+      const activeM5 = (Number(tx.buys) || 0) + (Number(tx.sells) || 0) > 0;
+      if (activeM5 && (!bestLiveAmm || v.liq > bestLiveAmm.liq)) bestLiveAmm = v;
+    }
+  }
+  return bestLiveAmm || best;
+}
+
+/** Latest view per mint (best-liquidity pair, via selectView). Chunks of 30, fetched with bounded
  *  concurrency — the sequential version made a full watchlist sweep take ~30s at
  *  700+ mints, so the "5s poll" was really a slow crawl and widening the watchlist
  *  made each scan SLOWER (user report 2026-10-12). 6 workers keep a sweep ~2s. */
 export async function fetchViews(mints) {
   const uniq = [...new Set(mints)].filter(Boolean);
-  const best = new Map();
+  const byMint = new Map(); // mint -> every pair DexScreener returned for it
   const chunks = [];
   for (let i = 0; i < uniq.length; i += 30) chunks.push(uniq.slice(i, i + 30));
   let idx = 0;
@@ -50,14 +79,19 @@ export async function fetchViews(mints) {
       const chunk = chunks[idx++];
       const pairs = await fetchJson(`${DS}/tokens/v1/solana/${chunk.join(',')}`);
       for (const p of pairs || []) {
-        const v = viewOf(p);
-        if (!v) continue;
-        const cur = best.get(v.address);
-        if (!cur || v.liq > cur.liq) best.set(v.address, v);
+        const mint = p && p.baseToken && p.baseToken.address;
+        if (!mint) continue;
+        if (!byMint.has(mint)) byMint.set(mint, []);
+        byMint.get(mint).push(p);
       }
     }
   };
   await Promise.all(Array.from({ length: Math.min(6, Math.max(chunks.length, 1)) }, worker));
+  const best = new Map();
+  for (const [mint, pairs] of byMint) {
+    const v = selectView(pairs);
+    if (v) best.set(mint, v);
+  }
   return best;
 }
 

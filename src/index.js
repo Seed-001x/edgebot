@@ -49,6 +49,23 @@ if (cfg.flowEnabled && (cfg.flowWallets.length || cfg.flowSoloWallets.length)) {
   console.log(`[edgebot] flow watch: ${flow.wallets.length} wallets (${cfg.flowSoloWallets.length} solo), polling every ${cfg.flowPollSec}s`);
 }
 
+// Graduation watch (user 2026-10-14): polls pump.fun's v3 API for fresh
+// completions every GRAD_POLL_SEC and feeds them into the watchlist through
+// noteMint's reserved slice (source 'graduated'). The /reallists graduated list
+// arrives empty and the scrape is 3-hourly — post-graduation runners like Plois
+// were invisible without this. Fail-open.
+if (cfg.gradWatchEnabled) {
+  const { GradWatch } = await import('./gradWatch.js');
+  const grad = new GradWatch({
+    cfg,
+    onAdd: (mint) => bot.noteMint(mint, 'graduated'),
+    onStats: (s) => { bot.stats.gradWatch = s; },
+  });
+  grad.start();
+  process.on('SIGTERM', () => grad.stop());
+  console.log(`[edgebot] graduation watch: polling pump.fun completions every ${cfg.gradPollSec}s (fresh = last trade within ${cfg.gradFreshMin}m of first sighting)`);
+}
+
 const every = (sec, fn) => { fn(); return setInterval(fn, sec * 1000); };
 every(cfg.discoverEverySec, () => bot.discoverTick());
 every(cfg.pollEverySec, () => bot.pollTick());

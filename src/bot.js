@@ -43,6 +43,7 @@ export class Bot {
     this.streamBuf = new Map();  // mint -> recent stream trades (fast pop detection)
     this.fastEvalAt = new Map(); // mint -> ts of last fast-pop evaluation
     this.churnPins = new Map(); // mint -> { at, until } basing watch: dumped coins stay watchlist-pinned past the normal TTL (churn detector)
+    this.curveSeen = new Set(); // mints whose latest view was the pump.fun bonding-curve pair — graduation handoff watches for the flip to an AMM pair
     this.posFile = path.join(cfg.dataDir, 'positions.json');
     this.positions = this.loadPositions();
     this.busy = { discover: false, poll: false, pos: false };
@@ -354,6 +355,8 @@ export class Bot {
         for (const [m] of sorted.slice(this.cfg.watchMax)) if (!held.has(m) && !this.churnPinned(m, n)) this.watch.delete(m);
       }
       this.history.prune(n, new Set([...this.watch.keys(), ...held]));
+      // graduation-handoff bookkeeping only tracks mints we still watch or hold
+      if (this.curveSeen.size) { const keep = new Set([...this.watch.keys(), ...held]); for (const m of this.curveSeen) if (!keep.has(m)) this.curveSeen.delete(m); }
     } catch (e) { this.err('discover', e); } finally { this.busy.discover = false; this.saveStats(); }
   }
 
@@ -387,6 +390,7 @@ export class Bot {
         this.latest.set(mint, v);
         this.latestAt.set(mint, n);
         this.history.record(v, n);
+        this._noteGraduation(mint, v, n);
         this.journal.observe(v);
         if (this.positions.some(p => p.mint === mint)) continue;
         if (tickCfg.churnEnabled) this._updateChurnPins(mint, n);
@@ -447,6 +451,27 @@ export class Bot {
     if (!p) return false;
     if (n > p.until) { this.churnPins.delete(mint); return false; }
     return true;
+  }
+
+  // ------------------------------------------------------------ graduation handoff
+  // A coin already on the watchlist that GRADUATES mid-watch gets a fresh full TTL
+  // from the graduation moment (user 2026-10-14). Without this, a coin that sat
+  // quiet on the curve for most of WATCH_TTL_MIN flips to PumpSwap just as its
+  // watch entry expires — the post-graduation run (Plois: +41% in the 5m right
+  // after the flip) happens with the bot no longer sampling it. The flip signal is
+  // the view's dex: 'pumpfun' (bonding curve) on one poll, any AMM dex on a later
+  // poll. selectView's live-AMM preference makes the flip visible as soon as the
+  // PumpSwap pair prints trades. One-shot per mint: once flipped, the mint leaves
+  // curveSeen and normal TTL/discovery rules govern it from the refreshed entry.
+  _noteGraduation(mint, v, n) {
+    if (!v || !v.dex) return;
+    if (v.dex === 'pumpfun') { this.curveSeen.add(mint); return; }
+    if (!this.curveSeen.delete(mint)) return; // only a mint previously seen on the curve can flip
+    const w = this.watch.get(mint);
+    if (!w) return;
+    this.watch.set(mint, { ...w, ts: n });
+    this.stats.gradHandoffs = (this.stats.gradHandoffs || 0) + 1;
+    console.log(`[gradwatch] ${v.symbol} graduated (curve → ${v.dex}) — watch TTL refreshed`);
   }
 
   // ------------------------------------------------------------ smart-wallet flow
