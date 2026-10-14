@@ -10,7 +10,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { History } from './history.js';
-import { detect, detectChurn, eligible, fastPop } from './detect.js';
+import { detect, detectChurn, detectLiftoff, eligible, fastPop } from './detect.js';
 import { runGates, hasHardFail, tempRuleViolation, blockedNameWord, extensionCheck, freshHistoryCheck } from './gate.js';
 import { evaluateExit } from './exits.js';
 import { bundleRisk, bundleDecision, pickTracked, linkedWeights, CREATOR_KEY } from './bundleWatch.js';
@@ -396,9 +396,13 @@ export class Bot {
         if (tickCfg.churnEnabled) this._updateChurnPins(mint, n);
         // Pop/trend first, exactly as before; churn is an ADDITIONAL detector judged
         // only when the classic pair passed (user 2026-10-14: "we still keep pop tho,
-        // this is just adding more signals").
+        // this is just adding more signals"). Liftoff likewise, judged only when
+        // pop/trend and churn both passed — it reads the same samples for the START
+        // of a move (flat base → stepped climb), the grind shape the burst
+        // detectors structurally miss (UNTXED/CODE, user 2026-10-14).
         let sig = detect(v, this.history.get(mint), tickCfg, n);
         if (!sig && tickCfg.churnEnabled) sig = detectChurn(v, this.history.get(mint), tickCfg, n);
+        if (!sig && tickCfg.liftoffEnabled) sig = detectLiftoff(v, this.history.get(mint), tickCfg, n);
         if (!sig) continue;
         const last = this.lastSignal.get(mint) || 0;
         if (n - last < this.cfg.signalCooldownMin * 60000) continue;
@@ -416,6 +420,7 @@ export class Bot {
       for (const c of candidates.slice(0, this.cfg.maxSignalsPerTick)) {
         this.lastSignal.set(c.v.address, this.now());
         if (c.sig.setup === 'churn') { this.stats.churn = this.stats.churn || { fires: 0 }; this.stats.churn.fires++; }
+        if (c.sig.setup === 'liftoff') { this.stats.liftoff = this.stats.liftoff || { fires: 0 }; this.stats.liftoff.fires++; }
         await this.onSignal(c.v, c.sig).catch(e => this.err('onSignal', e));
       }
     } catch (e) { this.err('poll', e); } finally { this.busy.poll = false; this.saveStats(); }

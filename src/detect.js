@@ -168,6 +168,89 @@ export function detectChurn(v, samples, cfg, now) {
   };
 }
 
+// ---- LIFTOFF (coin lifting off a flat base, user 2026-10-14) ----
+// The BEGINNING of an uptrend, not the move after it ran. UNTXED and CODE ground up
+// for an hour (+121% / +73% on the hour in ~+1.5% price steps): pop waits for a
+// vertical burst and trend's freshness is volume-based but its gain is hourly, so
+// the first leg of a grind belonged to nobody. This detector reads the bot's own
+// samples for that first leg: a tight flat BASE, then a stepped climb off it with
+// rising lows, building buy pressure and picking-up trade activity — fired while
+// the price is still within liftoffMaxGainPct of the base low (early by
+// construction; beyond that band pop/trend own the coin). Churn is the sibling:
+// it fires at the lows BEFORE any move, liftoff fires on the first confirmed leg up.
+//   windows (all inside the last liftoffLookbackMin): base = samples older than
+//   liftoffClimbMin; climb = the last liftoffClimbMin. Base range (high−low)/low
+//   must be ≤ liftoffBaseRangePct; current price must sit between liftoffMinGainPct
+//   and liftoffMaxGainPct above the base low; the climb's lows must rise (below);
+//   the latest view's 5m buy share must be ≥ liftoffMinBuyShare; and the climb
+//   window's average per-sample trade count (buysM5+sellsM5 snapshots — the same
+//   fields churn reads) must be ≥ liftoffTxnBoost × the base window's average.
+export function detectLiftoff(v, samples, cfg, now) {
+  if (!cfg.liftoffEnabled) return null;
+  if (eligible(v, cfg, now).length) return null;
+  const a = (samples || []).filter(s => s && s.price > 0);
+  if (a.length < 6) return null;
+  const last = a[a.length - 1];
+
+  const look = a.filter(s => now - s.ts <= cfg.liftoffLookbackMin * 60000);
+  if (look.length < 6) return null;
+  // Not enough sampled history to call anything a "base" (fail closed, like the
+  // fresh-history guard: thin history lies).
+  if (last.ts - look[0].ts < cfg.liftoffMinHistoryMin * 60000) return null;
+  const climbStart = now - cfg.liftoffClimbMin * 60000;
+  const base = look.filter(s => s.ts < climbStart);
+  const climb = look.filter(s => s.ts >= climbStart);
+  if (base.length < 3 || climb.length < 3) return null;
+
+  // BASE: the pre-climb range must be tight — sideways, not a slow bleed or a ramp.
+  let baseLow = Infinity, baseHigh = 0;
+  for (const s of base) { if (s.price < baseLow) baseLow = s.price; if (s.price > baseHigh) baseHigh = s.price; }
+  if (!(baseLow > 0)) return null;
+  const baseRangePct = (baseHigh - baseLow) / baseLow * 100;
+  if (baseRangePct > cfg.liftoffBaseRangePct) return null;
+
+  // CLIMB: off the base low, but still early.
+  const gainPct = (last.price / baseLow - 1) * 100;
+  if (gainPct < cfg.liftoffMinGainPct || gainPct > cfg.liftoffMaxGainPct) return null;
+
+  // RISING STRUCTURE: the climb window is split into 3 consecutive equal time
+  // chunks; each chunk's minimum price must be >= the previous chunk's minimum,
+  // allowing a 0.5% tolerance for print noise (chunkMin[i+1] >= chunkMin[i] * 0.995).
+  // A single wick up fails here — its later chunks dip back to the earlier lows —
+  // even when the net gain passes. An empty chunk can't be judged: fail closed.
+  const third = (cfg.liftoffClimbMin * 60000) / 3;
+  const chunkMin = [Infinity, Infinity, Infinity];
+  for (const s of climb) {
+    const i = Math.min(2, Math.floor((s.ts - climbStart) / third));
+    if (s.price < chunkMin[i]) chunkMin[i] = s.price;
+  }
+  if (chunkMin.some(m => !isFinite(m))) return null;
+  const TOL = 0.005;
+  if (chunkMin[1] < chunkMin[0] * (1 - TOL) || chunkMin[2] < chunkMin[1] * (1 - TOL)) return null;
+
+  // BUY PRESSURE: the latest view's trailing-5m buy share.
+  const ratio5 = buyRatio(v.buysM5 || 0, v.sellsM5 || 0);
+  if (ratio5 == null || ratio5 < cfg.liftoffMinBuyShare) return null;
+
+  // ACTIVITY PICKUP: the climb must be trading harder than the base did.
+  const txAvg = (arr) => arr.reduce((acc, s) => acc + (s.buysM5 || 0) + (s.sellsM5 || 0), 0) / arr.length;
+  const baseTx = txAvg(base), climbTx = txAvg(climb);
+  if (!(baseTx > 0) || !(climbTx >= cfg.liftoffTxnBoost * baseTx)) return null;
+
+  const baseMin = Math.round((base[base.length - 1].ts - base[0].ts) / 60000);
+  const metrics = { gainPct: +gainPct.toFixed(1), baseRangePct: +baseRangePct.toFixed(1), buyRatioM5: +ratio5.toFixed(2), txnBoost: +(climbTx / baseTx).toFixed(2), baseMin };
+  return {
+    setup: 'liftoff',
+    // Strength is the gain off the base low itself (10–35 by construction) — the
+    // same scale as pop's window gain, so a liftoff roughly ties a weak pop and
+    // never outranks a strong one when candidates compete for the per-tick slots.
+    // It is the earliest, softest signal by design.
+    strength: gainPct,
+    metrics,
+    label: `liftoff: +${Math.round(gainPct)}% off ${baseMin}m base, ratio ${ratio5.toFixed(2)}`,
+  };
+}
+
 // ---- FAST POP (live trade stream) ----
 // Samples are individual stream trades: { ts, price, sol, side: 'buy'|'sell' } with
 // price in SOL per token as printed by the trade itself. Judged over a short rolling

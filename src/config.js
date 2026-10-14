@@ -135,6 +135,23 @@ export function loadConfig(env = process.env) {
     churnWatchH: num(env, 'CHURN_WATCH_H', 3),            // basing watch: a coin that dumped stays watchlist-pinned this many hours past WATCH_TTL
     churnWatchMax: num(env, 'CHURN_WATCH_MAX', 40),       // max pinned coins (oldest pin evicted first)
 
+    // ---- 'liftoff' detector (user 2026-10-14): the BEGINNING of an uptrend — a coin
+    // lifting off a tight flat BASE in steps, with rising lows, building buy pressure
+    // and picking-up trade activity, fired while still early (≤ liftoffMaxGainPct off
+    // the base low). The grind shape (UNTXED +121%/h, CODE +73%/h in ~+1.5% steps) is
+    // structurally invisible to pop (needs a vertical burst) and was invisible to
+    // trend's old price-freshness rule for the same reason. Churn catches the base
+    // BEFORE any move; liftoff catches the first confirmed leg up off it.
+    liftoffEnabled: num(env, 'LIFTOFF_ENABLED', 1) === 1,
+    liftoffMinHistoryMin: num(env, 'LIFTOFF_MIN_HISTORY_MIN', 20), // minutes of sampled history before a base can be judged at all
+    liftoffLookbackMin: num(env, 'LIFTOFF_LOOKBACK_MIN', 45),      // base + climb are judged inside this trailing window
+    liftoffBaseRangePct: num(env, 'LIFTOFF_BASE_RANGE_PCT', 15),   // (baseHigh − baseLow) / baseLow ceiling for the base to count as "flat"
+    liftoffMinGainPct: num(env, 'LIFTOFF_MIN_GAIN_PCT', 10),       // current price must be at least this far above baseLow…
+    liftoffMaxGainPct: num(env, 'LIFTOFF_MAX_GAIN_PCT', 35),       // …and no further — beyond this it's extended (pop/trend territory)
+    liftoffClimbMin: num(env, 'LIFTOFF_CLIMB_MIN', 10),            // the recent window judged for rising lows / activity pickup; the base is everything older in the lookback
+    liftoffMinBuyShare: num(env, 'LIFTOFF_MIN_BUY_SHARE', 0.55),   // latest view's trailing-5m buy share floor
+    liftoffTxnBoost: num(env, 'LIFTOFF_TXN_BOOST', 1.5),           // climb-window avg trade count must be at least this × the base window's
+
     // ---- 'flow' detector (user 2026-10-14): tracked smart wallets' BUYS are the trigger,
     // not price momentum. Polls each wallet's recent transactions over the existing Helius
     // RPC (RPC_URLS) — NOT the PumpPortal stream (dark while its wallet sits under the 0.02
@@ -336,6 +353,14 @@ export function validateConfig(cfg) {
   if (cfg.churnMinAvgUsd < 0) errs.push('CHURN_MIN_AVG_USD must be >= 0');
   if (cfg.churnWatchH < 0 || cfg.churnWatchH > 72) errs.push('CHURN_WATCH_H must be between 0 and 72');
   if (cfg.churnWatchMax < 0 || cfg.churnWatchMax > 500) errs.push('CHURN_WATCH_MAX must be between 0 and 500');
+  if (cfg.liftoffMinHistoryMin < 0 || cfg.liftoffMinHistoryMin > 90) errs.push('LIFTOFF_MIN_HISTORY_MIN must be between 0 and 90');
+  if (cfg.liftoffLookbackMin < 0 || cfg.liftoffLookbackMin > 90) errs.push('LIFTOFF_LOOKBACK_MIN must be between 0 and 90');
+  if (cfg.liftoffBaseRangePct < 0 || cfg.liftoffBaseRangePct > 100) errs.push('LIFTOFF_BASE_RANGE_PCT must be between 0 and 100');
+  if (cfg.liftoffMinGainPct < 0 || cfg.liftoffMinGainPct > 1000) errs.push('LIFTOFF_MIN_GAIN_PCT must be between 0 and 1000');
+  if (cfg.liftoffMaxGainPct < cfg.liftoffMinGainPct || cfg.liftoffMaxGainPct > 5000) errs.push('LIFTOFF_MAX_GAIN_PCT must be >= LIFTOFF_MIN_GAIN_PCT and <= 5000');
+  if (cfg.liftoffClimbMin < 0 || cfg.liftoffClimbMin > 120) errs.push('LIFTOFF_CLIMB_MIN must be between 0 and 120');
+  if (cfg.liftoffMinBuyShare < 0 || cfg.liftoffMinBuyShare > 1) errs.push('LIFTOFF_MIN_BUY_SHARE must be between 0 and 1');
+  if (cfg.liftoffTxnBoost < 0) errs.push('LIFTOFF_TXN_BOOST must be >= 0');
   if (cfg.flowPollSec < 5 || cfg.flowPollSec > 600) errs.push('FLOW_POLL_SEC must be between 5 and 600');
   if (cfg.flowMinSol < 0) errs.push('FLOW_MIN_SOL must be >= 0');
   if (cfg.flowWalletsConfl < 1 || cfg.flowWalletsConfl > 20) errs.push('FLOW_WALLETS_CONFL must be between 1 and 20');
