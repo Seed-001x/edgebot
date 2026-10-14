@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { evaluateExit } from '../src/exits.js';
+import { loadConfig, validateConfig } from '../src/config.js';
 import { testCfg } from './helpers.mjs';
 
 // probation leash OFF in the shared fixture: the section tests below isolate their own rule on
@@ -369,4 +370,177 @@ test('bleed exit vs probation: a probationed dive keeps the leash label — the 
   const d = evaluateExit(p, mark(0.0183), probBleedCfg, NOW);   // move 0.915: bleed conditions also met, leash wins the label
   assert.equal(d.fraction, 1);
   assert.match(d.reason, /probation leash/);
+});
+
+// ---- fail-safe confirmation (user 2026-10-14, "a fail safe to the fail safe"): the three
+//      fail-safe exits (break-even ratchet, bleed exit, probation leash) no longer sell on
+//      the first triggering check — with EXIT_CONFIRM_SEC > 0 the trigger ARMS a pending
+//      ({kind: sinceTs}, persisted on the position as exitPending) and sells only when the
+//      exit's FULL condition has held continuously until the first check at/after the
+//      window; a recovery inside the window cancels it (decision.exitConfirmEvents carries
+//      the outcome for bot.js to count). Fixtures below carry exitPending: {} — the state
+//      bot.js initializes at entry; positions without the field keep the instant behavior
+//      the blocks above assert. `run` threads the returned state back onto the position
+//      exactly as bot.js does. ----
+const run = (p, m, c, now) => {
+  const d = evaluateExit(p, m, c, now);
+  if ('exitPending' in d) p.exitPending = d.exitPending;
+  if ('probationSince' in d) p.probationSince = d.probationSince;
+  if ('moveHist' in d) p.moveHist = d.moveHist;
+  if (d.newPeakMove != null) p.peakMove = d.newPeakMove;
+  if (d.newPeak != null) p.peakRatio = d.newPeak;
+  return d;
+};
+const confBeCfg = { ...beCfg, exitConfirmSec: 10 };
+const confBleedCfg = { ...bleedCfg, exitConfirmSec: 10 };
+const confProbCfg = { ...probCfg, exitConfirmSec: 10 };
+
+test('exit confirmation config: EXIT_CONFIRM_SEC defaults to 10 and validates; 0 is a designed off value; negatives rejected', () => {
+  const c = loadConfig({});
+  assert.equal(c.exitConfirmSec, 10);
+  assert.equal(validateConfig(c).length, 0);
+  assert.equal(loadConfig({ EXIT_CONFIRM_SEC: '0' }).exitConfirmSec, 0);
+  assert.equal(validateConfig(loadConfig({ EXIT_CONFIRM_SEC: '0' })).length, 0);
+  assert.ok(validateConfig(loadConfig({ EXIT_CONFIRM_SEC: '-1' })).some(e => e.includes('EXIT_CONFIRM_SEC')));
+});
+
+// ---- ratchet ----
+test('ratchet confirmation: trigger arms a pending; a recovery above the trigger inside the window cancels it', () => {
+  const p = pos({ entryTs: NOW - 30 * S, entryRoundTrip: 0.95, peakRatio: 1.068, peakMove: 1.124, exitPending: {} });
+  const d1 = run(p, mark(0.019342), confBeCfg, NOW);                    // move 1.018 — the old instant trigger
+  assert.equal(d1.fraction, 0);                                          // NOT sold: the window just opened
+  assert.equal(p.exitPending.ratchet, NOW);
+  assert.deepEqual(d1.exitConfirmEvents, []);
+  const d2 = run(p, mark(0.01995), confBeCfg, NOW + 4 * S);              // move 1.05: back above the +2% line
+  assert.equal(d2.fraction, 0);
+  assert.equal(p.exitPending.ratchet, undefined);                        // pending disarmed
+  assert.deepEqual(d2.exitConfirmEvents, [{ type: 'cancelled', kind: 'ratchet' }]);
+});
+test('ratchet confirmation: trigger held continuously sells at the first check at/after 10s — not before', () => {
+  const p = pos({ entryTs: NOW - 30 * S, peakMove: 1.12, exitPending: {} });
+  assert.equal(run(p, mark(0.0204), confBeCfg, NOW).fraction, 0);        // trigger: pending opens
+  assert.equal(run(p, mark(0.0204), confBeCfg, NOW + 4 * S).fraction, 0);  // 4s in: still holding, no sell
+  assert.equal(run(p, mark(0.0204), confBeCfg, NOW + 8 * S).fraction, 0);  // 8s in: still short of the window
+  const d = run(p, mark(0.0204), confBeCfg, NOW + 12 * S);               // first check past 10s
+  assert.equal(d.fraction, 1);
+  assert.equal(d.reason, 'break-even ratchet (peaked +12.0%, back to +2.0%)');
+  assert.deepEqual(d.exitConfirmEvents, [{ type: 'confirmed', kind: 'ratchet' }]);
+  assert.deepEqual(p.exitPending, {});
+  // a check landing exactly ON the window edge also sells
+  const q = pos({ entryTs: NOW - 30 * S, peakMove: 1.12, exitPending: {} });
+  assert.equal(run(q, mark(0.0204), confBeCfg, NOW).fraction, 0);
+  assert.equal(run(q, mark(0.0204), confBeCfg, NOW + 10 * S).fraction, 1);
+});
+test('ratchet confirmation: cancel then re-trigger starts a FRESH full window', () => {
+  const p = pos({ entryTs: NOW - 30 * S, peakMove: 1.12, exitPending: {} });
+  run(p, mark(0.0204), confBeCfg, NOW);                                  // trigger #1
+  run(p, mark(0.0212), confBeCfg, NOW + 4 * S);                          // recovery: cancelled
+  const re = run(p, mark(0.0204), confBeCfg, NOW + 8 * S);               // trigger #2
+  assert.equal(re.fraction, 0);
+  assert.equal(p.exitPending.ratchet, NOW + 8 * S);                      // stamped at the re-trigger, not the first
+  assert.equal(run(p, mark(0.0204), confBeCfg, NOW + 12 * S).fraction, 0); // 12s after trigger #1 but only 4s into window #2: no sell
+  assert.equal(run(p, mark(0.0204), confBeCfg, NOW + 20 * S).fraction, 1); // window #2 complete
+});
+
+// ---- bleed ----
+test('bleed confirmation: trigger arms a pending; a recovery above −7% inside the window cancels it', () => {
+  const p = pos({ entryTs: NOW - 200 * S, moveHist: hist([120, 0.95], [60, 0.92], [4, 0.915]), exitPending: {} });
+  const d1 = run(p, mark(0.0182), confBleedCfg, NOW);                    // move 0.91, still falling — the old instant fire
+  assert.equal(d1.fraction, 0);
+  assert.equal(p.exitPending.bleed, NOW);
+  const d2 = run(p, mark(0.0192), confBleedCfg, NOW + 4 * S);            // move 0.96: back above the −7% line
+  assert.equal(d2.fraction, 0);
+  assert.equal(p.exitPending.bleed, undefined);
+  assert.deepEqual(d2.exitConfirmEvents, [{ type: 'cancelled', kind: 'bleed' }]);
+});
+test('bleed confirmation: still falling through the window sells at the first check at/after 10s — not before', () => {
+  const p = pos({ entryTs: NOW - 200 * S, moveHist: hist([120, 0.95], [60, 0.92], [4, 0.915]), exitPending: {} });
+  assert.equal(run(p, mark(0.0182), confBleedCfg, NOW).fraction, 0);        // 0.91 vs 0.92 a minute ago: pending
+  assert.equal(run(p, mark(0.0181), confBleedCfg, NOW + 4 * S).fraction, 0);  // 0.905, still falling, 4s in
+  assert.equal(run(p, mark(0.01806), confBleedCfg, NOW + 8 * S).fraction, 0); // 0.903, 8s in
+  const d = run(p, mark(0.018), confBleedCfg, NOW + 12 * S);               // 0.90, window complete
+  assert.equal(d.fraction, 1);
+  assert.equal(d.reason, 'bleed exit (-10.0% and still falling)');
+  assert.deepEqual(d.exitConfirmEvents, [{ type: 'confirmed', kind: 'bleed' }]);
+});
+test('bleed confirmation: cancel then re-trigger starts a FRESH full window', () => {
+  const p = pos({ entryTs: NOW - 200 * S, moveHist: hist([120, 0.95], [60, 0.92], [4, 0.915]), exitPending: {} });
+  run(p, mark(0.0182), confBleedCfg, NOW);                                   // trigger #1
+  run(p, mark(0.0192), confBleedCfg, NOW + 4 * S);                           // recovery above −7%: cancelled
+  const re = run(p, mark(0.0182), confBleedCfg, NOW + 8 * S);               // falling again: trigger #2
+  assert.equal(re.fraction, 0);
+  assert.equal(p.exitPending.bleed, NOW + 8 * S);
+  assert.equal(run(p, mark(0.0181), confBleedCfg, NOW + 16 * S).fraction, 0); // 8s into window #2: no sell
+  const d = run(p, mark(0.018), confBleedCfg, NOW + 20 * S);                // window #2 complete
+  assert.equal(d.fraction, 1);
+  assert.equal(d.reason, 'bleed exit (-10.0% and still falling)');
+});
+test('bleed confirmation: price still ≤ −7% but no longer still-falling cancels the pending (the recovering leg)', () => {
+  const p = pos({ entryTs: NOW - 200 * S, moveHist: hist([60, 0.92]), exitPending: {} });
+  const d1 = run(p, mark(0.0182), confBleedCfg, NOW);                    // 0.91 ≤ 0.92 print: falling, pending opens
+  assert.equal(d1.fraction, 0);
+  assert.equal(p.exitPending.bleed, NOW);
+  const d2 = run(p, mark(0.0185), confBleedCfg, NOW + 4 * S);            // 0.925: still past −7%, but ABOVE the 0.92 lookback — recovering
+  assert.equal(d2.fraction, 0);
+  assert.equal(p.exitPending.bleed, undefined);
+  assert.deepEqual(d2.exitConfirmEvents, [{ type: 'cancelled', kind: 'bleed' }]);
+});
+
+// ---- probation leash ----
+test('leash confirmation: trigger arms a pending; a recovery above the leash line cancels it, probation intact', () => {
+  const p = pos({ entryTs: NOW - 200 * S, probationSince: NOW - 20 * S, exitPending: {} });
+  const d1 = run(p, mark(0.0185), confProbCfg, NOW);                     // move 0.925 — the old instant leash fire
+  assert.equal(d1.fraction, 0);
+  assert.equal(p.exitPending.leash, NOW);
+  const d2 = run(p, mark(0.0188), confProbCfg, NOW + 4 * S);             // move 0.94: above the leash, in band, before expiry
+  assert.equal(d2.fraction, 0);
+  assert.equal(p.exitPending.leash, undefined);
+  assert.equal(p.probationSince, NOW - 20 * S);                          // still on probation — only the sell was disarmed
+  assert.deepEqual(d2.exitConfirmEvents, [{ type: 'cancelled', kind: 'leash' }]);
+});
+test('leash confirmation: dive held through the window sells at the first check at/after 10s — not before', () => {
+  const p = pos({ entryTs: NOW - 200 * S, probationSince: NOW - 20 * S, exitPending: {} });
+  assert.equal(run(p, mark(0.0185), confProbCfg, NOW).fraction, 0);
+  assert.equal(run(p, mark(0.0185), confProbCfg, NOW + 4 * S).fraction, 0);
+  assert.equal(run(p, mark(0.0185), confProbCfg, NOW + 8 * S).fraction, 0);
+  const d = run(p, mark(0.0185), confProbCfg, NOW + 12 * S);
+  assert.equal(d.fraction, 1);
+  assert.equal(d.reason, 'probation leash (-7.5% after stall deadline)');
+  assert.deepEqual(d.exitConfirmEvents, [{ type: 'confirmed', kind: 'leash' }]);
+});
+test('leash confirmation: cancel then re-trigger starts a FRESH full window', () => {
+  const p = pos({ entryTs: NOW - 200 * S, probationSince: NOW - 20 * S, exitPending: {} });
+  run(p, mark(0.0185), confProbCfg, NOW);                                // trigger #1
+  run(p, mark(0.0188), confProbCfg, NOW + 4 * S);                        // recovery: cancelled
+  const re = run(p, mark(0.0185), confProbCfg, NOW + 8 * S);             // dive again: trigger #2
+  assert.equal(re.fraction, 0);
+  assert.equal(p.exitPending.leash, NOW + 8 * S);
+  assert.equal(run(p, mark(0.0185), confProbCfg, NOW + 16 * S).fraction, 0); // 8s into window #2: no sell
+  const d = run(p, mark(0.0185), confProbCfg, NOW + 20 * S);
+  assert.equal(d.fraction, 1);
+  assert.equal(d.reason, 'probation leash (-7.5% after stall deadline)');
+});
+
+// ---- EXIT_CONFIRM_SEC=0: the layer is off, wired positions sell on the trigger check ----
+test('exit confirmation OFF (EXIT_CONFIRM_SEC=0): all three fail-safes sell instantly, exactly as before the layer', () => {
+  const r = evaluateExit(pos({ entryTs: NOW - 30 * S, peakMove: 1.12, exitPending: {} }), mark(0.0204), { ...confBeCfg, exitConfirmSec: 0 }, NOW);
+  assert.equal(r.fraction, 1); assert.match(r.reason, /break-even ratchet/); assert.deepEqual(r.exitPending, {});
+  const b = evaluateExit(pos({ entryTs: NOW - 200 * S, moveHist: hist([60, 0.92]), exitPending: {} }), mark(0.0182), { ...confBleedCfg, exitConfirmSec: 0 }, NOW);
+  assert.equal(b.fraction, 1); assert.equal(b.reason, 'bleed exit (-9.0% and still falling)');
+  const l = evaluateExit(pos({ entryTs: NOW - 200 * S, probationSince: NOW - 20 * S, exitPending: {} }), mark(0.0185), { ...confProbCfg, exitConfirmSec: 0 }, NOW);
+  assert.equal(l.fraction, 1); assert.equal(l.reason, 'probation leash (-7.5% after stall deadline)');
+});
+
+// ---- interplay: a pending fail-safe never blocks the rest of the stack ----
+test('exit confirmation: a TP1 decision during a ratchet pending executes immediately; the pending survives the partial sell', () => {
+  const tpCfg = { ...cfg, dipStopPct: 0, exitConfirmSec: 10, tp1Pct: 0.20, tp1Frac: 0.4, tp1AdaptMax: 0.60, tp1Giveback: 0.08, lockKeep: 0 };
+  const p = pos({ entryTs: NOW - 30 * S, peakRatio: 1.45, peakMove: 1.45, exitPending: {} });
+  const d1 = run(p, mark(0.0204), tpCfg, NOW);                           // faded to +2%: ratchet pending opens
+  assert.equal(d1.fraction, 0);
+  assert.equal(p.exitPending.ratchet, NOW);
+  const d2 = run(p, mark(0.026), tpCfg, NOW + 4 * S);                    // rips to 1.30x: TP1 rollover off the 1.45 peak
+  assert.equal(d2.tp1, true);
+  assert.equal(d2.fraction, 0.4);                                        // banked NOW — the pending did not delay it
+  assert.equal(d2.exitPending.ratchet, NOW);                             // ...and the ratchet pending is still ticking on the remainder
+  assert.deepEqual(d2.exitConfirmEvents, []);
 });

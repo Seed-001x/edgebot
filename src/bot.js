@@ -49,7 +49,7 @@ export class Bot {
     this.posFile = path.join(cfg.dataDir, 'positions.json');
     this.positions = this.loadPositions();
     this.busy = { discover: false, poll: false, pos: false };
-    this.stats = { discoverTicks: 0, pollTicks: 0, positionTicks: 0, signals: 0, entries: 0, exits: 0, errors: 0, lastError: null, sourceCounts: {}, lastDiscoverTs: 0, lastPollTs: 0, closesSinceReport: 0, lastReportTs: 0, reportIndex: 0, tempRules: null, fastPop: { fires: 0 }, ratchetShadow: { wouldFire: 0, completed: 0 }, liveFeed: { connected: false, events: 0, added: 0, reconnects: 0, lastEventTs: 0, lastError: null } };
+    this.stats = { discoverTicks: 0, pollTicks: 0, positionTicks: 0, signals: 0, entries: 0, exits: 0, errors: 0, lastError: null, sourceCounts: {}, lastDiscoverTs: 0, lastPollTs: 0, closesSinceReport: 0, lastReportTs: 0, reportIndex: 0, tempRules: null, fastPop: { fires: 0 }, ratchetShadow: { wouldFire: 0, completed: 0 }, exitConfirm: { confirmed: 0, cancelled: 0 }, liveFeed: { connected: false, events: 0, added: 0, reconnects: 0, lastEventTs: 0, lastError: null } };
     this.statsFile = path.join(cfg.dataDir, 'stats.json');
     this.entryTimes = []; // timestamps of entries (for pace keeper)
     this.PACE_TARGET = 120; // target trades per hour (2 per min)
@@ -704,7 +704,7 @@ export class Bot {
       entryTs: n, entrySol: fill.solSpent, tokensRaw: fill.tokensRaw, entryTokensRaw: fill.tokensRaw, remainingFrac: 1, peakRatio: 1, tp1Done: false, tp2Done: false, tp1Arm: null, flowHist: [], suspectUnbookedSell: false,
       entryPrice: v.price, entryMc: v.mc, realizedSol: 0, simulated: fill.simulated, sigBuy: fill.sig, markFails: 0,
       entryVolH1: v.volH1 || 0,
-      entryRoundTrip: rt.ratio, peakMove: 1, stopArmedTs: null, floorChecks: 0, floorSince: null, probationSince: null, moveHist: [], feesSol: this.cfg.txFeeSol || 0, // buy tx fee // entry stall: price is at entry (move 1.0) by definition; the 60s clock runs from entryTs
+      entryRoundTrip: rt.ratio, peakMove: 1, stopArmedTs: null, floorChecks: 0, floorSince: null, probationSince: null, moveHist: [], exitPending: {}, feesSol: this.cfg.txFeeSol || 0, // buy tx fee // entry stall: price is at entry (move 1.0) by definition; the 60s clock runs from entryTs
       bw: { tracked: null, supply: rug && rug.token ? Number(rug.token.supply) || 0 : 0, creator: rug && rug.creator ? String(rug.creator) : null, weights: linkedWeights(rug), snaps: [], vals: [], lastTs: 0, trimmed: false },
       entry: snapshotFeatures({ v, sig, rug, g, now: n }), lastTickTs: 0, lastChainTs: 0, chainDropStrikes: 0,
     };
@@ -834,6 +834,16 @@ export class Bot {
     if ('floorSince' in decision) pos.floorSince = decision.floorSince;
     if ('probationSince' in decision) pos.probationSince = decision.probationSince;
     if ('moveHist' in decision) pos.moveHist = decision.moveHist;
+    if ('exitPending' in decision) pos.exitPending = decision.exitPending;
+    // fail-safe confirmation outcomes (user 2026-10-14): count the windows that held to a
+    // sell vs the triggers that recovered and were cancelled — the layer's report card.
+    if (decision.exitConfirmEvents && decision.exitConfirmEvents.length) {
+      this.stats.exitConfirm = this.stats.exitConfirm || { confirmed: 0, cancelled: 0 };
+      for (const ev of decision.exitConfirmEvents) {
+        if (ev.type === 'confirmed') { this.stats.exitConfirm.confirmed++; console.log(`[exit-confirm] ${pos.symbol}: ${ev.kind} breakdown held through the ${this.cfg.exitConfirmSec}s window — selling`); }
+        else if (ev.type === 'cancelled') { this.stats.exitConfirm.cancelled++; console.log(`[exit-confirm] ${pos.symbol}: ${ev.kind} trigger recovered inside the window — pending sell cancelled`); }
+      }
+    }
     if ('tp1Arm' in decision) pos.tp1Arm = decision.tp1Arm;
     // shadow ratchet judge (record-only): judged on the same check, off the same
     // realizable move evaluateExit just used — it only ever writes journal records.

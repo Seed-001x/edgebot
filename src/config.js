@@ -292,6 +292,7 @@ export function loadConfig(env = process.env) {
     bleedPct: num(env, 'BLEED_PCT', 0.07),                 // bleed exit (user 2026-10-14, "Still-falling test — down 7%+ and not recovering"): past the prove-itself window, a position down at least this much on `move` AND still falling sells in full — the probation leash freed from the band (TAILOOR bled to -52% in ~6 min because nothing owned a falling coin that never sat inside the band at the stall deadline); 0 = off
     bleedMinAgeSec: num(env, 'BLEED_MIN_AGE_SEC', 180),    // ...the prove-itself window: before this age the older exits judge alone
     bleedLookbackSec: num(env, 'BLEED_LOOKBACK_SEC', 60),  // ..."still falling" = the current move at/below the move this long ago, judged on the position's own per-check move history; no reading at least ~45s old = no fire yet
+    exitConfirmSec: num(env, 'EXIT_CONFIRM_SEC', 10),     // confirmation window for the FAIL-SAFE exits only (user 2026-10-14, "a fail safe to the fail safe"): the break-even ratchet, the bleed exit and the probation leash no longer sell on the first triggering check — their full condition must hold CONTINUOUSLY until a check at/after this many seconds from the trigger, judged inside the existing position-check loop (no extra delay beyond the window); a recovery inside the window cancels the pending sell and the exit can re-trigger later. Probation EXPIRY, the TP ladder and every other exit stay instant. 0 = off, the fail-safes sell on the trigger check exactly as before the layer existed
     tp1Pct: num(env, 'TP1_PCT', 0.25),                    // bank part on the jump: +25% in your pocket after slippage + SOL fees
     tp1Frac: num(env, 'TP1_FRAC', 0.65),                  // ...sell 65% of it
     // TP ladder (user 2026-10-13): TP1 is adaptive — it ARMS at tp1Pct and the bank target slides up
@@ -435,6 +436,7 @@ export function validateConfig(cfg) {
   if (cfg.bleedPct < 0 || cfg.bleedPct >= 1) errs.push('BLEED_PCT must be 0 (off) or between 0 and 1');
   if (cfg.bleedMinAgeSec < 0) errs.push('BLEED_MIN_AGE_SEC must be >= 0');
   if (cfg.bleedLookbackSec < 0) errs.push('BLEED_LOOKBACK_SEC must be >= 0');
+  if (cfg.exitConfirmSec < 0) errs.push('EXIT_CONFIRM_SEC must be >= 0 (0 = fail-safe exits sell instantly, as before the layer)');
   if (cfg.realMode && cfg.rpcUrls.length === 0) errs.push('RPC_URLS required in real mode');
   return errs;
 }

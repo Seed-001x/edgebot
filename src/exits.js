@@ -71,7 +71,41 @@ export function evaluateExit(pos, mark, cfg, now) {
   // last 40 checks (~160s at the 4s cadence, comfortably past the bleed lookback). The bleed
   // section (4d) judges "still falling" against this series and nothing else.
   const moveHist = [...(pos.moveHist || []), { ts: now, move }].slice(-40);
-  const out = (fraction, reason) => ({ fraction, reason, newPeak: peakRatio, newPeakMove: peakMove, ratio, stallSince: null, stopArmedTs, floorChecks, floorSince, probationSince, tp1Arm, moveHist });
+  // Fail-safe confirmation state (user 2026-10-14, "a fail safe to the fail safe"): per-kind
+  // pending triggers for the three fail-safe exits (leash / ratchet / bleed), persisted on
+  // the position by the caller alongside probationSince/moveHist. A position carrying NO
+  // exitPending field was opened before this layer existed and keeps the instant behavior —
+  // the same legacy fail-open the ratchet's arming uses for a missing peakMove. bot.js
+  // initializes exitPending: {} at entry, so every position it opens is covered.
+  let exitPending = (pos.exitPending && typeof pos.exitPending === 'object') ? { ...pos.exitPending } : null;
+  const exitConfirmEvents = [];
+  const out = (fraction, reason) => ({ fraction, reason, newPeak: peakRatio, newPeakMove: peakMove, ratio, stallSince: null, stopArmedTs, floorChecks, floorSince, probationSince, tp1Arm, moveHist, exitPending, exitConfirmEvents });
+  // failSafe(kind, reason): a fail-safe exit whose FULL condition is true on this check calls
+  // this instead of returning its sell directly. EXIT_CONFIRM_SEC = 0 (or a legacy position)
+  // → the sell decision, exactly as before the layer. Otherwise the first trigger only ARMS
+  // the pending ({kind: now}) and returns null — evaluation continues, so every other exit
+  // still judges this check and any sell it produces executes normally; the pending sells on
+  // the first check at/after the window with the condition still true (counted 'confirmed').
+  const failSafe = (kind, reason) => {
+    if (!((cfg.exitConfirmSec || 0) > 0) || exitPending == null) return out(1, reason);
+    const since = exitPending[kind];
+    if (since == null) { exitPending[kind] = now; return null; }
+    if (now - since >= cfg.exitConfirmSec * 1000) {
+      delete exitPending[kind];
+      exitConfirmEvents.push({ type: 'confirmed', kind });
+      return out(1, reason);
+    }
+    return null;
+  };
+  // cancelPending(kind): the exit's condition read FALSE on a check inside its window — the
+  // breakdown did not hold, so the pending sell is disarmed (counted 'cancelled') and the
+  // exit can re-trigger later with a fresh window.
+  const cancelPending = (kind) => {
+    if (exitPending != null && exitPending[kind] != null) {
+      delete exitPending[kind];
+      exitConfirmEvents.push({ type: 'cancelled', kind });
+    }
+  };
 
   // 1. liquidity death: the pool can no longer absorb what we hold
   const valueUsd = mark.valueSol * (mark.solUsd || 150);
@@ -180,11 +214,20 @@ export function evaluateExit(pos, mark, cfg, now) {
         // deadline reached inside the range: probation starts, no sell
         if (move >= 1 - cfg.stallBandPct && move <= 1 + stallBandUp) { probationSince = now; return out(0, null); }
       } else if (cfg.stallLeashPct > 0 && move <= 1 - cfg.stallLeashPct) {
-        return out(1, `probation leash (${((move - 1) * 100).toFixed(1)}% after stall deadline)`);
+        // the leash is a fail-safe: confirmed, not instant (EXIT_CONFIRM_SEC). While its
+        // pending runs, the position is NOT sold from here — but probation EXPIRY below is
+        // a time expiry, not a breakdown trigger, and stays unconfirmed: it still sells on
+        // this very check if the deadline has passed, as any other exit would.
+        const d = failSafe('leash', `probation leash (${((move - 1) * 100).toFixed(1)}% after stall deadline)`);
+        if (d) return d;
+        if (heldSec >= cfg.stallProbationSec) return out(1, `probation expired (still in entry range at ${cfg.stallProbationSec}s, ${((move - 1) * 100).toFixed(1)}%)`);
       } else if (move > 1 + stallBandUp) {
         probationSince = null; // breakout: probation over — the sections below judge normally
+        cancelPending('leash');
       } else if (heldSec >= cfg.stallProbationSec) {
         return out(1, `probation expired (still in entry range at ${cfg.stallProbationSec}s, ${((move - 1) * 100).toFixed(1)}%)`);
+      } else {
+        cancelPending('leash'); // on probation, back above the leash line: a pending leash sell is disarmed
       }
       // else: on probation, in range, leash/expiry not met — no exit from this section.
     } else if (move >= 1 - cfg.stallBandPct && move <= 1 + stallBandUp) {
@@ -216,9 +259,17 @@ export function evaluateExit(pos, mark, cfg, now) {
   //     beArmPct = 0 disables the ratchet. (The mining undercounts the shakeout cost —
   //     winners that dipped to break-even and then ran usually TP1'd out of the measured
   //     set — the user took the +5% arm with that caveat on the table.)
+  //     Confirmation (user 2026-10-14): as a fail-safe, the ratchet sells through failSafe —
+  //     with EXIT_CONFIRM_SEC > 0 the trigger must hold continuously across the window (a
+  //     recovery back above the trigger line cancels via the else-branch below); the reason
+  //     string is built fresh on the selling check, exactly as before.
   if (!pos.tp1Done && cfg.beArmPct > 0 && pos.peakMove != null && peakMove >= 1 + cfg.beArmPct && move <= 1 + cfg.beTriggerPct) {
     const pctFmt = (x) => `${x >= 0 ? '+' : ''}${(x * 100).toFixed(1)}%`;
-    return out(1, `break-even ratchet (peaked ${pctFmt(peakMove - 1)}, back to ${pctFmt(move - 1)})`);
+    const d = failSafe('ratchet', `break-even ratchet (peaked ${pctFmt(peakMove - 1)}, back to ${pctFmt(move - 1)})`);
+    if (d) return d;
+    // pending: fall through — the bleed section and everything below still judge this check
+  } else {
+    cancelPending('ratchet');
   }
 
   // 4d. bleed exit (user 2026-10-14, "Still-falling test — down 7%+ and not recovering"):
@@ -234,6 +285,11 @@ export function evaluateExit(pos, mark, cfg, now) {
   //     post-TP1 the trails judge first and these prints are rarely reachable there.
   //     It sits after 4b/4c, so a probationed dive keeps the leash's own label and an
   //     armed ratchet fade keeps the ratchet's. bleedPct = 0 disables the exit.
+  //     Confirmation (user 2026-10-14): as a fail-safe, the bleed sells through failSafe —
+  //     the FULL condition, still-falling leg included, is re-tested fresh on every check of
+  //     the window; a print that is merely still ≤ −bleedPct but recovering (current move
+  //     back above the lookback reference) fails the leg and cancels the pending sell.
+  let bleedFires = false;
   if (cfg.bleedPct > 0 && heldSec >= (cfg.bleedMinAgeSec || 0) && move <= 1 - cfg.bleedPct) {
     const target = now - (cfg.bleedLookbackSec || 60) * 1000;
     let ref = null;
@@ -241,7 +297,14 @@ export function evaluateExit(pos, mark, cfg, now) {
       if (!h || now - h.ts < 45000) continue; // the reference must be a real lookback, not the last few checks
       if (ref == null || Math.abs(h.ts - target) < Math.abs(ref.ts - target)) ref = h;
     }
-    if (ref && move <= ref.move) return out(1, `bleed exit (${((move - 1) * 100).toFixed(1)}% and still falling)`);
+    bleedFires = !!(ref && move <= ref.move);
+  }
+  if (bleedFires) {
+    const d = failSafe('bleed', `bleed exit (${((move - 1) * 100).toFixed(1)}% and still falling)`);
+    if (d) return d;
+    // pending: fall through — the sections below still judge this check
+  } else {
+    cancelPending('bleed');
   }
 
   // 5. momentum failure: underwater, 10 min in, essentially no buyers (only sell when truly dead)
