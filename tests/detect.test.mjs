@@ -187,3 +187,20 @@ test('A4: the fast-pop ceiling knob works when enabled — and is off by default
   assert.equal(r.setup, 'pop'); assert.equal(r.metrics.fastStream, 1);
   assert.ok(fastPop(mk(2.2), cfg, NOW)); // default cfg: no ceiling — V-recoveries still fire
 });
+
+// ---- D1 buy-ratio band (user 2026-10-13): the ratio fails at BOTH ends ----
+test('D1: pop at 0.88 buy ratio is bundle-bait — blocked; 0.84 passes', () => {
+  assert.equal(detect(view({ price: 1.5, buysM5: 88, sellsM5: 12 }), series(popPrices), cfg, NOW), null);
+  assert.equal(detect(view({ price: 1.5, buysM5: 84, sellsM5: 16 }), series(popPrices), cfg, NOW).setup, 'pop');
+});
+test('D1: trend at 0.90 buy ratio (PEPECAT shape) is blocked even with trend enabled', () => {
+  const v = view({ chgH1: 80, chgM5: 30, volH1: 300_000, buysM5: 90, sellsM5: 10 });
+  assert.equal(detect(v, [], tcfg, NOW), null);
+});
+test('D1: fast pop share at 0.90 is blocked; the OSPREY 0.60 share still fires', () => {
+  const mk = (buys) => Array.from({ length: 20 }, (_, i) => ({
+    ts: NOW - (19 - i) * 2000, price: 1 + 0.5 * (i / 19), sol: 0.2, side: i < buys ? 'buy' : 'sell',
+  }));
+  assert.equal(fastPop(mk(18), cfg, NOW), null); // share 0.90
+  assert.ok(fastPop(mk(12), cfg, NOW)); // share 0.60
+});

@@ -63,6 +63,7 @@ export function loadConfig(env = process.env) {
     popMaxDropH6: num(env, 'POP_MAX_DROP_H6', 40),    // skip pops on coins down 40%+ over 6h (for young pools: since launch) — a crash
                                                       // that already left the 1h window still counts (0 = off)
     minBuyRatioM5: num(env, 'MIN_BUY_RATIO_M5', 0.60), // user 2026-10-13 (entry-fixes A5): 0.55 → 0.60 — ARCADES (0.56) and MEMEOS (0.57) barely cleared the old bar and died
+    maxBuyRatioM5: num(env, 'MAX_BUY_RATIO_M5', 0.85), // D1 band top (user 2026-10-13, Muse's call on 'fix it as you see fit'): the ratio fails at BOTH ends — at 0.85+ the 'demand' is usually one bundled buyer, not a crowd (PEPECAT 0.90 and MIRAGE 0.88 both lost; no winner today printed that high). Applies to pop + trend. 0 = off.
     maxDrawFromPeak: num(env, 'MAX_DRAW_FROM_PEAK', 0.15), // enter on strength, not on the way down
 
     // ---- 'fast pop' detector (live trade stream, user 2026-10-13) ----
@@ -78,6 +79,7 @@ export function loadConfig(env = process.env) {
     fastPopMinVolSol: num(env, 'FAST_POP_MIN_VOL_SOL', 2.5), // total SOL traded inside the window
     fastPopMinBuys: num(env, 'FAST_POP_MIN_BUYS', 8),        // distinct buy trades inside the window
     fastPopMinBuyShare: num(env, 'FAST_POP_MIN_BUY_SHARE', 0.60), // buys / (buys + sells), live flow (0.55 → 0.60, entry-fixes A5)
+    fastPopMaxBuyShare: num(env, 'FAST_POP_MAX_BUY_SHARE', 0.85), // D1 band top for the stream share — same bundle-bait logic as MAX_BUY_RATIO_M5; 0 = off
     fastPopMaxDrop: num(env, 'FAST_POP_MAX_DROP', 0.08),     // last price may be at most this below the window peak
     fastPopMinTrades: num(env, 'FAST_POP_MIN_TRADES', 12),   // total trades inside the window
     fastPopRecentSec: num(env, 'FAST_POP_RECENT_SEC', 15),   // the move must still be printing…
@@ -258,6 +260,8 @@ export function validateConfig(cfg) {
   if (cfg.freshMaxChgM5 < 0) errs.push('FRESH_MAX_CHG_M5 must be >= 0 (0 = off)');
   if (cfg.freshSmallMc < 0) errs.push('FRESH_SMALL_MC must be >= 0');
   if (cfg.freshM5ShareH1 < 0 || cfg.freshM5ShareH1 > 1) errs.push('FRESH_M5_SHARE_H1 must be between 0 and 1 (0 = off)');
+  if (cfg.maxBuyRatioM5 < 0 || cfg.maxBuyRatioM5 > 1) errs.push('MAX_BUY_RATIO_M5 must be between 0 and 1 (0 = off)');
+  if (cfg.fastPopMaxBuyShare < 0 || cfg.fastPopMaxBuyShare > 1) errs.push('FAST_POP_MAX_BUY_SHARE must be between 0 and 1 (0 = off)');
   if (cfg.dipStopPct < 0 || cfg.dipStopPct >= 1) errs.push('DIP_STOP_PCT must be between 0 and 1 (0 = off)');
   if (cfg.stallSec < 0) errs.push('STALL_SEC must be >= 0 (0 = off)');
   if (cfg.lockKeep < 0 || cfg.lockKeep >= 1) errs.push('PROFIT_LOCK_KEEP must be between 0 and 1 (0 = off)');

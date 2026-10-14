@@ -58,7 +58,8 @@ export function detect(v, samples, cfg, now) {
       draw <= cfg.maxDrawFromPeak && notBouncing && !washVol &&
       v.volM5 >= cfg.popMinVolM5 &&
       v.buysM5 >= cfg.popMinBuysM5 &&
-      ratio5 != null && ratio5 >= cfg.minBuyRatioM5
+      ratio5 != null && ratio5 >= cfg.minBuyRatioM5 &&
+      !(cfg.maxBuyRatioM5 > 0 && ratio5 >= cfg.maxBuyRatioM5)
     ) {
       return { setup: 'pop', strength: gain, metrics: { gainPct: +gain.toFixed(1), drawFromPeak: +draw.toFixed(3), buyRatioM5: +ratio5.toFixed(2), volH1: v.volH1, volM5: v.volM5 } };
     }
@@ -86,6 +87,7 @@ export function detect(v, samples, cfg, now) {
       v.volH1 >= cfg.trendMinVolH1 &&
       v.buysM5 >= cfg.trendMinBuysM5 &&
       ratio5 != null && ratio5 >= cfg.trendMinBuyRatio &&
+      !(cfg.maxBuyRatioM5 > 0 && ratio5 >= cfg.maxBuyRatioM5) &&
       !(cfg.trendMinMc > 0 && v.mc < cfg.trendMinMc) &&
       hourDemand && enoughTxns && !washVol && !revival
     ) {
@@ -129,7 +131,8 @@ export function fastPop(samples, cfg, now) {
     draw <= cfg.fastPopMaxDrop &&
     volSol >= cfg.fastPopMinVolSol &&
     buys >= cfg.fastPopMinBuys &&
-    share != null && share >= cfg.fastPopMinBuyShare
+    share != null && share >= cfg.fastPopMinBuyShare &&
+    !(cfg.fastPopMaxBuyShare > 0 && share >= cfg.fastPopMaxBuyShare)
   ) {
     return {
       setup: 'pop',
