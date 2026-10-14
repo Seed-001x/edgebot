@@ -46,18 +46,27 @@ export class ShadowFlow {
    * (no stream coverage / quiet coin: the judge has no opinion).
    */
   window(mint, now, windowSec) {
+    const r = this.windowRange(mint, now - windowSec * 1000, now);
+    if (!r) return null;
+    const tot = r.buySol + r.sellSol;
+    return { buySol: r.buySol, sellSol: r.sellSol, sellShare: tot > 0 ? r.sellSol / tot : 0, trades: r.trades };
+  }
+
+  /**
+   * D1 (record-only): raw buy/sell counts + SOL volume over an arbitrary
+   * [fromTs, toTs] range — the manual-exit snapshot's 30s/60s/prior-minute
+   * flow windows. Returns null when the range holds no streamed trades.
+   */
+  windowRange(mint, fromTs, toTs) {
     const buf = this.byMint.get(mint);
     if (!buf || !buf.length) return null;
-    const cutoff = now - windowSec * 1000;
-    let buySol = 0, sellSol = 0, trades = 0;
+    let buys = 0, sells = 0, buySol = 0, sellSol = 0;
     for (const t of buf) {
-      if (t.ts < cutoff || t.ts > now) continue;
-      trades++;
-      if (t.buy) buySol += t.sol; else sellSol += t.sol;
+      if (t.ts < fromTs || t.ts > toTs) continue;
+      if (t.buy) { buys++; buySol += t.sol; } else { sells++; sellSol += t.sol; }
     }
-    if (!trades) return null;
-    const tot = buySol + sellSol;
-    return { buySol, sellSol, sellShare: tot > 0 ? sellSol / tot : 0, trades };
+    if (!buys && !sells) return null;
+    return { buys, sells, buySol, sellSol, trades: buys + sells };
   }
 
   drop(mint) { this.byMint.delete(mint); }

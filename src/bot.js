@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { History } from './history.js';
 import { detect, detectChurn, detectLiftoff, eligible, fastPop } from './detect.js';
-import { runGates, hasHardFail, tempRuleViolation, blockedNameWord, extensionCheck, freshHistoryCheck, shallowDipCheck } from './gate.js';
+import { runGates, hasHardFail, tempRuleViolation, blockedNameWord, extensionCheck, freshHistoryCheck, shallowDipCheck, summarizeGateChecks } from './gate.js';
 import { evaluateExit } from './exits.js';
 import { ShadowFlow, ratchetArmed, ratchetShadowFire } from './ratchetShadow.js';
 import { bundleRisk, bundleDecision, pickTracked, linkedWeights, CREATOR_KEY } from './bundleWatch.js';
@@ -20,8 +20,9 @@ import { Risk } from './risk.js';
 import { postCallout } from './callout.js';
 import { snapshotFeatures, externalExit } from './learn.js';
 
-import { PostExitTracker } from './postExit.js';
+import { PostExitTracker, PairedShadowExits } from './postExit.js';
 import { buildTradeReport } from './reports.js';
+import { configStamp } from './stamp.js';
 
 export class Bot {
   /**
@@ -37,6 +38,9 @@ export class Bot {
     this.closedIds = new Set(this.journal.trades.filter(t => t.type === 'close').map(t => t.id)); // journaling guarantee (ensureClose)
     for (const t of this.journal.trades) if (t.type === 'close' && t.mint) this.risk.seedClosed(t.mint, t.ts); // re-entry block survives restarts/deploys
     this.postExit = new PostExitTracker(cfg.dataDir, this.now); // 5-min post-exit price tracker (observer only)
+    this.paired = new PairedShadowExits(cfg.dataDir, this.now); // D1: virtual would-be exits paired to manual exits (observer only)
+    this.cfgStamp = configStamp(cfg); // D1: config version stamp carried by entries + closes (record-only)
+    this.lastSolUsd = null; // last SOL/USD the position loop saw (feeds observer marks)
     this.watch = new Map();      // mint -> { ts, source }
     this.latest = new Map();     // mint -> latest view
     this.lastSignal = new Map(); // mint -> ts
@@ -127,6 +131,28 @@ export class Bot {
     if (this.closedIds.has(pos.id)) return false;
     this.closedIds.add(pos.id);
     const full = { type: 'close', ...rec };
+    // D1 (record-only): EVERY close carries the full decision record, whichever
+    // path closed it. The entry snapshot used to survive only on manual exits —
+    // bot-managed closes dropped it here, which is why /learn's bot-winner
+    // comparison was empty by construction. An explicit value in `rec` always
+    // wins; the funnel only fills what the caller didn't provide. Fields the
+    // exec layer genuinely doesn't produce at record time are null, never
+    // invented: `feesSol` is the bot's accumulated per-tx fee ESTIMATE
+    // (feesSource says so) — no chain-exact fee is read anywhere today.
+    try {
+      if (full.entry === undefined) full.entry = pos.entry || null;
+      if (full.gates === undefined) full.gates = pos.gates || null;
+      if (full.gatePass === undefined && pos.gatePass !== undefined) full.gatePass = pos.gatePass;
+      if (full.stamp === undefined) full.stamp = pos.stamp || this.cfgStamp;
+      if (full.tokensRaw === undefined) full.tokensRaw = pos.entryTokensRaw || pos.tokensRaw || null;
+      if (full.decimals === undefined) full.decimals = pos.decimals ?? null;
+      if (full.entryFillSol === undefined) full.entryFillSol = pos.entryFillSol ?? null;
+      if (full.entryFillUsd === undefined) full.entryFillUsd = full.entryFillSol != null && pos.solUsdEntry > 0 ? +(full.entryFillSol * pos.solUsdEntry).toFixed(10) : null;
+      if (full.exitFillSol === undefined) full.exitFillSol = null;
+      if (full.exitFillUsd === undefined) full.exitFillUsd = null;
+      if (full.feesSol === undefined) { full.feesSol = +((pos.feesSol || 0)).toFixed(6); full.feesSource = 'txFeeEstimate'; }
+      if (full.pnlPct === undefined) full.pnlPct = full.pnlSol != null && full.entrySol > 0 ? +(full.pnlSol / full.entrySol * 100).toFixed(2) : null;
+    } catch { /* record enrichment must never disturb the close itself */ }
     this.journal.trade(full);
     try {
       const v = this.latest.get(pos.mint);
@@ -225,8 +251,11 @@ export class Bot {
     this.positions = this.positions.filter(x => x.id !== p.id);
     if (pnl != null) this.risk.recordClose(pnl, p.mint);
     const heldMin = +((n - p.entryTs) / 60000).toFixed(1);
-    this.journal.manualExit({ id: p.id, mint: p.mint, symbol: p.symbol, ts: n, how: 'sold outside bot (reconcile)', entry: p.entry || null, heldMin, peakRatio: p.peakRatio, bundleScore: p.bundleScore || 0, pnlSolEstimate: pnl != null ? +pnl.toFixed(6) : null, pnlSol: source === 'chain' ? +pnl.toFixed(6) : null, pnlSource: source || 'unknown', reason: null });
+    const snapshot = await this._manualSnapshot(p, p.lastValueSol ?? null, n, pnl);
+    this.journal.manualExit({ id: p.id, mint: p.mint, symbol: p.symbol, ts: n, how: 'sold outside bot (reconcile)', entry: p.entry || null, heldMin, peakRatio: p.peakRatio, bundleScore: p.bundleScore || 0, pnlSolEstimate: pnl != null ? +pnl.toFixed(6) : null, pnlSol: source === 'chain' ? +pnl.toFixed(6) : null, pnlSource: source || 'unknown', reason: null, snapshot });
     this.ensureClose(p, { manual: true, id: p.id, mint: p.mint, symbol: p.symbol, setup: p.setup, entrySol: p.entrySol, pnlSol: pnl != null ? +pnl.toFixed(6) : null, estimated: source !== 'chain', pnlSource: source, heldMin, reason: pnl != null ? `${reason} — P&L ${source === 'chain' ? 'from chain' : 'est. from last quote'}` : `${reason} (P&L unknown — no quote yet)`, simulated: p.simulated, ts: n });
+    // D1 paired shadow exit: keep judging this position's remainder virtually
+    try { this.paired.watch(this._pairedState(p, n, { pnlSol: pnl != null ? +pnl.toFixed(6) : null, valueSol: p.lastValueSol ?? null })); } catch { /* observer only */ }
     return true;
   }
 
@@ -462,6 +491,9 @@ export class Bot {
       }
       // post-exit observer: feed the tracker the prices this poll already fetched (no extra calls)
       try { this.postExit.tick(mint => { const v = this.latest.get(mint); return v ? v.price : null; }, n); } catch { /* observer only */ }
+      // D1 paired shadow exits: run the virtual exit stack for manually-closed
+      // positions on the same views (observer only — can never trade)
+      try { this.paired.tick(mint => this.latest.get(mint) || null, n, this.cfg, this.lastSolUsd); } catch { /* observer only */ }
       candidates.sort((a, b) => b.sig.strength - a.sig.strength);
       for (const c of candidates.slice(0, this.cfg.maxSignalsPerTick)) {
         this.lastSignal.set(c.v.address, this.now());
@@ -472,8 +504,8 @@ export class Bot {
     } catch (e) { this.err('poll', e); } finally { this.busy.poll = false; this.saveStats(); }
   }
 
-  skip(v, sig, reasons, warnings = []) {
-    this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'skipped', reasons, price: v.price, mc: v.mc, metrics: sig.metrics, warnings, label: sig.label || null });
+  skip(v, sig, reasons, warnings = [], gates = null, gatePass = null) {
+    this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'skipped', reasons, price: v.price, mc: v.mc, metrics: sig.metrics, warnings, label: sig.label || null, gates, gatePass });
   }
 
   // Setups currently in shadow-only mode (user 2026-10-14, forward plan step 1b):
@@ -483,10 +515,40 @@ export class Bot {
     return (setup === 'trend' && !!this.cfg.trendShadow) || (setup === 'liftoff' && !!this.cfg.liftoffShadow);
   }
 
-  shadow(v, sig) {
+  shadow(v, sig, gates = null, gatePass = null) {
     this.stats.shadowSignals = this.stats.shadowSignals || {};
     this.stats.shadowSignals[sig.setup] = (this.stats.shadowSignals[sig.setup] || 0) + 1;
-    this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'shadow', reasons: [`shadow: ${sig.setup} is shadow-only — logged + outcome-tracked, no buy`], price: v.price, mc: v.mc, metrics: sig.metrics, warnings: [], label: sig.label || null });
+    this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'shadow', reasons: [`shadow: ${sig.setup} is shadow-only — logged + outcome-tracked, no buy`], price: v.price, mc: v.mc, metrics: sig.metrics, warnings: [], label: sig.label || null, gates, gatePass });
+  }
+
+  // D1 (record-only): for a shadow signal, evaluate the same pre-checks and gate
+  // stack a live signal would face — purely so the shadow RECORD carries the
+  // per-gate results. The outcome is never branched on: the caller journals
+  // decision 'shadow' regardless, and no risk/round-trip/buy step runs here.
+  // Fail-silent: any error yields a null gate record, never a behavior change.
+  async shadowGateRecord(v, sig, n) {
+    try {
+      const checks = {};
+      if (!(sig.metrics && sig.metrics.fastStream)) {
+        const ex = extensionCheck(this.history.get(v.address), v.price, n, { maxExt: this.cfg.extMaxFromBase });
+        checks.extension = { pass: !!ex.pass, reason: ex.reason || null };
+        const fc = freshHistoryCheck(this.history.get(v.address), v, n, { maxChgM5: this.cfg.freshMaxChgM5, smallMc: this.cfg.freshSmallMc, m5ShareH1: this.cfg.freshM5ShareH1, bypassMinVolM5: this.cfg.freshBypassMinVolM5, bypassMinBuyRatio: this.cfg.freshBypassMinBuyRatio, bypassMaxBuyRatio: this.cfg.maxBuyRatioM5 > 0 ? this.cfg.maxBuyRatioM5 : 0.85 });
+        checks.fresh = { pass: !!fc.pass, reason: fc.reason || null };
+        if (fc.bypass) checks.fresh.bypassed = true;
+        if (sig.setup === 'pop' || sig.setup === 'trend' || sig.setup === 'liftoff') {
+          const sd = shallowDipCheck(this.history.get(v.address), v.price, n, { maxPct: this.cfg.shallowDipMaxPct, windowMin: this.cfg.shallowDipWindowMin });
+          checks.shallowDip = { pass: !!sd.pass, reason: sd.reason || null };
+        }
+      }
+      const [rug, curve] = await Promise.all([
+        this.d.fetchRug(v.address).catch(() => null),
+        this.d.fetchCurve ? this.d.fetchCurve(v.address).catch(() => null) : null,
+      ]);
+      const { cfg: gateCfg } = this.paceCfg(n);
+      const g = runGates({ view: v, rug, curve, cfg: gateCfg, now: n });
+      Object.assign(checks, summarizeGateChecks(g.checks) || {});
+      return { gates: checks, gatePass: g.pass };
+    } catch { return { gates: null, gatePass: null }; }
   }
 
   // ------------------------------------------------------------ churn basing watch
@@ -565,17 +627,23 @@ export class Bot {
   async onSignal(v, sig) {
     this.stats.signals++;
     const n = this.now();
+    // D1 (record-only): per-check results accumulate here as the pipeline runs,
+    // so the signal record (skip / shadow / taken) shows EVERY check's verdict,
+    // not just the one that stopped it. Never read for any decision.
+    const checks = {};
     // User blacklist (per-token): if they've marked this specific mint as bad, skip it
     const blacklistedMints = this.journal.blacklistedMints();
     if (blacklistedMints.has(v.address)) {
       console.log(`[learn] skip: user blacklisted token ${v.symbol} — skipping`);
-      return this.skip(v, sig, [`user-blacklist: token "${v.symbol}" marked bad`]);
+      checks.userBlacklist = { pass: false, reason: `token "${v.symbol}" marked bad by user` };
+      return this.skip(v, sig, [`user-blacklist: token "${v.symbol}" marked bad`], [], checks);
     }
     // User blacklist (setup): configurable via SETUP_BLACKLIST_MIN (0 = off, per-token only)
     const blacklisted = this.cfg.setupBlacklistMin > 0 ? this.journal.blacklistedSetups(this.cfg.setupBlacklistMin) : new Set();
     if (blacklisted.has(sig.setup)) {
       console.log(`[learn] skip: user blacklisted setup "${sig.setup}" — skipping ${v.symbol}`);
-      return this.skip(v, sig, [`user-blacklist: setup "${sig.setup}" marked bad ${10}+ times`]);
+      checks.setupBlacklist = { pass: false, reason: `setup "${sig.setup}" marked bad ${10}+ times` };
+      return this.skip(v, sig, [`user-blacklist: setup "${sig.setup}" marked bad ${10}+ times`], [], checks);
     }
     // User name block (2026-10-13): any coin whose name contains a blocked word (default "inu")
     // is hard-skipped. Sits before runGates, so no pace boost, mandatory-ape forcing or
@@ -583,17 +651,23 @@ export class Bot {
     const blockedWord = blockedNameWord(v.name, this.cfg.nameBlockWords);
     if (blockedWord) {
       console.log(`[nameblock] skip: "${v.name}" contains blocked word "${blockedWord}"`);
-      return this.skip(v, sig, [`nameblock: name "${v.name || v.symbol}" contains blocked word "${blockedWord}"`]);
+      checks.nameblock = { pass: false, reason: `name "${v.name || v.symbol}" contains blocked word "${blockedWord}"` };
+      return this.skip(v, sig, [`nameblock: name "${v.name || v.symbol}" contains blocked word "${blockedWord}"`], [], checks);
     }
     // Shadow-only setups (user 2026-10-14, forward plan step 1b): a shadowed setup's
     // signal is journaled with decision 'shadow' — journal.signal registers it for the
-    // same r5/r15/r60 outcome tracking every taken/skipped signal gets — and the pipeline
-    // stops here: no extension/fresh/gate checks, no risk check, no buy, no position,
+    // same r5/r15/r60 outcome tracking every taken/skipped signal gets — and the
+    // pipeline stops here as a TRADING matter: no risk check, no buy, no position,
     // stats.entries untouched. User vetoes above (blacklists, name block) still journal
-    // as ordinary skips, exactly as before.
+    // as ordinary skips, exactly as before. D1 adds one record-only step: the
+    // extension/fresh/shallow-dip checks and the gate stack are evaluated into the
+    // record (shadowGateRecord) — their results change nothing.
     if (this.shadowedSetup(sig.setup)) {
       console.log(`[shadow] ${v.symbol} (${sig.setup}) — shadow-only: logged + outcome-tracked, no buy`);
-      return this.shadow(v, sig);
+      // D1: the gates are still EVALUATED for the record (shadowGateRecord) —
+      // the decision stays 'shadow' whatever they say.
+      const sg = await this.shadowGateRecord(v, sig, n);
+      return this.shadow(v, sig, sg.gates, sg.gatePass);
     }
     // Extension cap (user 2026-10-13): how far above the trailing-hour sampled low — the base
     // the move broke out from — an entry may sit. OTTO was bought at the ceiling of a long
@@ -604,9 +678,10 @@ export class Bot {
     // near the launch by construction.
     if (!(sig.metrics && sig.metrics.fastStream)) {
       const ex = extensionCheck(this.history.get(v.address), v.price, n, { maxExt: this.cfg.extMaxFromBase });
+      checks.extension = { pass: !!ex.pass, reason: ex.reason || null };
       if (!ex.pass) {
         console.log(`[extension] skip: ${v.symbol} — ${ex.reason}`);
-        return this.skip(v, sig, [`extension: ${ex.reason}`]);
+        return this.skip(v, sig, [`extension: ${ex.reason}`], [], checks);
       }
     }
     // Fresh-history fail-closed (user 2026-10-13, entry-fixes A3): a coin discovered mid-run
@@ -616,9 +691,11 @@ export class Bot {
     // Fast-stream pops exempt (the stream IS the history).
     if (!(sig.metrics && sig.metrics.fastStream)) {
       const fc = freshHistoryCheck(this.history.get(v.address), v, n, { maxChgM5: this.cfg.freshMaxChgM5, smallMc: this.cfg.freshSmallMc, m5ShareH1: this.cfg.freshM5ShareH1, bypassMinVolM5: this.cfg.freshBypassMinVolM5, bypassMinBuyRatio: this.cfg.freshBypassMinBuyRatio, bypassMaxBuyRatio: this.cfg.maxBuyRatioM5 > 0 ? this.cfg.maxBuyRatioM5 : 0.85 });
+      checks.fresh = { pass: !!fc.pass, reason: fc.reason || null };
+      if (fc.bypass) checks.fresh.bypassed = true;
       if (!fc.pass) {
         console.log(`[fresh] skip: ${v.symbol} — ${fc.reason}`);
-        return this.skip(v, sig, [`fresh: ${fc.reason}`]);
+        return this.skip(v, sig, [`fresh: ${fc.reason}`], [], checks);
       }
       if (fc.bypass) {
         // the flow bypass lifted the fresh move cap (user 2026-10-14) — leave the mark on the
@@ -639,9 +716,10 @@ export class Bot {
     // own 90s window, and their max-drop rule already pins entries near the stream peak.
     if (!(sig.metrics && sig.metrics.fastStream) && (sig.setup === 'pop' || sig.setup === 'trend' || sig.setup === 'liftoff')) {
       const sd = shallowDipCheck(this.history.get(v.address), v.price, n, { maxPct: this.cfg.shallowDipMaxPct, windowMin: this.cfg.shallowDipWindowMin });
+      checks.shallowDip = { pass: !!sd.pass, reason: sd.reason || null };
       if (!sd.pass) {
         console.log(`[shallowdip] skip: ${v.symbol} — ${sd.reason}`);
-        return this.skip(v, sig, [`shallow dip: ${sd.reason}`]);
+        return this.skip(v, sig, [`shallow dip: ${sd.reason}`], [], checks);
       }
     }
     // Re-entry quality: same coin signaled again — only re-enter on a dip, never the top of a green candle.
@@ -652,7 +730,8 @@ export class Bot {
       const high = recent.length ? Math.max(...recent.map(s => s.price)) : v.price;
       if (v.price >= high * 0.8) {
         console.log(`[reentry] skip: ${v.symbol} at top (price within 20% of 15m high) — waiting for dip`);
-        return this.skip(v, sig, [`reentry: no dip (price within 20% of recent high)`]);
+        checks.reentry = { pass: false, reason: 'no dip (price within 20% of recent high)' };
+        return this.skip(v, sig, [`reentry: no dip (price within 20% of recent high)`], [], checks);
       }
     }
     const [solUsd, walletSol] = await Promise.all([this.d.fetchSolUsd(), this.exec.solBalance()]);
@@ -662,12 +741,12 @@ export class Bot {
 
     const size = this.risk.sizeFor(v.liq, solUsd);
     const gate0 = this.risk.canEnter({ mint: v.address, walletSol, openCount: this.positions.length, sizeSol: size, halted: this.halted() });
-    if (!gate0.ok) return this.skip(v, sig, [`risk: ${gate0.reason}`]);
+    if (!gate0.ok) { checks.risk = { pass: false, reason: gate0.reason || null }; return this.skip(v, sig, [`risk: ${gate0.reason}`], [], checks); }
 
     // one-trade temporary rules (user-set via POST /temprules; cleared on the next executed entry)
     if (this.stats.tempRules) {
       const violation = tempRuleViolation(v, sig.metrics, this.stats.tempRules);
-      if (violation) return this.skip(v, sig, [violation]);
+      if (violation) { checks.tempRule = { pass: false, reason: violation }; return this.skip(v, sig, [violation], [], checks); }
     }
 
     // gates: RugCheck + curve history in parallel
@@ -678,6 +757,8 @@ export class Bot {
     // Pace keeper: if behind the hourly target, use relaxed gate thresholds
     const { cfg: gateCfg, boosted, pace } = this.paceCfg(n);
     const g = runGates({ view: v, rug, curve, cfg: gateCfg, now: n });
+    // D1: the full per-gate map joins the pipeline checks for the record
+    Object.assign(checks, summarizeGateChecks(g.checks) || {});
     if (!g.pass) {
       // Mandatory ape mode: if under N entries/hour, force through soft gate fails only.
       // Structural (HARD_GATES) fails are never forced — that bypass is what let rigged launches in.
@@ -698,7 +779,7 @@ export class Bot {
           console.log(`[learn] override: user contested gates ${failReasons.join(',')} — letting ${v.symbol} through`);
           // Don't skip, continue to round-trip check below
         } else {
-          return this.skip(v, sig, g.fails, g.warnings);
+          return this.skip(v, sig, g.fails, g.warnings, checks, g.pass);
         }
       }
     }
@@ -706,8 +787,9 @@ export class Bot {
     // exit-value check: price a buy AND the immediate sell-back before spending anything
     let rt;
     try { rt = await this.exec.roundTrip(v.address, size); }
-    catch (e) { return this.skip(v, sig, [`roundtrip: no sellable route (${e.message})`], g.warnings); }
-    if (rt.ratio < this.cfg.minRoundTrip) return this.skip(v, sig, [`roundtrip: sell-back worth ${(rt.ratio * 100).toFixed(0)}% of spend < ${(this.cfg.minRoundTrip * 100).toFixed(0)}% (impact ${rt.impactPct.toFixed(1)}%)`], g.warnings);
+    catch (e) { checks.roundtrip = { pass: false, reason: `no sellable route (${e.message})` }; return this.skip(v, sig, [`roundtrip: no sellable route (${e.message})`], g.warnings, checks, g.pass); }
+    checks.roundtrip = { pass: rt.ratio >= this.cfg.minRoundTrip, reason: `sell-back worth ${(rt.ratio * 100).toFixed(0)}% of spend` };
+    if (rt.ratio < this.cfg.minRoundTrip) return this.skip(v, sig, [`roundtrip: sell-back worth ${(rt.ratio * 100).toFixed(0)}% of spend < ${(this.cfg.minRoundTrip * 100).toFixed(0)}% (impact ${rt.impactPct.toFixed(1)}%)`], g.warnings, checks, g.pass);
 
     // Price-move vetoes REMOVED 2026-10-12 (user order): both the quote-level freshness
     // guard (±10% vs decision price) and the older DexScreener re-pull check (-30%/+100%)
@@ -716,16 +798,24 @@ export class Bot {
 
     // re-check limits right before spending (state may have changed during the awaits above)
     const gate1 = this.risk.canEnter({ mint: v.address, walletSol: await this.exec.solBalance(), openCount: this.positions.length, sizeSol: size, halted: this.halted() });
-    if (!gate1.ok) return this.skip(v, sig, [`risk: ${gate1.reason}`], g.warnings);
+    if (!gate1.ok) { checks.risk = { pass: false, reason: gate1.reason || null }; return this.skip(v, sig, [`risk: ${gate1.reason}`], g.warnings, checks, g.pass); }
 
     let fill;
     try { fill = await this.exec.buy(v.address, size, rt.buyQuote); }
-    catch (e) { this.err('buy', e); return this.skip(v, sig, [`exec: buy failed (${e.message})`], g.warnings); }
+    catch (e) { this.err('buy', e); checks.exec = { pass: false, reason: `buy failed (${e.message})` }; return this.skip(v, sig, [`exec: buy failed (${e.message})`], g.warnings, checks, g.pass); }
 
+    // D1 (record-only): entry-time facts the close record will need — token
+    // decimals + the real buy fill (SOL per whole token, from the executed
+    // quote) + SOL/USD at entry, the full per-check map, and this build's
+    // config stamp. None of these are read by any trading decision.
+    const dec = rug && rug.token && rug.token.decimals != null ? Number(rug.token.decimals) : null;
+    const tokensWhole = dec != null && Number(fill.tokensRaw) > 0 ? Number(fill.tokensRaw) / 10 ** dec : null;
     const pos = {
       id: `${v.address.slice(0, 6)}-${n}`, mint: v.address, symbol: v.symbol, setup: sig.setup,
       entryTs: n, entrySol: fill.solSpent, tokensRaw: fill.tokensRaw, entryTokensRaw: fill.tokensRaw, remainingFrac: 1, peakRatio: 1, tp1Done: false, tp2Done: false, tp1Arm: null, flowHist: [], suspectUnbookedSell: false,
       entryPrice: v.price, entryMc: v.mc, realizedSol: 0, simulated: fill.simulated, sigBuy: fill.sig, markFails: 0,
+      stamp: this.cfgStamp, gates: checks, gatePass: g.pass, decimals: dec,
+      entryFillSol: tokensWhole > 0 ? fill.solSpent / tokensWhole : null, solUsdEntry: solUsd || null, ticks: [],
       entryVolH1: v.volH1 || 0,
       entryRoundTrip: rt.ratio, peakMove: 1, stopArmedTs: null, floorChecks: 0, floorSince: null, probationSince: null, moveHist: [], exitPending: {}, feesSol: this.cfg.txFeeSol || 0, // buy tx fee // entry stall: price is at entry (move 1.0) by definition; the 60s clock runs from entryTs
       bw: { tracked: null, supply: rug && rug.token ? Number(rug.token.supply) || 0 : 0, creator: rug && rug.creator ? String(rug.creator) : null, weights: linkedWeights(rug), snaps: [], vals: [], lastTs: 0, trimmed: false },
@@ -745,8 +835,8 @@ export class Bot {
       console.log('[callout] failed:', e.message);
       this.lastCallout = { ok: false, error: e.message, symbol: v.symbol, ts: Date.now() };
     });
-    this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'taken', reasons: [], price: v.price, mc: v.mc, metrics: { ...sig.metrics, roundTrip: +rt.ratio.toFixed(3), sizeSol: size }, warnings: g.warnings, label: sig.label || null });
-    this.journal.trade({ type: 'open', id: pos.id, mint: pos.mint, symbol: pos.symbol, setup: pos.setup, entrySol: pos.entrySol, sig: fill.sig, simulated: fill.simulated, ts: n });
+    this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'taken', reasons: [], price: v.price, mc: v.mc, metrics: { ...sig.metrics, roundTrip: +rt.ratio.toFixed(3), sizeSol: size }, warnings: g.warnings, label: sig.label || null, gates: checks, gatePass: g.pass });
+    this.journal.trade({ type: 'open', id: pos.id, mint: pos.mint, symbol: pos.symbol, setup: pos.setup, entrySol: pos.entrySol, sig: fill.sig, simulated: fill.simulated, ts: n, stamp: pos.stamp, tokensRaw: fill.tokensRaw, entryFillSol: pos.entryFillSol, entryFillUsd: pos.entryFillSol != null && solUsd > 0 ? +(pos.entryFillSol * solUsd).toFixed(10) : null });
     // one-trade rules are spent the moment an entry executes
     if (this.stats.tempRules) { console.log(`[temp] one-trade rules spent on ${pos.symbol} — cleared`); this.stats.tempRules = null; this.saveStats(); }
   }
@@ -766,6 +856,7 @@ export class Bot {
     this.busy.pos = true;
     try {
       const solUsd = await this.d.fetchSolUsd();
+      this.lastSolUsd = solUsd || this.lastSolUsd;
       for (const pos of [...this.positions]) {
         try { await this.managePosition(pos, solUsd); } catch (e) { this.err(`position ${pos.symbol}`, e); }
       }
@@ -889,6 +980,12 @@ export class Bot {
     if (valueSol != null && n - (pos.lastTickTs || 0) >= 10000) {
       pos.lastTickTs = n;
       this.journal.tick({ id: pos.id, mint: pos.mint, symbol: pos.symbol, ts: n, heldMin: +((n - pos.entryTs) / 60000).toFixed(2), valueSol: +valueSol.toFixed(6), ratio: +(valueSol / Math.max(1e-9, pos.entrySol * pos.remainingFrac)).toFixed(3), peak: +(pos.peakRatio || 1).toFixed(3), mc: v.mc ?? null, liq: v.liq ?? null, buysM5: v.buysM5 ?? null, sellsM5: v.sellsM5 ?? null, bundle: pos.bundleScore || 0 });
+      // D1 (record-only): the position's own recent path rides on the position
+      // itself (≤24 samples ≈ last 4 min) so a manual exit can attach its
+      // last-120s price path without re-reading the tick journal.
+      pos.ticks = pos.ticks || [];
+      pos.ticks.push({ ts: n, price: v.price ?? null, ratio: +(valueSol / Math.max(1e-9, pos.entrySol * pos.remainingFrac)).toFixed(4) });
+      if (pos.ticks.length > 24) pos.ticks.splice(0, pos.ticks.length - 24);
       // manual exit detection: on-chain balance far below what the bot holds, 2 checks in a row
       if (this.cfg.realMode && n - pos.entryTs > 60000 && n - (pos.lastChainTs || 0) >= 15000) {
         pos.lastChainTs = n;
@@ -954,9 +1051,64 @@ export class Bot {
       if (this.cfg.closeEmptyAccounts && this.exec.closeEmptyAccounts) this.exec.closeEmptyAccounts(pos.mint).catch(e => this.err('close account', e));
       this.positions = this.positions.filter(p => p.id !== pos.id);
       this.risk.recordClose(pnl, pos.mint);
-      this.ensureClose(pos, { id: pos.id, mint: pos.mint, symbol: pos.symbol, setup: pos.setup, entrySol: pos.entrySol, exitSol: pos.realizedSol, pnlSol: +pnl.toFixed(6), heldMin: +((n - pos.entryTs) / 60000).toFixed(1), reason: decision.reason, simulated: pos.simulated, ts: n });
+      // D1: the final sell's real fill (SOL per whole token, from the executed
+      // quote's solOut ÷ tokens actually sold) rides on the close record.
+      const soldWhole = pos.decimals != null && sold > 0n ? Number(sold) / 10 ** pos.decimals : null;
+      const exitFillSol = soldWhole > 0 ? res.solOut / soldWhole : null;
+      this.ensureClose(pos, { id: pos.id, mint: pos.mint, symbol: pos.symbol, setup: pos.setup, entrySol: pos.entrySol, exitSol: pos.realizedSol, pnlSol: +pnl.toFixed(6), heldMin: +((n - pos.entryTs) / 60000).toFixed(1), reason: decision.reason, simulated: pos.simulated, ts: n, exitFillSol, exitFillUsd: exitFillSol != null && solUsd > 0 ? +(exitFillSol * solUsd).toFixed(10) : null });
     }
     this.savePositions();
+  }
+
+  // D1 (record-only): the exit snapshot attached to every live-detected manual
+  // sell, on the SAME manual_exits record the /exittag reason lands on. Built
+  // from data the bot already holds: the position's own tick ring (last 120s
+  // price path), its peak, the streamed-flow windows for held mints, and a
+  // fresh RugCheck holder count vs the entry snapshot's. Anything with no
+  // source at record time is null — largeHolderSells is always null today:
+  // no holder-delta feed exists at exit time (named in the D1 report).
+  async _manualSnapshot(pos, valueSol, n, pnlSol) {
+    try {
+      const basis = Math.max(1e-9, pos.entrySol * pos.remainingFrac);
+      const ratioNow = valueSol != null ? valueSol / basis : null;
+      const path = (pos.ticks || []).filter(t => n - t.ts <= 120000).map(t => ({ ts: t.ts, price: t.price ?? null, ratio: t.ratio ?? null }));
+      const win = (a, b) => { const r = this.shadowFlow.windowRange(pos.mint, a, b); return r ? { buys: r.buys, sells: r.sells, buySol: +r.buySol.toFixed(4), sellSol: +r.sellSol.toFixed(4) } : null; };
+      const f30 = win(n - 30000, n), f60 = win(n - 60000, n), fPrior = win(n - 120000, n - 60000);
+      let holdersNow = null;
+      try { const rug = await this.d.fetchRug(pos.mint); holdersNow = rug && rug.totalHolders != null ? rug.totalHolders : null; } catch { /* holder count is best-effort */ }
+      const holdersEntry = pos.entry && pos.entry.holders != null ? pos.entry.holders : null;
+      return {
+        path, pathSec: 120,
+        ratioNow: ratioNow != null ? +ratioNow.toFixed(4) : null,
+        peakRatio: pos.peakRatio ?? null,
+        distFromPeakPct: ratioNow != null && pos.peakRatio > 0 ? +(((ratioNow / pos.peakRatio) - 1) * 100).toFixed(2) : null,
+        flow: { last30s: f30, last60s: f60, prior60s: fPrior, source: (f30 || f60 || fPrior) ? 'stream' : null },
+        holdersEntry, holdersNow, holdersChange: holdersEntry != null && holdersNow != null ? holdersNow - holdersEntry : null,
+        largeHolderSells: null,
+        heldMin: +((n - pos.entryTs) / 60000).toFixed(1),
+        pnlSol: pnlSol != null ? +pnlSol.toFixed(6) : null,
+        pnlPct: pnlSol != null && pos.entrySol > 0 ? +(pnlSol / pos.entrySol * 100).toFixed(2) : null,
+      };
+    } catch { return null; }
+  }
+
+  // D1 (record-only): the virtual-position state the paired shadow-exit
+  // tracker runs the real exit stack against after a manual close — a copy of
+  // exactly the fields evaluateExit reads, frozen at the manual exit.
+  _pairedState(pos, n, manual) {
+    return {
+      id: pos.id, mint: pos.mint, symbol: pos.symbol, setup: pos.setup,
+      entryTs: pos.entryTs, entrySol: pos.entrySol, entryPrice: pos.entryPrice,
+      entryRoundTrip: pos.entryRoundTrip, entryVolH1: pos.entryVolH1 || 0,
+      remainingFrac: pos.remainingFrac, peakRatio: pos.peakRatio || 1, peakMove: pos.peakMove || 1,
+      tp1Done: !!pos.tp1Done, tp2Done: !!pos.tp2Done, tp1Arm: pos.tp1Arm || null,
+      stallSince: pos.stallSince ?? null, stopArmedTs: pos.stopArmedTs ?? null,
+      floorChecks: pos.floorChecks || 0, floorSince: pos.floorSince ?? null,
+      probationSince: pos.probationSince ?? null, moveHist: pos.moveHist || [], exitPending: {},
+      flowHist: (pos.flowHist || []).slice(-45),
+      manualTs: n, manualPnlSol: manual.pnlSol, manualMarkSol: manual.valueSol ?? null,
+      basisSol: pos.entrySol * pos.remainingFrac,
+    };
   }
 
   // the human closed this one outside the bot: record entry snapshot + estimated result, drop the position, await a reason tag
@@ -966,10 +1118,13 @@ export class Bot {
     const estPnl = pos.realizedSol + est - pos.entrySol - (pos.feesSol || 0);
     const chain = await this.chainPnl(pos);
     const pnl = chain ? chain.pnl : estPnl;
-    const rec = this.journal.manualExit({ id: pos.id, mint: pos.mint, symbol: pos.symbol, ts: n, how, entry: pos.entry || null, heldMin: +((n - pos.entryTs) / 60000).toFixed(1), peakRatio: pos.peakRatio, bundleScore: pos.bundleScore || 0, pnlSolEstimate: +estPnl.toFixed(6), pnlSol: chain ? +pnl.toFixed(6) : null, pnlSource: chain ? 'chain' : 'estimate', reason: null });
+    const snapshot = await this._manualSnapshot(pos, valueSol, n, pnl);
+    const rec = this.journal.manualExit({ id: pos.id, mint: pos.mint, symbol: pos.symbol, ts: n, how, entry: pos.entry || null, heldMin: +((n - pos.entryTs) / 60000).toFixed(1), peakRatio: pos.peakRatio, bundleScore: pos.bundleScore || 0, pnlSolEstimate: +estPnl.toFixed(6), pnlSol: chain ? +pnl.toFixed(6) : null, pnlSource: chain ? 'chain' : 'estimate', reason: null, snapshot });
     this.positions = this.positions.filter(p => p.id !== pos.id);
     this.risk.recordClose(pnl, pos.mint);
     this.ensureClose(pos, { manual: true, id: pos.id, mint: pos.mint, symbol: pos.symbol, setup: pos.setup, entrySol: pos.entrySol, pnlSol: +pnl.toFixed(6), estimated: !chain, pnlSource: chain ? 'chain' : 'estimate', heldMin: rec.heldMin, reason: `manual exit (${how})`, simulated: pos.simulated, entry: pos.entry, ts: n });
+    // D1 paired shadow exit: keep judging this position's remainder virtually
+    try { this.paired.watch(this._pairedState(pos, n, { pnlSol: +pnl.toFixed(6), valueSol })); } catch { /* observer only */ }
     this.savePositions();
     return rec;
   }
@@ -988,6 +1143,7 @@ export class Bot {
       risk: this.risk.snapshot(),
       limits: { tradeSol: this.cfg.tradeSol, maxPositions: this.cfg.maxPositions, dailyLossSol: this.cfg.dailyLossSol, maxTradesPerHour: this.cfg.maxTradesPerHour, tp1Pct: this.cfg.tp1Pct, tp1Frac: this.cfg.tp1Frac },
       watchlist: this.watch.size,
+      pairedShadow: this.paired ? { pending: this.paired.pending.size, done: this.paired.done.length } : { pending: 0, done: 0 },
       positions: this.positions.map(p => ({ id: p.id, symbol: p.symbol, mint: p.mint, setup: p.setup, entrySol: p.entrySol, remainingFrac: p.remainingFrac, peakRatio: +(p.peakRatio || 1).toFixed(2), heldMin: +((this.now() - p.entryTs) / 60000).toFixed(1), simulated: p.simulated, noTp: !!p.noTp })),
       stats: this.stats,
     };

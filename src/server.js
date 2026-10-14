@@ -22,6 +22,16 @@ function saveRealLists() {
 
 export function startServer(bot, port) {
   const json = (res, code, body) => { res.writeHead(code, { 'content-type': 'application/json', 'access-control-allow-origin': '*' }); res.end(JSON.stringify(body, null, 2)); };
+  // D1 pagination: { limit, offset } when the caller asks to page, else null.
+  // Endpoints that never had paging keep their EXACT legacy response when null
+  // is returned, so the dashboard and existing consumers cannot break.
+  const paging = (u) => {
+    if (!u.searchParams.has('limit') && !u.searchParams.has('offset')) return null;
+    return {
+      limit: Math.min(5000, Math.max(1, parseInt(u.searchParams.get('limit') || '50', 10) || 50)),
+      offset: Math.max(0, parseInt(u.searchParams.get('offset') || '0', 10) || 0),
+    };
+  };
   // Admin guard (user 2026-10-13: "only I can manage that"): write/control endpoints require
   // the x-admin-key header to match ADMIN_KEY when one is set. GETs stay public (the dashboard
   // is view-first and the user shares it for viewing), and POST /reallists stays open — the
@@ -102,12 +112,26 @@ export function startServer(bot, port) {
       });
       return;
     }
-    // GET /learn — recent manual exits + comparison with bot winners
+    // GET /learn — recent manual exits + comparison with bot winners.
+    // D1: exit items now carry the entry snapshot + exit snapshot (they were
+    // stripped here before, which hid exactly the fields learnReport compares),
+    // and ?limit&offset walk the full manual-exit history (default: last 20,
+    // unchanged shape plus the two additive fields).
     if (req.method === 'GET' && u.pathname === '/learn') {
       const report = learnReport(bot.journal.manual, bot.journal.trades);
-      const exits = bot.journal.manual.slice(-20).reverse().map(m => ({ id: m.id, symbol: m.symbol, mint: m.mint, ts: m.ts, heldMin: m.heldMin, peakRatio: m.peakRatio, pnlSolEstimate: m.pnlSolEstimate, reason: m.reason || null, note: m.note || null, how: m.how }));
-      report.exits = exits;
-      report.recent = exits; // dashboard expects `recent`
+      const mapExit = (m) => ({ id: m.id, symbol: m.symbol, mint: m.mint, ts: m.ts, heldMin: m.heldMin, peakRatio: m.peakRatio, pnlSolEstimate: m.pnlSolEstimate, reason: m.reason || null, note: m.note || null, how: m.how, entry: m.entry || null, snapshot: m.snapshot || null });
+      const pg = paging(u);
+      if (pg) {
+        const all = bot.journal.manual.slice().reverse(); // newest first
+        const exits = all.slice(pg.offset, pg.offset + pg.limit).map(mapExit);
+        report.exits = exits;
+        report.recent = exits;
+        report.total = all.length; report.offset = pg.offset; report.limit = pg.limit;
+      } else {
+        const exits = bot.journal.manual.slice(-20).reverse().map(mapExit);
+        report.exits = exits;
+        report.recent = exits; // dashboard expects `recent`
+      }
       return json(res, 200, report);
     }
     // POST /reallists — browser task pushes scraped pump.fun lists (trending/movers/graduated/new, 50 each)
@@ -155,7 +179,23 @@ export function startServer(bot, port) {
       return;
     }
     if (req.method === 'GET' && u.pathname === '/postexit') {
-      return json(res, 200, bot.postExit ? bot.postExit.recent(50) : { pending: [], done: [] });
+      if (!bot.postExit) return json(res, 200, { pending: [], done: [] });
+      const pg = paging(u);
+      let base;
+      if (pg) {
+        const all = bot.postExit.done.slice().reverse(); // newest first
+        base = {
+          pending: [...bot.postExit.pending.values()].map(e => ({ id: e.id, mint: e.mint, symbol: e.symbol, exitTs: e.exitTs, samples: e.samples.length })),
+          done: all.slice(pg.offset, pg.offset + pg.limit),
+          total: all.length, offset: pg.offset, limit: pg.limit,
+        };
+      } else {
+        base = bot.postExit.recent(50);
+      }
+      // D1: paired shadow exits (would-be bot exits for manual closes) ride
+      // along — additive key; pg walks their completed history too.
+      base.paired = bot.paired ? bot.paired.page(pg || {}) : { pending: [], total: 0, offset: 0, limit: 50, done: [] };
+      return json(res, 200, base);
     }
     if (req.method === 'GET' && u.pathname === '/reports') {
       return json(res, 200, (bot.journal.tradeReports || []).slice().reverse());
@@ -239,8 +279,26 @@ export function startServer(bot, port) {
     if (u.pathname === '/state') return json(res, 200, bot.state());
     if (u.pathname === '/pumplists') return json(res, 200, listState());
     if (u.pathname === '/report') return json(res, 200, bot.journal.report());
-    if (u.pathname === '/signals') return json(res, 200, bot.journal.recent(Math.min(200, Number(u.searchParams.get('limit')) || 50)));
-    if (u.pathname === '/trades') return json(res, 200, bot.journal.trades.slice(-100).reverse());
+    if (u.pathname === '/signals') {
+      // D1 pagination: /signals already had a bare-array `limit` (≤200) — that
+      // legacy shape is preserved exactly. Passing `offset`, or a limit above
+      // the old 200 cap, switches to the paging envelope so the FULL history
+      // (not just the newest 200) can be walked.
+      const rawLimit = Number(u.searchParams.get('limit'));
+      if (u.searchParams.has('offset') || (Number.isFinite(rawLimit) && rawLimit > 200)) {
+        const pg = paging(u);
+        return json(res, 200, bot.journal.signalsPage(pg));
+      }
+      return json(res, 200, bot.journal.recent(Math.min(200, rawLimit || 50)));
+    }
+    if (u.pathname === '/trades') {
+      // D1 pagination: default stays the legacy last-100 bare array; any
+      // limit/offset switches to the envelope over the full trade history.
+      const pg = paging(u);
+      if (!pg) return json(res, 200, bot.journal.trades.slice(-100).reverse());
+      const all = bot.journal.trades.slice().reverse(); // newest first
+      return json(res, 200, { total: all.length, offset: pg.offset, limit: pg.limit, items: all.slice(pg.offset, pg.offset + pg.limit) });
+    }
     return json(res, 404, { error: 'not found', routes: ['/health', '/state', '/pumplists', '/report', '/signals', '/trades'] });
   });
   srv.listen(port, () => console.log(`[server] listening on :${port}`));

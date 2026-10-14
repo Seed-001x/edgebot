@@ -351,3 +351,21 @@ export function tempRuleViolation(v, metrics, rules) {
   }
   return null;
 }
+
+/**
+ * D1 (record-only): compact per-gate summary for journaling — each gate's
+ * pass/fail and its reason text, nothing else. The full check objects carry
+ * solver internals (drains, tiers, raw amounts); the summary is the shape
+ * signal/close records persist so analysis can split by WHICH gate failed.
+ */
+export function summarizeGateChecks(checks) {
+  if (!checks) return null;
+  const out = {};
+  for (const [k, c] of Object.entries(checks)) {
+    if (!c) continue;
+    const s = { pass: !!c.pass, reason: c.reason != null ? String(c.reason) : null };
+    if (c.bypassed) s.bypassed = true;
+    out[k] = s;
+  }
+  return out;
+}

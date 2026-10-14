@@ -163,10 +163,16 @@ export class Journal {
     return gates;
   }
 
-  signal({ mint, symbol, setup, decision, reasons = [], price, mc, metrics = null, warnings = [], label = null }) {
+  signal({ mint, symbol, setup, decision, reasons = [], price, mc, metrics = null, warnings = [], label = null, gates = null, gatePass = null }) {
     const ts = this.now();
     const id = `${ts}-${++this.seq}`;
     const rec = { id, ts, mint, symbol, setup, decision, reasons, price, mc, metrics, warnings, label };
+    // D1 (record-only): per-gate results ride on the signal record when the
+    // pipeline computed them (skips, shadow evaluations, takes). Omitted when
+    // null so pre-D1 records and paths that never reach the gates keep their
+    // exact old shape.
+    if (gates != null) rec.gates = gates;
+    if (gatePass != null) rec.gatePass = gatePass;
     this.signals.push(rec); this.byId.set(id, rec); rec.out = {};
     if (this.signals.length > KEEP) { const old = this.signals.shift(); this.byId.delete(old.id); }
     this.append(this.f.sig, rec);
@@ -209,6 +215,15 @@ export class Journal {
   addTradeReport(rec) { this.tradeReports.push(rec); if (this.tradeReports.length > 100) this.tradeReports.shift(); this.append(this.f.reports, rec); return rec; }
 
   recent(limit = 50) { return this.signals.slice(-limit).reverse(); }
+
+  /** D1 pagination: newest-first page over the FULL in-memory signal history
+   *  (KEEP-bounded), so a caller can walk past the old 200-record cap. */
+  signalsPage({ offset = 0, limit = 50 } = {}) {
+    const all = this.signals.slice().reverse();
+    const off = Math.max(0, offset | 0);
+    const lim = Math.max(1, limit | 0);
+    return { total: all.length, offset: off, limit: lim, items: all.slice(off, off + lim) };
+  }
 
   report() {
     const live = (s) => {  // outcomes may be partial while pending

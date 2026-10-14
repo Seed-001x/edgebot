@@ -1,6 +1,8 @@
 // learn.js — capture what the bot saw at entry, and what happened when the HUMAN closed a position.
 // Pure helpers only. Nothing here changes a buy/sell decision: it records, labels and reports.
 
+import { summarizeGateChecks } from './gate.js';
+
 export const EXIT_REASONS = ['dev_bundle', 'stalled', 'farm_wallets', 'chart_off', 'other'];
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
 
@@ -17,7 +19,10 @@ export function snapshotFeatures({ v = {}, sig = {}, rug = null, g = null, now =
     linkedDrain: g && g.checks && g.checks.linkedDump ? num(g.checks.linkedDump.drain) : null,
   };
   f.flowM5 = f.buysM5 != null && f.sellsM5 != null ? +(f.buysM5 / Math.max(1, f.sellsM5)).toFixed(2) : null;
-  return { setup: sig.setup || null, warnings: (g && g.warnings) || [], ...f };
+  // D1 (record-only): the per-gate results at entry ride inside the snapshot, so
+  // every close that carries the snapshot also carries WHICH gates passed/failed
+  // and why — not just the first skip reason.
+  return { setup: sig.setup || null, warnings: (g && g.warnings) || [], gates: g ? summarizeGateChecks(g.checks) : null, ...f };
 }
 
 /** did the human sell outside the bot? on-chain balance far below what the bot thinks it holds */
