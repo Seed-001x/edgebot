@@ -645,7 +645,7 @@ export class Bot {
       entryTs: n, entrySol: fill.solSpent, tokensRaw: fill.tokensRaw, entryTokensRaw: fill.tokensRaw, remainingFrac: 1, peakRatio: 1, tp1Done: false, tp2Done: false, tp1Arm: null, flowHist: [], suspectUnbookedSell: false,
       entryPrice: v.price, entryMc: v.mc, realizedSol: 0, simulated: fill.simulated, sigBuy: fill.sig, markFails: 0,
       entryVolH1: v.volH1 || 0,
-      entryRoundTrip: rt.ratio, peakMove: 1, stopArmedTs: null, floorChecks: 0, floorSince: null, feesSol: this.cfg.txFeeSol || 0, // buy tx fee // entry stall: price is at entry (move 1.0) by definition; the 60s clock runs from entryTs
+      entryRoundTrip: rt.ratio, peakMove: 1, stopArmedTs: null, floorChecks: 0, floorSince: null, probationSince: null, feesSol: this.cfg.txFeeSol || 0, // buy tx fee // entry stall: price is at entry (move 1.0) by definition; the 60s clock runs from entryTs
       bw: { tracked: null, supply: rug && rug.token ? Number(rug.token.supply) || 0 : 0, creator: rug && rug.creator ? String(rug.creator) : null, weights: linkedWeights(rug), snaps: [], vals: [], lastTs: 0, trimmed: false },
       entry: snapshotFeatures({ v, sig, rug, g, now: n }), lastTickTs: 0, lastChainTs: 0, chainDropStrikes: 0,
     };
@@ -775,6 +775,7 @@ export class Bot {
     if ('stopArmedTs' in decision) pos.stopArmedTs = decision.stopArmedTs;
     if ('floorChecks' in decision) pos.floorChecks = decision.floorChecks;
     if ('floorSince' in decision) pos.floorSince = decision.floorSince;
+    if ('probationSince' in decision) pos.probationSince = decision.probationSince;
     if ('tp1Arm' in decision) pos.tp1Arm = decision.tp1Arm;
     // +20% progress callout: let the timeline know it's climbing (once per position)
     if (valueSol != null && !pos.climbCalloutDone) {

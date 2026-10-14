@@ -33,3 +33,13 @@ test('entry fixes 2026-10-13: safer defaults — mandatory ape off, pace relax o
   assert.equal(c.trendMinMc, 30000);
   assert.equal(validateConfig(c).length, 0);
 });
+
+test('probation leash 2026-10-14: defaults 300s probation / 7% leash, 0 accepted as off, bad values rejected', () => {
+  const c = loadConfig({});
+  assert.equal(c.stallProbationSec, 300);
+  assert.equal(c.stallLeashPct, 0.07);
+  assert.equal(validateConfig(loadConfig({ STALL_PROBATION_SEC: '0', STALL_LEASH_PCT: '0' })).length, 0); // both zero = off switches, valid
+  assert.ok(validateConfig(loadConfig({ STALL_PROBATION_SEC: '-1' })).some(e => e.includes('STALL_PROBATION_SEC')));
+  assert.ok(validateConfig(loadConfig({ STALL_LEASH_PCT: '0.95' })).some(e => e.includes('STALL_LEASH_PCT')));
+  assert.ok(validateConfig(loadConfig({ STALL_LEASH_PCT: '-0.1' })).some(e => e.includes('STALL_LEASH_PCT')));
+});

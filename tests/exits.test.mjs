@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { evaluateExit } from '../src/exits.js';
 import { testCfg } from './helpers.mjs';
 
-const cfg = testCfg(); const NOW = 1_000_000_000_000;
+// probation leash OFF in the shared fixture: the section tests below isolate their own rule on
+// the pre-leash paths; the leash itself is covered by its own block (probCfg) further down.
+const cfg = testCfg({ stallProbationSec: 0 }); const NOW = 1_000_000_000_000;
 const pos = (o = {}) => ({ entrySol: 0.02, remainingFrac: 1, peakRatio: 1, tp1Done: false, entryTs: NOW - 5 * 60000, ...o });
 const mark = (valueSol, o = {}) => ({ valueSol, liqUsd: 200_000, buysM5: 30, sellsM5: 10, solUsd: 150, ...o });
 
@@ -75,6 +77,44 @@ test('entry stall: upside edge is +3% — +2.2% still sells, +4% holds, downside
   assert.match(evaluateExit(pos({ entryTs: NOW - 60 * S }), mark(0.0208), { ...stallUpCfg, stallBandUpPct: 0.05 }, NOW).reason, /stall/);
   assert.match(evaluateExit(pos({ entryTs: NOW - 60 * S }), mark(0.0192), stallUpCfg, NOW).reason, /stall/); // move 0.96: downside −5% unchanged, inside sells
   assert.equal(evaluateExit(pos({ entryTs: NOW - 60 * S }), mark(0.0188), stallUpCfg, NOW).fraction, 0);    // move 0.94: through the downside band — not the stall's
+});
+
+// ---- probation leash (user 2026-10-14, Musclecat): at the 180s deadline inside the band the
+//      position is NOT sold — it goes on probation: −7% leash, breakout clears, 300s-from-entry
+//      expiry. Live-shaped cfg: stallSec 180, probation 300, leash 0.07, band −5% / +3%. ----
+const probCfg = { ...cfg, stallSec: 180, stallProbationSec: 300, stallLeashPct: 0.07, stallBandPct: 0.05, stallBandUpPct: 0.03, dipStopPct: 0 };
+test('probation: at the stall deadline inside the band it holds and enters probation (no sell)', () => {
+  const d = evaluateExit(pos({ entryTs: NOW - 180 * S }), mark(0.0201), probCfg, NOW);   // move 1.005
+  assert.equal(d.fraction, 0); assert.equal(d.probationSince, NOW);
+});
+test('probation: before the deadline inside the band — no exit, no probation', () => {
+  const d = evaluateExit(pos({ entryTs: NOW - 120 * S }), mark(0.0201), probCfg, NOW);
+  assert.equal(d.fraction, 0); assert.equal(d.probationSince, null);
+});
+test('probation leash: on probation, a dive past −7% sells instantly; −6% still holds', () => {
+  const p = { entryTs: NOW - 200 * S, probationSince: NOW - 20 * S };
+  const d = evaluateExit(pos(p), mark(0.0185), probCfg, NOW);                            // move 0.925
+  assert.equal(d.fraction, 1); assert.equal(d.reason, 'probation leash (-7.5% after stall deadline)');
+  const d2 = evaluateExit(pos(p), mark(0.0188), probCfg, NOW);                           // move 0.94: above the leash, before expiry
+  assert.equal(d2.fraction, 0); assert.equal(d2.probationSince, NOW - 20 * S);
+});
+test('probation expiry: still in the band at 300s from entry sells', () => {
+  const d = evaluateExit(pos({ entryTs: NOW - 300 * S, probationSince: NOW - 120 * S }), mark(0.0201), probCfg, NOW);
+  assert.equal(d.fraction, 1); assert.equal(d.reason, 'probation expired (still in entry range at 300s, 0.5%)');
+});
+test('probation breakout: above the +3% band top clears probation, no exit', () => {
+  const d = evaluateExit(pos({ entryTs: NOW - 240 * S, probationSince: NOW - 60 * S }), mark(0.0208), probCfg, NOW); // move 1.04
+  assert.equal(d.fraction, 0); assert.equal(d.probationSince, null);
+});
+test('probation anchors to ENTRY: first entering the band at 240s enters probation; expiry still lands at 300s from entry', () => {
+  const d1 = evaluateExit(pos({ entryTs: NOW - 240 * S }), mark(0.0201), probCfg, NOW);  // deadline long past, band entered late
+  assert.equal(d1.fraction, 0); assert.equal(d1.probationSince, NOW);
+  const d2 = evaluateExit(pos({ entryTs: NOW - 300 * S, probationSince: d1.probationSince }), mark(0.0201), probCfg, NOW); // only 60s of probation served — but 300s from entry
+  assert.equal(d2.fraction, 1); assert.match(d2.reason, /probation expired/);
+});
+test('probation off (STALL_PROBATION_SEC=0): the old stall sell at the deadline fires exactly as before', () => {
+  const d = evaluateExit(pos({ entryTs: NOW - 180 * S }), mark(0.0201), { ...probCfg, stallProbationSec: 0 }, NOW);
+  assert.equal(d.fraction, 1); assert.equal(d.reason, 'stall (in entry range at 180s, 0.5%)');
 });
 
 // ---- grace stop (user 2026-10-13): arm -10%, 5s grace, flow confirms, floor -20% ----

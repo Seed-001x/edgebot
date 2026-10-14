@@ -63,7 +63,10 @@ export function evaluateExit(pos, mark, cfg, now) {
   // before it fires (user 2026-10-13: 3s — "be sure it's still there"). Any check back above
   // the floor clears the clock together with the count.
   let floorSince = hardBreached ? (pos.floorSince ?? now) : null;
-  const out = (fraction, reason) => ({ fraction, reason, newPeak: peakRatio, newPeakMove: peakMove, ratio, stallSince: null, stopArmedTs, floorChecks, floorSince, tp1Arm });
+  // probation-leash state (user 2026-10-14): the tick the position was first caught inside
+  // the entry-stall range at/after the stall deadline (section 4b). Null = not on probation.
+  let probationSince = pos.probationSince ?? null;
+  const out = (fraction, reason) => ({ fraction, reason, newPeak: peakRatio, newPeakMove: peakMove, ratio, stallSince: null, stopArmedTs, floorChecks, floorSince, probationSince, tp1Arm });
 
   // 1. liquidity death: the pool can no longer absorb what we hold
   const valueUsd = mark.valueSol * (mark.solUsd || 150);
@@ -154,8 +157,35 @@ export function evaluateExit(pos, mark, cfg, now) {
   //     (UNTXED sold at +2.2% then ripped). A spike that faded back into the range sells; a coin
   //     still outside the range (either direction) is some other rule's problem. Post-TP1
   //     runners are exempt.
+  //     PROBATION LEASH (user 2026-10-14, Musclecat): while probation is on
+  //     (stallProbationSec > 0), reaching the deadline inside the range no longer sells —
+  //     Musclecat sat flat past the 180s deadline, then dove to the −17% hard floor in ~20s
+  //     (−0.0169) because nothing owned the space between "stalled" and "floored" (the dip
+  //     stop is off). Instead the position goes on probation: a tight leash (stallLeashPct,
+  //     on `move` like the stall itself) sells a dive instantly; breaking above the range top
+  //     clears probation — the coin is working, the normal stack resumes; and the outer
+  //     deadline stallProbationSec, anchored to ENTRY (not to when probation began), sells
+  //     whatever is still in the range there. Probation off (stallProbationSec = 0) restores
+  //     the original sell-at-the-deadline line, unchanged.
   const stallBandUp = cfg.stallBandUpPct ?? cfg.stallBandPct;
-  if (cfg.stallSec > 0 && !pos.tp1Done && heldMin * 60 >= cfg.stallSec && move >= 1 - cfg.stallBandPct && move <= 1 + stallBandUp) return out(1, `stall (in entry range at ${cfg.stallSec}s, ${((move - 1) * 100).toFixed(1)}%)`);
+  const heldSec = heldMin * 60;
+  if (cfg.stallSec > 0 && !pos.tp1Done && heldSec >= cfg.stallSec) {
+    if ((cfg.stallProbationSec || 0) > 0) {
+      if (probationSince == null) {
+        // deadline reached inside the range: probation starts, no sell
+        if (move >= 1 - cfg.stallBandPct && move <= 1 + stallBandUp) { probationSince = now; return out(0, null); }
+      } else if (cfg.stallLeashPct > 0 && move <= 1 - cfg.stallLeashPct) {
+        return out(1, `probation leash (${((move - 1) * 100).toFixed(1)}% after stall deadline)`);
+      } else if (move > 1 + stallBandUp) {
+        probationSince = null; // breakout: probation over — the sections below judge normally
+      } else if (heldSec >= cfg.stallProbationSec) {
+        return out(1, `probation expired (still in entry range at ${cfg.stallProbationSec}s, ${((move - 1) * 100).toFixed(1)}%)`);
+      }
+      // else: on probation, in range, leash/expiry not met — no exit from this section.
+    } else if (move >= 1 - cfg.stallBandPct && move <= 1 + stallBandUp) {
+      return out(1, `stall (in entry range at ${cfg.stallSec}s, ${((move - 1) * 100).toFixed(1)}%)`);
+    }
+  }
 
   // 5. momentum failure: underwater, 10 min in, essentially no buyers (only sell when truly dead)
   if (heldMin >= 10 && ratio < 1 && mark.buysM5 != null && mark.buysM5 <= 1 && mark.sellsM5 > mark.buysM5 * 3) return out(1, 'momentum failure (no buyers)');
