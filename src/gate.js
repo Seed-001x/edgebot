@@ -7,7 +7,7 @@
 // Policy: any single hard fail blocks entry. A missing RugCheck report blocks young coins (they are
 // where rigging lives) and only warns for older, high-volume ones.
 
-import { fetchJson, normName } from './util.js';
+import { fetchJson } from './util.js';
 
 const RC = 'https://api.rugcheck.xyz/v1';
 const cache = new Map(); // mint -> { ts, report }
@@ -133,22 +133,6 @@ export function concentrationCheck(topHolders, skip, maxPct = 60) {
   return { pass: pct <= maxPct, reason: pct > maxPct ? `top-10 non-pool holders own ${pct.toFixed(0)}%` : 'distribution ok' };
 }
 
-// 7. Clone check: a younger, smaller coin carrying an established coin's name/ticker.
-export function cloneCheck(view, others, cfg) {
-  const myName = normName(view.name), mySym = normName(view.symbol);
-  for (const o of others || []) {
-    if (!o || o.address === view.address) continue;
-    const sameName = myName.length >= 4 && normName(o.name) === myName;
-    const sameSym = mySym.length >= 3 && normName(o.symbol) === mySym;
-    if (!sameName && !sameSym) continue;
-    const older = o.createdAt && view.createdAt && o.createdAt <= view.createdAt - 30 * 60 * 1000;
-    const bigger = o.volH24 >= view.volH24 * cfg.cloneMinVolMultiple || o.liq >= view.liq * cfg.cloneMinVolMultiple;
-    if (older && bigger) return { pass: false, reason: `copies "${o.name}" (${o.address.slice(0, 6)}…) which is older and has ${o.volH24 >= view.volH24 ? 'more volume' : 'more liquidity'}` };
-  }
-  return { pass: true, reason: 'no established look-alike' };
-}
-
-
 // 7b. Name block: whole-word match against the token's name ("Crypto Inu", "Super Crypto Inu").
 //     Whole words only, so names that merely contain the letters ("Continuum", "Minute") still pass.
 export function blockedNameWord(name, words) {
@@ -237,16 +221,15 @@ export const HARD_GATES = new Set(['rugged', 'mintAuthority', 'freezeAuthority',
 export const hasHardFail = (fails) => (fails || []).some(f => HARD_GATES.has(String(f).split(':')[0]));
 
 /**
- * Run every gate. `rug` may be null. `others` = same-name coins from searchByName.
+ * Run every gate. `rug` may be null.
  * Returns { pass, fails[], warnings[], checks }.
  */
-export function runGates({ view, rug, others = [], curve = null, cfg, now = Date.now() }) {
+export function runGates({ view, rug, curve = null, cfg, now = Date.now() }) {
   const checks = {};
   const warnings = [];
   const ageH = view.createdAt ? (now - view.createdAt) / 3600000 : 0;
   const ageMin = ageH * 60;
 
-  checks.clone = cloneCheck(view, others, cfg);
   checks.vertical = verticalLaunchCheck(ageMin, view.chgH1 ?? view.chgM5 ?? 0);
   checks.dust = dustVolumeCheck(view, { minTx: cfg.dustMinTx, maxAvgUsd: cfg.dustMaxAvgUsd });
   checks.botflow = botFlowCheck(view, ageH, { maxAgeH: cfg.botflowMaxAgeH ?? 2, minTx: cfg.botflowMinTx ?? 1000, maxAvgUsd: cfg.botflowMaxAvgUsd ?? 6 });

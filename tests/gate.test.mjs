@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { runGates, cloneCheck } from '../src/gate.js';
+import { runGates } from '../src/gate.js';
 import { testCfg, view, tmp } from './helpers.mjs';
 
 const cfg = testCfg();
@@ -37,11 +37,13 @@ test('DOTF fixture is rejected for the right reasons', () => {
   for (const k of ['clones', 'creator', 'depth', 'vertical']) assert.ok(keys.includes(k), `missing ${k} in ${keys}`);
   assert.match(g.fails.find(f => f.startsWith('creator')), /9\d\.\d% of pool/);
 });
-test('QI fixture is rejected, and flagged as a clone of the established coin', () => {
-  const g = runGates({ view: QI.view, rug: QI.rug, others: [original], cfg, now: NOW });
+test('QI fixture is rejected on its remaining gates — no clone leg (copycat filter removed)', () => {
+  const g = runGates({ view: QI.view, rug: QI.rug, cfg, now: NOW });
   assert.equal(g.pass, false);
   const keys = g.fails.map(f => f.split(':')[0]);
-  for (const k of ['clones', 'insiders', 'depth', 'vertical', 'clone']) assert.ok(keys.includes(k), `missing ${k} in ${keys}`);
+  for (const k of ['clones', 'insiders', 'depth', 'vertical']) assert.ok(keys.includes(k), `missing ${k} in ${keys}`);
+  assert.ok(!keys.includes('clone'), `clone leg leaked into fails: ${keys}`);
+  assert.equal(g.checks.clone, undefined);
 });
 test('healthy 3-day-old coin passes', () => {
   const v = view({ createdAt: NOW - 72 * 3600e3, chgH1: 40 });
@@ -62,11 +64,20 @@ test('open mint/freeze authority and LP not locked are hard fails', () => {
   const keys = g.fails.map(f => f.split(':')[0]);
   for (const k of ['mintAuthority', 'freezeAuthority', 'lp']) assert.ok(keys.includes(k));
 });
-test('clone check: same name but OLDER-and-smaller or unrelated coins are not flagged', () => {
-  const v = view({ name: 'Quantum Inu', symbol: 'QI', createdAt: NOW - 3 * 3600e3, volH24: 9e6, liq: 1e6 });
-  assert.equal(cloneCheck(v, [{ ...original, volH24: 1000, liq: 10 }], cfg).pass, true);   // original is smaller
-  assert.equal(cloneCheck(v, [{ ...original, name: 'Totally Different', symbol: 'ZZZ' }], cfg).pass, true);
-  assert.equal(cloneCheck(view({ name: 'Quantum Inu', symbol: 'QI', createdAt: NOW - 5 * 60000, volH24: 100, liq: 1000 }), [original], cfg).pass, false);
+test('copycat (clone) filter REMOVED (user 2026-10-14): no cloneCheck export, and the gate stack has no clone leg even with an established original in the room', async () => {
+  const gate = await import('../src/gate.js');
+  // The filter failed a younger, smaller coin carrying an established coin's name/ticker
+  // when an older same-name coin had >= CLONE_MIN_VOL_MULTIPLE (2x) its 24h volume or
+  // liquidity. The user ordered it out: copycats are judged by the normal gates.
+  assert.equal(gate.cloneCheck, undefined);
+  // The old filter's exact block shape, from this file's fixtures: QI (13 min old) against
+  // the older, far bigger `original` used to add a 'clone' fail on top of QI's real fails.
+  // Hand runGates the original and prove the clone leg no longer exists in the result —
+  // while the unrelated holder-cluster leg ('clones') still fires on the same fixture.
+  const g = runGates({ view: QI.view, rug: QI.rug, others: [original], cfg, now: NOW });
+  assert.equal(g.checks.clone, undefined);
+  assert.ok(!g.fails.some(f => f.startsWith('clone:')), `clone fail leaked: ${g.fails}`);
+  assert.ok(g.fails.some(f => f.startsWith('clones:')), `holder-cluster leg should still fire: ${g.fails}`);
 });
 
 test('tempRuleViolation: one-trade MC cap and crash ban', async () => {

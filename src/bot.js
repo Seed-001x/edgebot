@@ -5,7 +5,7 @@
 //   positionTick : mark open positions by live SELL quote and apply exit rules
 //
 // Entry order (cheap → expensive, every skip is journaled with its reason):
-//   detector → risk limits → gates (RugCheck + clone search) → round-trip quote → buy
+//   detector → risk limits → gates (RugCheck) → round-trip quote → buy
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -24,7 +24,7 @@ import { buildTradeReport } from './reports.js';
 
 export class Bot {
   /**
-   * deps: { discover(cfg), fetchViews(mints), fetchSolUsd(), fetchRug(mint), searchByName(q), exec, now }
+   * deps: { discover(cfg), fetchViews(mints), fetchSolUsd(), fetchRug(mint), exec, now }
    */
   constructor(cfg, deps) {
     this.cfg = cfg; this.d = deps; this.now = deps.now || Date.now;
@@ -51,8 +51,6 @@ export class Bot {
     this.statsFile = path.join(cfg.dataDir, 'stats.json');
     this.entryTimes = []; // timestamps of entries (for pace keeper)
     this.PACE_TARGET = 120; // target trades per hour (2 per min)
-    this.namesFile = path.join(cfg.dataDir, 'entered-names.json');
-    this.enteredNames = this.loadEnteredNames();
     this.mintsFile = path.join(cfg.dataDir, 'entered-mints.json');
     this.enteredMints = this.loadEnteredMints();
     this.loadStats();
@@ -71,11 +69,8 @@ export class Bot {
     } catch {}
   }
   saveStats() { try { fs.writeFileSync(this.statsFile, JSON.stringify(this.stats)); } catch { /* best effort */ } }
-  loadEnteredNames() { try { return new Set(JSON.parse(fs.readFileSync(this.namesFile, 'utf8'))); } catch { return new Set(); } }
-  saveEnteredNames() { try { fs.writeFileSync(this.namesFile, JSON.stringify([...this.enteredNames])); } catch { /* best effort */ } }
   loadEnteredMints() { try { return new Set(JSON.parse(fs.readFileSync(this.mintsFile, 'utf8'))); } catch { return new Set(); } }
   saveEnteredMints() { try { fs.writeFileSync(this.mintsFile, JSON.stringify([...this.enteredMints])); } catch { /* best effort */ } }
-  normName(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9]/g, ''); }
 
   // Pace keeper: returns a relaxed cfg if we're behind the hourly target.
   // Never overrides user blacklists, RugCheck safety, or risk limits.
@@ -518,13 +513,6 @@ export class Bot {
       console.log(`[learn] skip: user blacklisted setup "${sig.setup}" — skipping ${v.symbol}`);
       return this.skip(v, sig, [`user-blacklist: setup "${sig.setup}" marked bad ${10}+ times`]);
     }
-    // Copycat dedup: if we already entered a DIFFERENT coin with this name, skip same-name coins
-    // (same mint re-signaled is fine — that's the original, not a copycat)
-    const nn = this.normName(v.name) || this.normName(v.symbol);
-    if (nn && this.enteredNames.has(nn) && !this.enteredMints.has(v.address)) {
-      console.log(`[dedup] skip: already entered a coin named "${v.name || v.symbol}" — skipping copycat`);
-      return this.skip(v, sig, [`copycat: already entered "${v.name || v.symbol}"`]);
-    }
     // User name block (2026-10-13): any coin whose name contains a blocked word (default "inu")
     // is hard-skipped. Sits before runGates, so no pace boost, mandatory-ape forcing or
     // contested-gate override can let one through.
@@ -585,17 +573,14 @@ export class Bot {
       if (violation) return this.skip(v, sig, [violation]);
     }
 
-    // gates: RugCheck + same-name search in parallel
-    const [rug, byName, bySym, curve] = await Promise.all([
+    // gates: RugCheck + curve history in parallel
+    const [rug, curve] = await Promise.all([
       this.d.fetchRug(v.address).catch(() => null),
-      this.d.searchByName(v.name).catch(() => []),
-      this.d.searchByName(v.symbol).catch(() => []),
       this.d.fetchCurve ? this.d.fetchCurve(v.address).catch(() => null) : null,
     ]);
-    const others = [...byName, ...bySym];
     // Pace keeper: if behind the hourly target, use relaxed gate thresholds
     const { cfg: gateCfg, boosted, pace } = this.paceCfg(n);
-    const g = runGates({ view: v, rug, others, curve, cfg: gateCfg, now: n });
+    const g = runGates({ view: v, rug, curve, cfg: gateCfg, now: n });
     if (!g.pass) {
       // Mandatory ape mode: if under N entries/hour, force through soft gate fails only.
       // Structural (HARD_GATES) fails are never forced — that bypass is what let rigged launches in.
@@ -650,8 +635,6 @@ export class Bot {
       entry: snapshotFeatures({ v, sig, rug, g, now: n }), lastTickTs: 0, lastChainTs: 0, chainDropStrikes: 0,
     };
     this.positions.push(pos); this.savePositions();
-    const en = this.normName(v.name) || this.normName(v.symbol);
-    if (en) { this.enteredNames.add(en); this.saveEnteredNames(); }
     this.enteredMints.add(v.address); this.saveEnteredMints();
     this.risk.recordEntry(v.address);
     this.stats.entries++;

@@ -206,7 +206,6 @@ export function loadConfig(env = process.env) {
     // ---- gates ----
     requireReportBelowAgeH: num(env, 'REQUIRE_REPORT_BELOW_AGE_H', 6), // young coins with no RugCheck report are blocked
     minHolders: num(env, 'MIN_HOLDERS', 100),
-    cloneMinVolMultiple: num(env, 'CLONE_MIN_VOL_MULTIPLE', 2),
     linkedDumpMaxDrain: num(env, 'LINKED_DUMP_MAX_DRAIN', 0.35),
     creatorMaxDrain: num(env, 'CREATOR_MAX_DRAIN', 0.25), // creator-dump gate cap (was hardcoded 0.25 in gate.js)
     creatorVolBypassUsd: num(env, 'CREATOR_VOL_BYPASS_USD', 25000), // creator veto becomes a warning when 5m volume >= this — real flow can absorb the stack (user 2026-10-14, Eikon: skipped at $53K on this gate with $39.1K/5m volume, then bought at $307K and lost). 0 = off (veto always fires).

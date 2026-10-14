@@ -147,20 +147,6 @@ export async function fetchCurve(mint, cfg) {
   return resolveCurve(pairs, cfg, chainFn);
 }
 
-/** Same-name / same-ticker coins, for the clone check. */
-export async function searchByName(query) {
-  const j = await fetchJson(`${DS}/latest/dex/search?q=${encodeURIComponent(query)}`);
-  const out = new Map();
-  for (const p of (j && j.pairs) || []) {
-    if (p.chainId !== 'solana') continue;
-    const v = viewOf(p);
-    if (!v) continue;
-    const cur = out.get(v.address);
-    if (!cur || v.liq > cur.liq) out.set(v.address, v);
-  }
-  return [...out.values()];
-}
-
 // ------------------------------------------------------------------ discovery lists
 async function jupList(cfg, path) {
   const headers = cfg.jupApiKey ? { 'x-api-key': cfg.jupApiKey } : {};

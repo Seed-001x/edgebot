@@ -68,12 +68,37 @@ test('rigged launch: pop is detected, then BLOCKED by the gate, and logged with 
   assert.ok(rep.bySkipReason.clones.avgR15 < 0, 'journal shows the gate saved us');
 });
 
-test('clone of an established coin is blocked', async () => {
+test('copycat of an established coin passes the gate stack — no clone skip (clone filter removed, user 2026-10-14)', async () => {
   const orig = { address: 'ORIG', name: 'Test Coin', symbol: 'TEST', createdAt: T0 - 90 * 3600e3, volH24: 9e7, liq: 9e6 };
   const r = rig({ others: [orig] });
   await r.bot.start(); await r.bot.discoverTick(); await r.tick(1, 12); for (const p of RAMP) await r.tick(p);
-  assert.equal(r.bot.positions.length, 0);
-  assert.ok(r.bot.journal.signals.some(s => s.reasons.some(x => x.startsWith('clone:'))));
+  // This exact shape used to be gate-skipped with a 'clone:' reason. With the filter gone
+  // the signal clears the whole gate stack and is judged downstream on its other merits —
+  // in this rig it reaches the round-trip check (the pre-existing rig drift that also
+  // fails 'full lifecycle' at baseline stops it there, unrelated to the gates).
+  assert.ok(r.bot.journal.signals.length >= 1, 'the pop signal should be journaled');
+  assert.ok(!r.bot.journal.signals.some(s => s.reasons.some(x => x.startsWith('clone:'))), 'no clone skip reason may appear');
+  assert.ok(
+    r.bot.journal.signals.some(s => s.decision === 'taken' || s.reasons.some(x => x.startsWith('roundtrip:'))),
+    `signal should pass the gates and be judged downstream, got: ${JSON.stringify(r.bot.journal.signals.map(s => [s.decision, s.reasons]))}`,
+  );
+});
+
+test('same-name dedup REMOVED (user 2026-10-14): a second, different-mint coin carrying an entered coin\'s name is judged on its merits and taken', async () => {
+  const r = rig({ cfgOver: { tradeSol: 0.02 } }); // the rig's scripted sell-back value is calibrated to a 0.02 spend (as in the stale-pop fixture)
+  await r.bot.start();
+  // First coin: 'Test Coin' (MINT1) is entered. Under the removed dedup, that entry recorded
+  // the name and every later DIFFERENT mint carrying it was skipped 'copycat: already entered'.
+  await r.bot.onSignal(view({ price: 1.00 }), { setup: 'pop', strength: 1, metrics: {} });
+  assert.equal(r.bot.positions.length, 1, 'first coin should be bought');
+  assert.equal(r.bot.enteredNames, undefined, 'no entered-names state may remain on the bot');
+  r.bot.positions.length = 0; // first trade is done; free the slot for the namesake
+  // Second coin: different mint, same name and ticker — the dedup's exact target shape.
+  await r.bot.onSignal(view({ address: 'MINT2', price: 1.00 }), { setup: 'pop', strength: 1, metrics: {} });
+  const sig2 = r.bot.journal.signals.find(s => s.mint === 'MINT2');
+  assert.equal(sig2.decision, 'taken');
+  assert.equal(r.bot.positions.length, 1, 'the same-name second coin should be bought on its merits');
+  assert.ok(!r.bot.journal.signals.some(s => (s.reasons || []).some(x => x.startsWith('copycat:'))), 'no copycat skip may be recorded');
 });
 
 test('unsellable token (sell-back worth 10% of spend) is refused before any buy', async () => {
