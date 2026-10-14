@@ -22,6 +22,7 @@ import { postCallout } from './callout.js';
 import { snapshotFeatures, externalExit } from './learn.js';
 
 import { PostExitTracker, PairedShadowExits } from './postExit.js';
+import { ShadowTrades } from './shadowTrades.js';
 import { buildTradeReport } from './reports.js';
 import { configStamp } from './stamp.js';
 
@@ -40,6 +41,7 @@ export class Bot {
     for (const t of this.journal.trades) if (t.type === 'close' && t.mint) this.risk.seedClosed(t.mint, t.ts); // re-entry block survives restarts/deploys
     this.postExit = new PostExitTracker(cfg.dataDir, this.now); // 5-min post-exit price tracker (observer only)
     this.paired = new PairedShadowExits(cfg.dataDir, this.now); // D1: virtual would-be exits paired to manual exits (observer only)
+    this.shadowTrades = new ShadowTrades(cfg.dataDir, this.now, { txFeeSol: cfg.txFeeSol }); // trade-grade shadow (record-only): virtual positions for gate-passing shadow signals, run through the real exit stack
     this.cfgStamp = configStamp(cfg); // D1: config version stamp carried by entries + closes (record-only)
     this.lastSolUsd = null; // last SOL/USD the position loop saw (feeds observer marks)
     this.watch = new Map();      // mint -> { ts, source }
@@ -64,6 +66,14 @@ export class Bot {
     this.mintsFile = path.join(cfg.dataDir, 'entered-mints.json');
     this.enteredMints = this.loadEnteredMints();
     this.loadStats();
+    this._syncShadowStats(); // the tracker owns its cumulative totals (persisted with its pending state) — stats mirrors them
+  }
+
+  // Trade-grade shadow report card for /state (record-only): maintained from
+  // the tracker's own totals at open/complete time (constructor, the shadow
+  // journal point, and both tick paths call this after ticking the tracker).
+  _syncShadowStats() {
+    try { if (this.shadowTrades) this.stats.shadowTrades = this.shadowTrades.totalsView(); } catch { /* observer only */ }
   }
 
   loadStats() {
@@ -516,6 +526,14 @@ export class Bot {
     this.stats.outcomeObs = this.stats.outcomeObs || { ticks: 0, fetched: 0, views: 0 };
     try { this.journal.flushPending(); } catch { /* persistence is best-effort */ }
     const pend = this.journal.pendingMints ? this.journal.pendingMints() : [];
+    // Trade-grade shadow (record-only): open virtual mints join the fetch
+    // set, so a virtual position keeps being marked after its signal's own
+    // outcome tracking (and any watchlist seat) ends — marks never depend on
+    // watch residence, the same guarantee this observer exists to give.
+    if (this.shadowTrades) {
+      const have = new Set(pend.map(p => p.mint));
+      for (const vm of this.shadowTrades.pendingMints()) if (!have.has(vm.mint)) pend.push(vm);
+    }
     const due = pend.filter(p => n - (this.outcomeSeenAt.get(p.mint) || 0) >= 25000).slice(0, 150);
     if (!due.length) return;
     this.stats.outcomeObs.ticks++;
@@ -532,6 +550,11 @@ export class Bot {
     // Finalization must not depend on views existing at all: past-horizon
     // pendings close out flagged-partial even when every pair is gone.
     try { this.journal.expireSweep(n); } catch { /* observer only */ }
+    // Trade-grade shadow: the SAME fetched views drive the virtual exit
+    // stack (cap expiry included — it runs even when the fetch came back
+    // empty). No price fetch exists anywhere for the virtuals but this one
+    // and the trading poll's.
+    try { if (this.shadowTrades) { this.shadowTrades.tick(mint => (views ? views.get(mint) : null) || null, n, this.cfg, this.lastSolUsd); this._syncShadowStats(); } } catch { /* observer only */ }
   }
 
   // ------------------------------------------------------------ polling + signals
@@ -594,6 +617,9 @@ export class Bot {
       // D1 paired shadow exits: run the virtual exit stack for manually-closed
       // positions on the same views (observer only — can never trade)
       try { this.paired.tick(mint => this.latest.get(mint) || null, n, this.cfg, this.lastSolUsd); } catch { /* observer only */ }
+      // Trade-grade shadow: the same already-fetched views mark the virtual
+      // positions of gate-passing shadow signals (observer only)
+      try { this.shadowTrades.tick(mint => this.latest.get(mint) || null, n, this.cfg, this.lastSolUsd); this._syncShadowStats(); } catch { /* observer only */ }
       // Outcome observer (2026-10-14, record-only): price the mints with
       // outcome tracking in flight that the trading poll did NOT just cover,
       // so checkpoints stop depending on watchlist residence.
@@ -632,7 +658,17 @@ export class Bot {
   shadow(v, sig, gates = null, gatePass = null) {
     this.stats.shadowSignals = this.stats.shadowSignals || {};
     this.stats.shadowSignals[sig.setup] = (this.stats.shadowSignals[sig.setup] || 0) + 1;
-    this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'shadow', reasons: [`shadow: ${sig.setup} is shadow-only — logged + outcome-tracked, no buy`], price: v.price, mc: v.mc, metrics: sig.metrics, warnings: [], label: sig.label || null, gates, gatePass, fields: this._signalFields(v) });
+    const sigId = this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'shadow', reasons: [`shadow: ${sig.setup} is shadow-only — logged + outcome-tracked, no buy`], price: v.price, mc: v.mc, metrics: sig.metrics, warnings: [], label: sig.label || null, gates, gatePass, fields: this._signalFields(v) });
+    // Trade-grade shadow (record-only, user 2026-10-14): a shadow signal that
+    // PASSED its gate evaluation opens a VIRTUAL position at the signal
+    // price, managed by the real exit stack (src/shadowTrades.js) — the
+    // signal record and flow above stay byte-identical; this only registers
+    // the tracker. Gate-failed shadow signals open nothing.
+    if (gatePass === true) {
+      try {
+        if (this.shadowTrades.open({ id: sigId, mint: v.address, symbol: v.symbol, setup: sig.setup, price: v.price, mc: v.mc, ts: this.now(), sizeSol: this.cfg.tradeSol, volH1: v.volH1 || 0 })) this._syncShadowStats();
+      } catch { /* observer only — never disturb the signal path */ }
+    }
   }
 
   // D1 (record-only): for a shadow signal, evaluate the same pre-checks and gate
@@ -1282,7 +1318,9 @@ export class Bot {
       watchlist: this.watch.size,
       pairedShadow: this.paired ? { pending: this.paired.pending.size, done: this.paired.done.length } : { pending: 0, done: 0 },
       positions: this.positions.map(p => ({ id: p.id, symbol: p.symbol, mint: p.mint, setup: p.setup, entrySol: p.entrySol, remainingFrac: p.remainingFrac, peakRatio: +(p.peakRatio || 1).toFixed(2), heldMin: +((this.now() - p.entryTs) / 60000).toFixed(1), simulated: p.simulated, noTp: !!p.noTp })),
-      stats: this.stats,
+      // stats.shadowTrades is read from the tracker at read time so /state can
+      // never show a stale report card between the maintained sync points
+      stats: this.shadowTrades ? { ...this.stats, shadowTrades: this.shadowTrades.totalsView() } : this.stats,
     };
   }
 }

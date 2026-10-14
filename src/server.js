@@ -199,6 +199,14 @@ export function startServer(bot, port) {
       base.paired = bot.paired ? bot.paired.page(pg || {}) : { pending: [], total: 0, offset: 0, limit: 50, done: [] };
       return json(res, 200, base);
     }
+    if (req.method === 'GET' && u.pathname === '/shadowtrades') {
+      // Trade-grade shadow (record-only): completed virtual trades + open
+      // virtuals, the /postexit paired shape — page envelope when paging is
+      // requested, the same envelope at the default page otherwise.
+      if (!bot.shadowTrades) return json(res, 200, { pending: [], total: 0, offset: 0, limit: 50, done: [] });
+      const pg = paging(u);
+      return json(res, 200, bot.shadowTrades.page(pg || {}));
+    }
     if (req.method === 'GET' && u.pathname === '/reports') {
       return json(res, 200, (bot.journal.tradeReports || []).slice().reverse());
     }
@@ -310,7 +318,7 @@ export function startServer(bot, port) {
       const all = bot.journal.trades.slice().reverse(); // newest first
       return json(res, 200, { total: all.length, offset: pg.offset, limit: pg.limit, items: all.slice(pg.offset, pg.offset + pg.limit) });
     }
-    return json(res, 404, { error: 'not found', routes: ['/health', '/state', '/pumplists', '/report', '/signals', '/trades'] });
+    return json(res, 404, { error: 'not found', routes: ['/health', '/state', '/pumplists', '/report', '/signals', '/trades', '/postexit', '/shadowtrades'] });
   });
   srv.listen(port, () => console.log(`[server] listening on :${port}`));
   return srv;
