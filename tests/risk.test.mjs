@@ -58,3 +58,70 @@ test('cooldowns: no re-buy of a loser within 6h; NO re-entry after ANY close wit
   t += 3 * 3600000;
   assert.equal(r.canEnter(args('LOSER')).ok, true);
 });
+
+// ---- D4 cold-market streak pause (user 2026-10-13) ----
+test('D4: four straight losses pause entries; three do not', () => {
+  const r = mk();
+  r.recordClose(-0.01); r.recordClose(-0.02); r.recordClose(-0.003);
+  assert.equal(ok(r).ok, true);
+  r.recordClose(-0.017);
+  const res = ok(r);
+  assert.equal(res.ok, false); assert.match(res.reason, /streak pause/);
+  assert.equal(r.snapshot().lossStreak, 4); assert.equal(r.snapshot().streakPaused, true);
+});
+test('D4: a win resets the streak — L L W L L L never reaches four', () => {
+  const r = mk();
+  r.recordClose(-0.01); r.recordClose(-0.01); r.recordClose(0.02);
+  r.recordClose(-0.01); r.recordClose(-0.01); r.recordClose(-0.01);
+  assert.equal(ok(r).ok, true); assert.equal(r.snapshot().lossStreak, 3);
+});
+test('D4: resume needs the minimum pause served AND breadth sustained; a dip restarts the heat clock', () => {
+  const r = mk();
+  for (let i = 0; i < 4; i++) r.recordClose(-0.01);
+  assert.equal(r.snapshot().streakPaused, true);
+  clock += 10 * 60000; // +10m: hot, but minimum pause (15m) not served
+  assert.equal(r.noteBreadth(0.6, 500), null); assert.equal(r.snapshot().streakPaused, true);
+  clock += 6 * 60000; // +16m: heat clock starts
+  assert.equal(r.noteBreadth(0.6, 500), null);
+  clock += 5 * 60000; // +21m: dip below the line — clock restarts
+  assert.equal(r.noteBreadth(0.3, 500), null);
+  clock += 1 * 60000; // +22m: hot again, clock restarts here
+  assert.equal(r.noteBreadth(0.6, 500), null);
+  clock += 9 * 60000; // +31m: 9m sustained — not enough
+  assert.equal(r.noteBreadth(0.6, 500), null); assert.equal(r.snapshot().streakPaused, true);
+  clock += 1 * 60000; // +32m: 10m sustained — resume
+  assert.equal(r.noteBreadth(0.6, 500), 'resumed');
+  assert.equal(r.snapshot().streakPaused, false); assert.equal(r.snapshot().lossStreak, 0);
+  assert.equal(ok(r).ok, true);
+});
+test('D4: breadth from too few coins does not resume', () => {
+  const r = mk();
+  for (let i = 0; i < 4; i++) r.recordClose(-0.01);
+  clock += 20 * 60000;
+  assert.equal(r.noteBreadth(0.9, 10), null); // 90% green but only 10 coins reporting (< 50)
+  clock += 15 * 60000;
+  assert.equal(r.noteBreadth(0.9, 10), null);
+  assert.equal(r.snapshot().streakPaused, true);
+});
+test('D4: a streak resume never releases a balance halt — that layer is the user\'s alone', () => {
+  const r = mk();
+  for (let i = 0; i < 4; i++) r.recordClose(-0.01);
+  r.s.downHalted = true;
+  clock += 20 * 60000; r.noteBreadth(0.6, 500);
+  clock += 11 * 60000;
+  assert.equal(r.noteBreadth(0.6, 500), 'resumed'); // streak layer lifts…
+  assert.match(ok(r).reason, /balance down-stop/); // …but entries stay blocked by the balance halt
+});
+test('D4: a manual resume clears the pause and the streak', () => {
+  const r = mk();
+  for (let i = 0; i < 4; i++) r.recordClose(-0.01);
+  assert.equal(r.snapshot().streakPaused, true);
+  r.clearStreakPause();
+  assert.equal(r.snapshot().streakPaused, false); assert.equal(r.snapshot().lossStreak, 0);
+  assert.equal(ok(r).ok, true);
+});
+test('D4: STREAK_PAUSE_N=0 disables the pause entirely', () => {
+  const r = mk({ streakPauseN: 0 });
+  for (let i = 0; i < 9; i++) r.recordClose(-0.01);
+  assert.equal(r.snapshot().streakPaused, false); assert.equal(ok(r).ok, true);
+});

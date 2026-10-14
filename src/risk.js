@@ -16,6 +16,10 @@ export class Risk {
     if (!this.s.closed) this.s.closed = {}; // every close (win or loss) — the re-entry block
     if (this.s.haltBalBaseline === undefined) this.s.haltBalBaseline = null; // balance-halt anchor (equity SOL)
     if (this.s.downHalted === undefined) this.s.downHalted = false;
+    if (this.s.lossStreak === undefined) this.s.lossStreak = 0; // D4: consecutive red closes
+    if (this.s.streakPausedAt === undefined) this.s.streakPausedAt = null; // D4: when the streak pause began (ms) or null
+    if (this.s.heatSince === undefined) this.s.heatSince = null; // D4: breadth has been at/above the heat line since (ms) or null
+    if (this.s.lastBreadth === undefined) this.s.lastBreadth = null; // D4: latest breadth reading (0..1) for /state
     // arm the one-shot auto-halt at startup so "N more closes" counts from now, not from the first close
     if ((this.cfg.haltAfterCloses || 0) > 0 && this.s.haltArmedAt == null) {
       this.s.haltArmedAt = this.s.totalCloses || 0;
@@ -77,12 +81,51 @@ export class Risk {
     this.save();
   }
 
+  /** Deliberate human resume also clears the streak pause and the streak itself: his hand
+   *  outranks the bot's own pause, and he starts fresh rather than one loss from re-pausing. */
+  clearStreakPause() {
+    this.s.lossStreak = 0;
+    this.s.streakPausedAt = null;
+    this.s.heatSince = null;
+    this.save();
+  }
+
+  /** D4 breadth feed (bot calls this every poll tick with the share of sampled coins whose
+   *  chgH1 > 0 and how many coins reported). While streak-paused, resume requires: the
+   *  minimum pause served, breadth at/above the heat line with enough coins reporting, held
+   *  continuously for the sustain window. Any dip below the line restarts the heat clock.
+   *  Returns 'resumed' on the tick the pause lifts, else null. Never touches downHalted. */
+  noteBreadth(breadth, coins) {
+    const n = this.now();
+    if (breadth != null && Number.isFinite(breadth)) { this.s.lastBreadth = breadth; this.s.lastBreadthCoins = coins; this.s.lastBreadthAt = n; }
+    if (this.s.streakPausedAt == null) return null;
+    if (n - this.s.streakPausedAt < (this.cfg.streakPauseMinMin || 0) * 60000) {
+      if (this.s.heatSince != null) { this.s.heatSince = null; this.save(); }
+      return null;
+    }
+    const hot = breadth != null && coins >= (this.cfg.streakHeatMinCoins || 0) && breadth >= (this.cfg.streakHeatPct || 0.5);
+    if (!hot) {
+      if (this.s.heatSince != null) { this.s.heatSince = null; this.save(); }
+      return null;
+    }
+    if (this.s.heatSince == null) { this.s.heatSince = n; this.save(); return null; }
+    if (n - this.s.heatSince >= (this.cfg.streakHeatSustainMin || 0) * 60000) {
+      this.s.streakPausedAt = null;
+      this.s.heatSince = null;
+      this.s.lossStreak = 0;
+      this.save();
+      return 'resumed';
+    }
+    return null;
+  }
+
   /** Manual reset requires editing/deleting risk.json on purpose. */
   canEnter({ mint, walletSol, openCount, sizeSol, halted = false }) {
     this.rollDay();
     const n = this.now();
     if (this.s.downHalted) return { ok: false, reason: `balance down-stop hit (equity fell ${this.cfg.haltDownSol} SOL below the armed balance) — halted` };
     if (halted) return { ok: false, reason: 'HALT file present' };
+    if (this.s.streakPausedAt != null) return { ok: false, reason: `streak pause: ${this.s.lossStreak} straight losses — entries wait for market breadth to recover` };
     if (this.s.killed) return { ok: false, reason: `kill switch: ${this.s.killReason}` };
     if (this.cfg.dailyLossSol > 0 && this.s.dayPnlSol <= -this.cfg.dailyLossSol) return { ok: false, reason: `daily loss cap hit (${this.s.dayPnlSol.toFixed(4)} SOL)` };
     if (openCount >= this.cfg.maxPositions) return { ok: false, reason: `max ${this.cfg.maxPositions} positions open` };
@@ -126,6 +169,16 @@ export class Risk {
     this.rollDay();
     this.s.dayPnlSol += pnlSol;
     this.s.totalCloses = (this.s.totalCloses || 0) + 1;
+    // D4 streak pause (user 2026-10-13): count straight red closes — a win resets the count,
+    // a scratch (pnl == 0) leaves it untouched. At cfg.streakPauseN the pause latches and
+    // canEnter blocks until noteBreadth proves the market hot again (or the user resumes).
+    if (pnlSol < 0) this.s.lossStreak = (this.s.lossStreak || 0) + 1;
+    else if (pnlSol > 0) this.s.lossStreak = 0;
+    const spn = this.cfg.streakPauseN || 0;
+    if (spn > 0 && this.s.streakPausedAt == null && (this.s.lossStreak || 0) >= spn) {
+      this.s.streakPausedAt = this.now();
+      this.s.heatSince = null;
+    }
     // one-shot auto-halt: after N more closes, write the HALT file (survives restarts; /resume re-arms)
     const hac = this.cfg.haltAfterCloses || 0;
     if (hac > 0) {
@@ -151,6 +204,6 @@ export class Risk {
 
   snapshot() {
     this.rollDay();
-    return { day: this.s.day, dayPnlSol: +this.s.dayPnlSol.toFixed(5), dailyLossSol: this.cfg.dailyLossSol, tradesLastHour: this.s.tradeTs.filter(t => this.now() - t < 3600000).length, startEquitySol: this.s.startEquitySol, killed: this.s.killed, killReason: this.s.killReason, haltDownSol: this.cfg.haltDownSol || 0, haltBalBaseline: this.s.haltBalBaseline, downHalted: this.s.downHalted };
+    return { day: this.s.day, dayPnlSol: +this.s.dayPnlSol.toFixed(5), dailyLossSol: this.cfg.dailyLossSol, tradesLastHour: this.s.tradeTs.filter(t => this.now() - t < 3600000).length, startEquitySol: this.s.startEquitySol, killed: this.s.killed, killReason: this.s.killReason, haltDownSol: this.cfg.haltDownSol || 0, haltBalBaseline: this.s.haltBalBaseline, downHalted: this.s.downHalted, lossStreak: this.s.lossStreak || 0, streakPaused: this.s.streakPausedAt != null, streakPausedAt: this.s.streakPausedAt, lastBreadth: this.s.lastBreadth };
   }
 }

@@ -181,6 +181,7 @@ export function startServer(bot, port) {
     if (req.method === 'POST' && u.pathname === '/resume') {
       try { fs.unlinkSync(path.join(bot.cfg.dataDir, 'HALT')); } catch {}
       try { bot.risk.clearDownHalt(); } catch {}
+      try { bot.risk.clearStreakPause(); } catch {}
       return json(res, 200, { ok: true, halted: false });
     }
     if (req.method === 'POST' && u.pathname === '/risk/reset') {

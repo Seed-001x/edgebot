@@ -364,6 +364,19 @@ export class Bot {
       if (!mints.length) return;
       const views = await this.d.fetchViews(mints);
       const n = this.now();
+      // D4 (user 2026-10-13): market breadth — the share of sampled coins green on the hour —
+      // feeds the streak pause's resume test. Logged on transitions so the pause/resume
+      // decisions are auditable in the journal of record (console + /state fields).
+      {
+        let green = 0, total = 0;
+        for (const v of views.values()) { if (v && v.chgH1 != null) { total++; if (v.chgH1 > 0) green++; } }
+        if (total > 0) {
+          const wasPaused = this.risk.s.streakPausedAt != null;
+          const ev = this.risk.noteBreadth(green / total, total);
+          if (ev === 'resumed') console.log(`[streakpause] breadth recovered (${(green / total * 100).toFixed(0)}% of ${total} coins green on the hour, sustained) — entries resumed`);
+          else if (!wasPaused && this.risk.s.streakPausedAt != null) console.log(`[streakpause] ${this.risk.s.lossStreak} straight losses — entries paused until market breadth recovers`);
+        }
+      }
       // Pace keeper: get relaxed cfg once per tick if behind target
       const { cfg: tickCfg } = this.paceCfg(n);
       const candidates = [];

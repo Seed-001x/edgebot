@@ -21,6 +21,16 @@ export function loadConfig(env = process.env) {
     dailyLossSol: num(env, 'DAILY_LOSS_SOL', 0),        // realized loss in a UTC day that halts new entries; 0 = disabled
     haltAfterCloses: num(env, 'HALT_AFTER_CLOSES', 0),  // one-shot: halt new entries after this many more closes; 0 = off
     haltDownSol: num(env, 'HALT_DOWN_SOL', 0),          // balance halt: once armed (baseline = wallet equity at first check), halt if equity falls this much below the baseline; 0 = off. Set 0.09 by user 2026-10-13 for overnight — user corrected: BALANCE, not day P&L.
+    // D4 cold-market streak pause (user 2026-10-13, his design over his agent's timer version):
+    // N straight red closes pause new entries; the bot keeps scanning and resumes ITSELF only
+    // when market breadth (share of sampled coins green on the hour) recovers and stays
+    // recovered — never on a timer alone, never on one coin's signal. Bot-managed layer only:
+    // the balance halt above it still releases exclusively by the user's hand.
+    streakPauseN: num(env, 'STREAK_PAUSE_N', 4),              // straight losses that trigger the pause (0 = off)
+    streakPauseMinMin: num(env, 'STREAK_PAUSE_MIN_MIN', 15),  // minimum minutes a pause lasts, however hot it gets
+    streakHeatPct: num(env, 'STREAK_HEAT_PCT', 0.5),           // breadth share (chgH1 > 0) that counts as a hot market
+    streakHeatSustainMin: num(env, 'STREAK_HEAT_SUSTAIN_MIN', 10), // breadth must hold at/above the line this long to resume
+    streakHeatMinCoins: num(env, 'STREAK_HEAT_MIN_COINS', 50),     // breadth only counts with at least this many coins reporting
     killEquityFrac: num(env, 'KILL_EQUITY_FRAC', 0.5),  // wallet SOL below this fraction of starting → permanent halt
     minReserveSol: num(env, 'MIN_RESERVE_SOL', 0.02),   // never spend the last of the fees
     maxTradesPerHour: num(env, 'MAX_TRADES_PER_HOUR', 120),
@@ -261,6 +271,11 @@ export function validateConfig(cfg) {
   if (cfg.freshSmallMc < 0) errs.push('FRESH_SMALL_MC must be >= 0');
   if (cfg.freshM5ShareH1 < 0 || cfg.freshM5ShareH1 > 1) errs.push('FRESH_M5_SHARE_H1 must be between 0 and 1 (0 = off)');
   if (cfg.maxBuyRatioM5 < 0 || cfg.maxBuyRatioM5 > 1) errs.push('MAX_BUY_RATIO_M5 must be between 0 and 1 (0 = off)');
+  if (cfg.streakPauseN < 0 || cfg.streakPauseN > 50) errs.push('STREAK_PAUSE_N must be between 0 and 50 (0 = off)');
+  if (cfg.streakPauseMinMin < 0 || cfg.streakPauseMinMin > 1440) errs.push('STREAK_PAUSE_MIN_MIN must be between 0 and 1440');
+  if (cfg.streakHeatPct <= 0 || cfg.streakHeatPct > 1) errs.push('STREAK_HEAT_PCT must be between 0 and 1');
+  if (cfg.streakHeatSustainMin < 0 || cfg.streakHeatSustainMin > 240) errs.push('STREAK_HEAT_SUSTAIN_MIN must be between 0 and 240');
+  if (cfg.streakHeatMinCoins < 0 || cfg.streakHeatMinCoins > 10000) errs.push('STREAK_HEAT_MIN_COINS must be between 0 and 10000');
   if (cfg.fastPopMaxBuyShare < 0 || cfg.fastPopMaxBuyShare > 1) errs.push('FAST_POP_MAX_BUY_SHARE must be between 0 and 1 (0 = off)');
   if (cfg.dipStopPct < 0 || cfg.dipStopPct >= 1) errs.push('DIP_STOP_PCT must be between 0 and 1 (0 = off)');
   if (cfg.stallSec < 0) errs.push('STALL_SEC must be >= 0 (0 = off)');
