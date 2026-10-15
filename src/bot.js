@@ -1036,6 +1036,21 @@ export class Bot {
     }
   }
 
+  // Clone-field verdict (user 2026-10-15): the live same-name field check from
+  // gate.js, reached through the optional cloneFieldCheck dep (wired in
+  // index.js; absent in unit rigs → no verdict and the gate simply doesn't
+  // run). Never throws: a dep error reads as a failed lookup, which the gate
+  // treats as fail-open. Returns the verdict object or null when the gate is
+  // off / unwired.
+  async _cloneFieldVerdict(v, n) {
+    if (!this.cfg.cloneField || !this.d.cloneFieldCheck) return null;
+    try {
+      return await this.d.cloneFieldCheck(v, { minLiq: this.cfg.cloneFieldMinLiq, minWinnerMc: this.cfg.cloneFieldMinWinnerMc, now: n });
+    } catch {
+      return { pass: true, lookupFailed: true, rivals: null, winnerMint: null, winnerMc: null, reason: 'same-name field lookup failed — passed open (fail-open)' };
+    }
+  }
+
   // D1 (record-only): for a shadow signal, evaluate the same pre-checks and gate
   // stack a live signal would face — purely so the shadow RECORD carries the
   // per-gate results. The outcome is never branched on: the caller journals
@@ -1055,6 +1070,14 @@ export class Bot {
           checks.shallowDip = { pass: !!sd.pass, reason: sd.reason || null };
         }
       }
+      // Clone-field verdict for the record (user 2026-10-15): the same live
+      // same-name field check the gate path runs — journaled here so shadow
+      // records and the scans.jsonl verdicts (walletWatch's shadowGates dep
+      // lands here) carry it too. Record-only, never branched on; the name
+      // search is cached 180s, so a name the live path just judged costs no
+      // second lookup.
+      const cfRec = await this._cloneFieldVerdict(v, n);
+      if (cfRec) checks.cloneField = { pass: !!cfRec.pass, reason: cfRec.reason || null, rivals: cfRec.rivals ?? null, winnerMint: cfRec.winnerMint ?? null, winnerMc: cfRec.winnerMc ?? null };
       const [rug, curve] = await Promise.all([
         this.d.fetchRug(v.address).catch(() => null),
         this.d.fetchCurve ? this.d.fetchCurve(v.address).catch(() => null) : null,
@@ -1221,6 +1244,33 @@ export class Bot {
       console.log(`[nameblock] skip: "${v.name}" contains blocked word "${blockedWord}"`);
       checks.nameblock = { pass: false, reason: `name "${v.name || v.symbol}" contains blocked word "${blockedWord}"` };
       return this.skip(v, sig, [`nameblock: name "${v.name || v.symbol}" contains blocked word "${blockedWord}"`], [], checks);
+    }
+    // Clone-field gate (user 2026-10-15, the Nihilism swarm): once a token NAME
+    // has a decided winner — an older, established same-name token that
+    // outweighs this candidate — follower clones of that name are dead on
+    // arrival (the name's attention already belongs to the incumbent; two fresh
+    // Nihilism clones bought under the $422k original died in minutes). Judged
+    // on the LIVE same-name field (one DexScreener name search, cached 180s
+    // per name), never on the bot's own buy history — the clone protections
+    // removed 2026-10-14 judged past buys and stay removed. Sits with the
+    // other user-ruling vetoes before runGates, so no pace boost, mandatory-ape
+    // forcing or contested-gate override can let a vamp through; the name
+    // group's biggest token (the winner itself) passes untouched. Fail-open:
+    // a failed lookup passes the candidate (counted in stats.cloneField).
+    {
+      const cf = await this._cloneFieldVerdict(v, n);
+      if (cf) {
+        this.stats.cloneField = this.stats.cloneField || { blocked: 0, lookupFailed: 0 };
+        if (cf.lookupFailed) this.stats.cloneField.lookupFailed++;
+        checks.cloneField = { pass: !!cf.pass, reason: cf.reason || null, rivals: cf.rivals ?? null, winnerMint: cf.winnerMint ?? null, winnerMc: cf.winnerMc ?? null };
+        if (!cf.pass) {
+          this.stats.cloneField.blocked++;
+          sig.metrics = sig.metrics || {};
+          sig.metrics.cloneField = { rivals: cf.rivals ?? null, winnerMint: cf.winnerMint ?? null, winnerMc: cf.winnerMc ?? null };
+          console.log(`[clonefield] skip: ${v.symbol} — ${cf.reason}`);
+          return this.skip(v, sig, [`cloneField: ${cf.reason}`], [], checks);
+        }
+      }
     }
     // Shadow-only setups (user 2026-10-14, forward plan step 1b): a shadowed setup's
     // signal is journaled with decision 'shadow' — journal.signal registers it for the
