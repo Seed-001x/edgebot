@@ -25,6 +25,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { mean, median, round } from './util.js';
+import { pickResignalMark, verdictOf, buildResignalCard } from './resignalLab.js';
 
 const CPS = [5, 15, 60];          // minutes
 const EXPIRE_MIN = 90;
@@ -50,7 +51,7 @@ export class Journal {
   constructor(dir, { now = Date.now } = {}) {
     this.now = now;
     this.dir = dir;
-    this.f = { sig: path.join(dir, 'signals.jsonl'), out: path.join(dir, 'outcomes.jsonl'), trades: path.join(dir, 'trades.jsonl'), fb: path.join(dir, 'feedback.jsonl'), ticks: path.join(dir, 'ticks.jsonl'), manual: path.join(dir, 'manual_exits.jsonl'), reports: path.join(dir, 'trade_reports.jsonl'), rshadow: path.join(dir, 'ratchet_shadow.jsonl'), pend: path.join(dir, 'outcome_pending.json'), scan: path.join(dir, 'scans.jsonl'), cshadow: path.join(dir, 'callout_shadow.jsonl') };
+    this.f = { sig: path.join(dir, 'signals.jsonl'), out: path.join(dir, 'outcomes.jsonl'), trades: path.join(dir, 'trades.jsonl'), fb: path.join(dir, 'feedback.jsonl'), ticks: path.join(dir, 'ticks.jsonl'), manual: path.join(dir, 'manual_exits.jsonl'), reports: path.join(dir, 'trade_reports.jsonl'), rshadow: path.join(dir, 'ratchet_shadow.jsonl'), pend: path.join(dir, 'outcome_pending.json'), scan: path.join(dir, 'scans.jsonl'), cshadow: path.join(dir, 'callout_shadow.jsonl'), rsig: path.join(dir, 'resignal_shadow.jsonl') };
     this._pendDirty = false;   // outcome-tracking progress changed since the last save
     this._pendSavedAt = 0;
     try { fs.mkdirSync(dir, { recursive: true }); } catch { /* ignore */ }
@@ -66,6 +67,8 @@ export class Journal {
     for (const sc of readTail(this.f.scan, 200)) this.scans.push(sc);
     this.ratchet = [];   // ratchet_shadow.jsonl tail for the read-only /ratchetshadow endpoint (records are rare — a 500 tail spans months)
     for (const r of readTail(this.f.rshadow, 500)) this.ratchet.push(r);
+    this.resignalFired = new Set();   // answered-resignal shadow: mark keys that already produced a record (rebuilt from resignal_shadow.jsonl in boot())
+    this._rsigCache = null; this._rsigCacheTs = 0;
     this.boot();
   }
 
@@ -82,6 +85,11 @@ export class Journal {
       if (r.type === 'note') { const f = this.feedback.find(x => feedbackKeyOf(x) === r.key); if (f) { if (r.note) f.note = r.note; else delete f.note; } }
       else this.feedback.push(r);
     }
+    // Answered-resignal fired set: one record per (mint, mark) pair, ever —
+    // rebuilt from the journal file itself so a restart can never re-fire a
+    // mark that already produced a record. A NEWER mark on the same mint is
+    // a different key and re-arms it (see resignalLab.js).
+    for (const r of readTail(this.f.rsig, KEEP * 4)) if (r && r.kind === 'resignal' && r.markKey) this.resignalFired.add(r.markKey);
     for (const r of readTail(this.f.manual, KEEP)) {
       if (r.type === 'tag') { const m = this.manual.find(x => x.id === r.id); if (m) m.reason = r.reason; }
       else this.manual.push(r);
@@ -160,6 +168,54 @@ export class Journal {
   ratchetShadow(rec) { this.ratchet.push(rec); if (this.ratchet.length > 500) this.ratchet.shift(); this.append(this.f.rshadow, rec); return rec; }
   /** Callout Shadow Lab record (would-call / score) — append-only, observer only. Deliberately NO in-memory tail: the scorecard reads the full file from disk (14-day windows outgrow any sane cap), so nothing is kept here. */
   calloutShadow(rec) { this.append(this.f.cshadow, rec); return rec; }
+  /** Answered re-signal record (record-only, 2026-10-15): a coin the user
+   *  already answered signaled again. Writing the record CLAIMS the mark key
+   *  in the fired set — that claim is the dedupe (one record per mint+mark). */
+  resignal(rec) { if (rec.markKey) this.resignalFired.add(rec.markKey); this.append(this.f.rsig, rec); return rec; }
+
+  /** The resignal matcher, run on every freshly journaled signal (fail-silent
+   *  at the call site): if the mint carries a user mark on an EARLIER signal
+   *  and that mark has not fired yet, journal the re-signal with his verdict
+   *  and note so the /resignals scorecard can join this signal's outcome by
+   *  id at read time. Observer only — reads feedback, writes one record. */
+  _noteResignal(rec) {
+    if (!this.feedback.length) return;
+    const hit = pickResignalMark(rec, this.feedback, this.byId, this.signals, this.resignalFired);
+    if (!hit) return;
+    const { mark, key, resolved } = hit;
+    this.resignal({
+      kind: 'resignal', ts: rec.ts, mint: rec.mint, symbol: rec.symbol || null,
+      verdict: verdictOf(!!mark.good, resolved.markedDecision), good: !!mark.good, markKey: key,
+      notePresent: !!mark.note, note: mark.note ? String(mark.note).slice(0, 500) : null,
+      markedTs: resolved.markedTs, markedMc: resolved.markedMc, markedSetup: resolved.markedSetup, markedDecision: resolved.markedDecision,
+      resignalMc: rec.mc ?? null, resignalSetup: rec.setup || null, resignalDecision: rec.decision || null,
+      signalKey: rec.id,
+    });
+  }
+
+  /** Full resignal_shadow.jsonl with a ~60s cache (the file only appends, so
+   *  a fresh record can lag the card by up to the cache window — the same
+   *  trade the callout scorecard makes; windows outgrow an in-memory tail). */
+  resignalRecords() {
+    const n = this.now();
+    if (this._rsigCache && n - this._rsigCacheTs < 60000) return this._rsigCache;
+    let recs = [];
+    try {
+      recs = fs.readFileSync(this.f.rsig, 'utf8').split('\n').filter(Boolean)
+        .map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+    } catch { recs = []; }
+    this._rsigCache = recs; this._rsigCacheTs = n;
+    return recs;
+  }
+
+  /** Read-only /resignals payload: resignal records joined at read time to
+   *  the new signal's tracked outcome (journal.byId, restored across boots
+   *  with the signals themselves) and split by the user's verdict. A record
+   *  whose signal aged out of the in-memory window simply reads unfinalized. */
+  resignalCard() {
+    const outcomeOf = (id) => { const s = id ? this.byId.get(id) : null; return s && s.out && s.out.done ? s.out : null; };
+    return { enabled: true, ...buildResignalCard(this.resignalRecords(), outcomeOf) };
+  }
   /** attach the reason the human gave (see learn.js EXIT_REASONS) */
   tagExit(id, reason, note) {
     let m = this.manual.find(x => x.id === id);
@@ -330,6 +386,9 @@ export class Journal {
     if (this.signals.length > KEEP) { const old = this.signals.shift(); this.byId.delete(old.id); }
     this.append(this.f.sig, rec);
     if (price > 0) { this.pending.set(id, { max: price, min: price, got: {}, at: {}, obs: 0 }); this._pendDirty = true; }
+    // Answered re-signals (record-only): a mint the user already answered is
+    // signaling again — journal the shadow record (see resignalLab.js).
+    try { this._noteResignal(rec); } catch { /* observer only — never disturb the signal path */ }
     return id;
   }
 

@@ -249,6 +249,14 @@ export function startServer(bot, port) {
       if (!bot.calloutCard) return json(res, 200, { enabled: false });
       return json(res, 200, bot.calloutCard());
     }
+    if (req.method === 'GET' && u.pathname === '/resignals') {
+      // Answered re-signals (record-only): coins the user already marked
+      // signaling again — per-verdict outcome aggregates (joined at read time
+      // to each re-signal's tracked outcome) plus the recent records. The
+      // baseline block is the pinned taken-pop context, labeled as such.
+      if (!bot.resignalCard) return json(res, 200, { enabled: false });
+      return json(res, 200, bot.resignalCard());
+    }
     if (req.method === 'GET' && u.pathname === '/reports') {
       return json(res, 200, (bot.journal.tradeReports || []).slice().reverse());
     }

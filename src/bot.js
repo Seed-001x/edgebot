@@ -626,6 +626,12 @@ export class Bot {
     try { return this.calloutLab.scorecard(); } catch { return { enabled: false }; }
   }
 
+  /** Read-only /resignals payload — the Answered Re-signals scorecard over
+   *  resignal_shadow.jsonl (see resignalLab.js; ~60s cached in the journal). */
+  resignalCard() {
+    try { return this.journal.resignalCard(); } catch { return { enabled: false }; }
+  }
+
   /**
    * Read-only /ratchetshadow payload (record-only, like the layer itself):
    * counters off stats, aggregates over the journal's in-memory ratchet tail
