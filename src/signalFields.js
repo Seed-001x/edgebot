@@ -27,8 +27,21 @@
 //                         this series only exists for mints the bot has
 //                         already had RugCheck reports read for: judged
 //                         signals, held positions' snapshots).
+//   poolAgeMin / babyPool — age of the signal view's representative pair
+//                         (DexScreener pairCreatedAt — the same source the
+//                         2026-10-14 baby-pool journal audit used) at signal
+//                         time, and whether it falls in the "baby pool" band
+//                         (≤ BABY_POOL_MAX_MIN old) that audit found carrying
+//                         ~2× the per-trade loss rate. Record-only study tag
+//                         (user order 2026-10-15, signal-side shape): NO gate
+//                         reads it — detect.js minPairAgeMin is a separate,
+//                         currently-off knob. babyPool is tri-state: true /
+//                         false when the age is known, null when it is not
+//                         (no pairCreatedAt on the view, or a future-dated
+//                         timestamp) — unknown never masquerades as "old".
 
 export const GRAD_MC_USD = 69000; // nominal pump.fun graduation market cap (USD)
+export const BABY_POOL_MAX_MIN = 15; // baby-pool band ceiling (min) from the 2026-10-14 audit
 
 // Minimum evidence per field (below → null):
 export const FIELDS_MIN = {
@@ -48,7 +61,16 @@ const round = (v, d) => (Number.isFinite(v) ? Math.round(v * 10 ** d) / 10 ** d 
  * @param now      signal time (ms)
  */
 export function computeSignalFields({ samples = [], view = null, holders = [], now = Date.now() } = {}) {
-  const out = { holderGrowthPerMin: null, holderGrowthPctPerMin: null, curveFillPctPerMin: null, buyVelPerMin: null };
+  const out = { holderGrowthPerMin: null, holderGrowthPctPerMin: null, curveFillPctPerMin: null, buyVelPerMin: null, poolAgeMin: null, babyPool: null };
+
+  // ---- pool age / baby-pool tag (view's pairCreatedAt; no samples needed) ----
+  if (view && Number.isFinite(view.createdAt) && view.createdAt > 0) {
+    const ageMin = (now - view.createdAt) / 60000;
+    if (ageMin >= 0) {
+      out.poolAgeMin = round(ageMin, 1);
+      out.babyPool = ageMin <= BABY_POOL_MAX_MIN;
+    }
+  }
 
   // ---- buy velocity (txn-based) ----
   {
