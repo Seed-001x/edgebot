@@ -187,6 +187,16 @@ export function loadConfig(env = process.env) {
     flowMinSol: num(env, 'FLOW_MIN_SOL', 1.0),            // a single tracked wallet buying >= this fires alone
     flowWalletsConfl: num(env, 'FLOW_WALLETS_CONFL', 2),  // …or this many distinct wallets buying the same mint…
     flowWindowMin: num(env, 'FLOW_WINDOW_MIN', 15),       // …inside this window (any size above the 0.1 SOL dust floor)
+    // FLOW_LIVE_WALLETS (user 2026-10-15, freeze carve-out): when SET, flow goes
+    // shadow-only except these wallets — only a solo trigger fired by a listed
+    // wallet may reach the live pipeline; every other flow trigger (the other
+    // solos, size triggers, confluence) is journaled as a shadow signal instead
+    // (record-only, outcome-tracked, no buy, no SOL). The live store sets it to
+    // yenni + poorgoat (poorgoat also sits in FLOW_SOLO_WALLETS so its triggers
+    // carry the solo kind, exactly yenni's status). UNSET (null) = legacy: all
+    // triggers live.
+    flowLiveWallets: env.FLOW_LIVE_WALLETS === undefined ? null
+      : (env.FLOW_LIVE_WALLETS || '').split(',').map(s => s.trim()).filter(Boolean),
 
     // ---- wallet task shadow detectors (user brief 2026-10-14, Phases 4–6; go given 2026-10-15) ----
     // LOG-ONLY observers over the Phase 1–3 wallet sets (src/walletSets.json): the 23

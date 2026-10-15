@@ -47,6 +47,7 @@ if (cfg.flowEnabled && (cfg.flowWallets.length || cfg.flowSoloWallets.length)) {
   flow.start();
   process.on('SIGTERM', () => flow.stop());
   console.log(`[edgebot] flow watch: ${flow.wallets.length} wallets (${cfg.flowSoloWallets.length} solo), polling every ${cfg.flowPollSec}s`);
+  if (cfg.flowLiveWallets) console.log(`[edgebot] flow live set: ${cfg.flowLiveWallets.length ? cfg.flowLiveWallets.map(a => flow.nameFor(a)).join(', ') : '(none — flow fully shadow-only)'} — every other flow trigger journals as shadow`);
 }
 
 // Wallet-task shadow detectors (user brief 2026-10-14 Phases 4–6; go 2026-10-15):

@@ -1185,7 +1185,7 @@ export class Bot {
   shadow(v, sig, gates = null, gatePass = null) {
     this.stats.shadowSignals = this.stats.shadowSignals || {};
     this.stats.shadowSignals[sig.setup] = (this.stats.shadowSignals[sig.setup] || 0) + 1;
-    const sigId = this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'shadow', reasons: [`shadow: ${sig.setup} is shadow-only — logged + outcome-tracked, no buy`], price: v.price, mc: v.mc, metrics: sig.metrics, warnings: [], label: sig.label || null, gates, gatePass, fields: this._signalFields(v, sig.metrics) });
+    const sigId = this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'shadow', reasons: [sig.shadowReason || `shadow: ${sig.setup} is shadow-only — logged + outcome-tracked, no buy`], price: v.price, mc: v.mc, metrics: sig.metrics, warnings: [], label: sig.label || null, gates, gatePass, fields: this._signalFields(v, sig.metrics) });
     // Trade-grade shadow (record-only, user 2026-10-14): a shadow signal that
     // PASSED its gate evaluation opens a VIRTUAL position at the signal
     // price, managed by the real exit stack (src/shadowTrades.js) — the
@@ -1322,6 +1322,21 @@ export class Bot {
 
   // ------------------------------------------------------------ smart-wallet flow
   /**
+   * Flow live eligibility (user 2026-10-15): with FLOW_LIVE_WALLETS set, only a
+   * SOLO trigger fired by one of those wallets may reach the live pipeline —
+   * through exactly the same gates/checks as any flow trigger today. Every
+   * other trigger (the other solos, size triggers, confluence — even a
+   * confluence a live wallet took part in) is journaled as a shadow signal:
+   * detected, labelled, outcome-tracked, never bought. Knob unset (null) =
+   * legacy: every trigger is live-eligible.
+   */
+  flowLiveTrigger(agg) {
+    const live = this.cfg.flowLiveWallets;
+    if (!live) return true;
+    return !!(agg && agg.kind === 'solo' && agg.wallet && live.includes(agg.wallet));
+  }
+
+  /**
    * A 'flow' trigger from the FlowWatch poller (tracked smart-wallet buys).
    * Mirrors _evalFastPop: position + per-mint signal-cooldown guards, the shared
    * eligible() tradability floor, then the exact same onSignal pipeline — gates,
@@ -1351,9 +1366,20 @@ export class Bot {
     if (blocked.length) { this._recordFlowOnly(v, agg, metrics, blocked, n); return; }
     this.lastSignal.set(mint, n);
     this.stats.flow = this.stats.flow || { fires: 0 };
-    this.stats.flow.fires++;
-    console.log(`[flow] ${v.symbol} fired from wallet flow: ${agg.label}`);
-    await this.onSignal(v, { setup: 'flow', strength: agg.maxSol || 0, metrics, label: agg.label || null });
+    // Flow shadow-only split (user 2026-10-15): a non-live trigger proceeds to
+    // the same onSignal pipeline carrying flowShadowOnly — it journals there
+    // as decision 'shadow' (the trend/liftoff treatment) and never buys. The
+    // guards above already ran identically for both paths, so a live wallet's
+    // trigger faces exactly the checks it always did, cooldown included.
+    const live = this.flowLiveTrigger(agg);
+    if (live) {
+      this.stats.flow.fires++;
+      console.log(`[flow] ${v.symbol} fired from wallet flow: ${agg.label}`);
+    } else {
+      this.stats.flow.shadow = (this.stats.flow.shadow || 0) + 1;
+      console.log(`[flow] ${v.symbol} flow trigger is shadow-only (not a live-flow wallet) — logged + outcome-tracked, no buy: ${agg.label}`);
+    }
+    await this.onSignal(v, { setup: 'flow', strength: agg.maxSol || 0, metrics, label: agg.label || null, flowShadowOnly: !live, shadowReason: live ? null : 'shadow: flow is shadow-only for this wallet — logged + outcome-tracked, no buy' });
   }
 
   /** Journal a flow buy that a pipeline guard kept out of evaluation (record-only). */
@@ -1461,7 +1487,7 @@ export class Bot {
     // as ordinary skips, exactly as before. D1 adds one record-only step: the
     // extension/fresh/shallow-dip checks and the gate stack are evaluated into the
     // record (shadowGateRecord) — their results change nothing.
-    if (this.shadowedSetup(sig.setup)) {
+    if (this.shadowedSetup(sig.setup) || sig.flowShadowOnly) {
       console.log(`[shadow] ${v.symbol} (${sig.setup}) — shadow-only: logged + outcome-tracked, no buy`);
       // D1: the gates are still EVALUATED for the record (shadowGateRecord) —
       // the decision stays 'shadow' whatever they say.
