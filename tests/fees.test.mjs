@@ -97,9 +97,11 @@ test('fees close: a single-shot exit counts buy + exactly one sell', async () =>
   await bot.start();
   await bot.onSignal(view({ price: 1.0 }), { setup: 'pop', strength: 1, metrics: {} });
   bot.latest.set('MINT1', view({ price: 1.0 }));
-  // bleed/probation family: minutes of steady decline, no TP ever arms — the
-  // position leaves through ONE full sell, whichever fail-safe fires first
-  for (let i = 0; i < 40 && bot.positions.length > 0; i++) {
+  // the 10-minute dead check (the stripped stack's only early undertaker):
+  // minutes of steady decline into dead flow, no TP ever arms — at 10 minutes
+  // the momentum-failure check closes the position through ONE full sell
+  bot.latest.set('MINT1', view({ price: 1.0, buysM5: 1, sellsM5: 10 }));
+  for (let i = 0; i < 44 && bot.positions.length > 0; i++) {
     clock.t += 15000;
     q.valueLam = Math.max(6_000_000, 16_000_000 - i * 1_000_000);
     await bot.positionTick();

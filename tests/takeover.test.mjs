@@ -34,20 +34,19 @@ const beCfg = { ...cfg, dipStopPct: 0 };
 const bleedCfg = { ...cfg, dipStopPct: 0, stallSec: 0 };
 const hist = (...prints) => prints.map(([agoSec, move]) => ({ ts: NOW - agoSec * S, move }));
 
-test('takeover: every exit family is skipped — the whole stack holds at fraction 0', () => {
+test('takeover: every LIVE exit family is skipped — the whole stack holds at fraction 0', () => {
+  // Shape list = the families that can still sell after the 2026-10-15 strip.
+  // (Dip stop / stall / probation leash + expiry / bleed shapes were here until
+  // the strip: their controls no longer sell for ANY position, taken or not, so
+  // there is nothing left for takeover to skip — exits.test.mjs pins that.)
   const tp1Fixed = { ...cfg, tp1AdaptMax: cfg.tp1Pct };
   const shapes = [
     ['liquidity death', () => pos(), () => mark(0.05, { liqUsd: 1500 }), cfg, /liquidity death/],
-    ['dip stop', () => pos(), () => mark(0.011), cfg, /dip stop/],
     ['TP1', () => pos(), () => mark(0.0264), tp1Fixed, /TP1/],
     ['TP2', () => pos({ tp1Done: true, remainingFrac: 0.6 }), () => mark(0.0264), cfg, /TP2/],
     ['moonbag trail', () => pos({ tp1Done: true, tp2Done: true, remainingFrac: 0.25, peakRatio: 2 }), () => mark(0.006), cfg, /moonbag trail/],
     ['post-TP1 trail', () => pos({ tp1Done: true, remainingFrac: 0.6, peakRatio: 1.30 }), () => mark(0.01152), cfg, /post-TP1 trail/],
-    ['stall', () => pos({ entryTs: NOW - 60 * S }), () => mark(0.0201), stallCfg, /stall \(in entry range/],
-    ['probation leash', () => pos({ entryTs: NOW - 200 * S, probationSince: NOW - 20 * S, exitPending: {} }), () => mark(0.0185), { ...probCfg, exitConfirmSec: 0 }, /probation leash/],
-    ['probation expiry', () => pos({ entryTs: NOW - 400 * S, probationSince: NOW - 100 * S, exitPending: {} }), () => mark(0.0201), probCfg, /probation expired/],
     ['break-even ratchet', () => pos({ entryTs: NOW - 30 * S, peakMove: 1.12, exitPending: {} }), () => mark(0.0204), { ...beCfg, exitConfirmSec: 0 }, /break-even ratchet/],
-    ['bleed exit', () => pos({ entryTs: NOW - 200 * S, moveHist: hist([60, 0.92]), exitPending: {} }), () => mark(0.0182), { ...bleedCfg, exitConfirmSec: 0 }, /bleed exit/],
     ['momentum failure', () => pos({ entryTs: NOW - 15 * 60000 }), () => mark(0.019, { buysM5: 0, sellsM5: 10 }), { ...cfg, dipStopPct: 0, stopHardPct: 0, stopLoss: 0, stallSec: 0 }, /momentum failure/],
     ['time stop', () => pos({ entryTs: NOW - 30 * 60000, tp1Done: true, remainingFrac: 0.6, peakRatio: 1.05 }), () => mark(0.0126), cfg, /time stop/],
     ['max hold', () => pos({ entryTs: NOW - 130 * 60000, tp1Done: true, remainingFrac: 0.6, peakRatio: 1.5 }), () => mark(0.018), cfg, /max hold/],
@@ -102,17 +101,17 @@ test('takeover + protect: takeover wins — nothing judges and no protectedBlock
   assert.equal(d.protectedBlock, null);
 });
 
-test('release: the stall clock re-anchors — a matured probation cannot fire, and probation restarts from the release anchor', () => {
+test('release: the record releasePosition leaves behind judges fresh — and post-strip no probation exists to mature or restart', () => {
   // the record as releasePosition leaves it: probation cleared, stallBaseTs = release time (60s ago)
   const released = pos({ entryTs: NOW - 400 * S, probationSince: null, exitPending: {}, stallBaseTs: NOW - 60 * S });
-  const d = evaluateExit(released, mark(0.0201), probCfg, NOW);   // true age 400s, stall age only 60s — deadline not reached
+  const d = evaluateExit(released, mark(0.0201), probCfg, NOW);   // true age 400s, in the old stall band
   assert.equal(d.fraction, 0);
   assert.equal(d.probationSince, null);
   const ctl = evaluateExit(pos({ entryTs: NOW - 400 * S, probationSince: NOW - 100 * S, exitPending: {} }), mark(0.0201), probCfg, NOW);
-  assert.equal(ctl.fraction, 1); assert.match(ctl.reason, /probation expired/);   // control: unreleased, the matured expiry sells
-  const d2 = evaluateExit(released, mark(0.0201), probCfg, NOW + 121 * S);       // stall age now 181s ≥ 180s, still in the band
+  assert.equal(ctl.fraction, 0); assert.equal(ctl.reason, null);   // control: even a never-released legacy probation cannot expire — the system is stripped
+  const d2 = evaluateExit(released, mark(0.0201), probCfg, NOW + 121 * S);       // past every old deadline, still in the band
   assert.equal(d2.fraction, 0);
-  assert.equal(d2.probationSince, NOW + 121 * S);                                // probation starts fresh from the new anchor
+  assert.equal(d2.probationSince, null);                                        // no probation starts — from any anchor
 });
 
 // ---- bot level (protect.test.mjs rig) ----

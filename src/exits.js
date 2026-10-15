@@ -9,6 +9,35 @@
 //         below cost by the round-trip (fees + slippage), so a flat coin reads e.g. 0.93 on `ratio` but 1.00 on `move`.
 //         The dip stop and the stall exit use `move`, so they fire on what the price did, not on sunk fees.
 
+// EXIT-STACK STRIP (user order 2026-10-15 ~17:05 EDT — the user lifted his own exit
+// freeze for this): the stack is reduced to the TP ladder (TP1 adaptive / TP2 /
+// moonbag trail), the post-TP1 middle trail (3d), Tratchet (4c) and the 10-minute
+// momentum-failure dead check (5), so positions get unrestrained time and produce
+// clean, untruncated path data; the user accepts losing on some sells as the cost.
+// The mechanisms flagged below are DISABLED IN CODE: their sections remain in
+// place for reversibility, but the gates make them incapable of firing regardless
+// of cfg/env values — re-enabling one is a code change, never a knob flip.
+//   stopFamily     — 2a dip stop, 2a2 hard floor, 2b grace stop (the early
+//                    below-entry stop family: the "instant stop" lineage)
+//   stallProbation — 4b stall deadline sell + probation leash / expiry
+//   deadflow       — 4d-pre dead-flow exit and its arming
+//   bleed          — 4d bleed exit
+//   genericTrail   — 4 trailing stop
+//   profitLock     — 4a profit lock
+//   modestBranch   — two-path branching on the TP1 lane: 3a modest target/split
+//                    and the 4e kill zone. The lane STAMP on the TP1 decision
+//                    (pathClass / killZoneOverlay) stays as record-only
+//                    journaling; nothing below branches on it.
+const STRIP = {
+  stopFamily: true,
+  stallProbation: true,
+  deadflow: true,
+  bleed: true,
+  genericTrail: true,
+  profitLock: true,
+  modestBranch: true,
+};
+
 export function evaluateExit(pos, mark, cfg, now) {
   const basis = pos.entrySol * pos.remainingFrac;
   const ratio = basis > 0 ? mark.valueSol / basis : 0;
@@ -57,7 +86,8 @@ export function evaluateExit(pos, mark, cfg, now) {
   if (ratio > 1 - cfg.stopLoss) stopArmedTs = null;
   // hard-floor confirmation (user 2026-10-13): consecutive checks seen at/below the floor.
   // Any check back above the floor resets the count — a wick that snaps back never fires it.
-  const hardBreached = cfg.stopHardPct > 0 && ratio <= 1 - cfg.stopHardPct;
+  // STRIP (stopFamily): the breach is never even registered — no floor state accrues.
+  const hardBreached = !STRIP.stopFamily && cfg.stopHardPct > 0 && ratio <= 1 - cfg.stopHardPct;
   let floorChecks = hardBreached ? (pos.floorChecks || 0) : 0;
   // how long the breach has persisted: the floor also requires stopHardConfirmSec down there
   // before it fires (user 2026-10-13: 3s — "be sure it's still there"). Any check back above
@@ -90,8 +120,10 @@ export function evaluateExit(pos, mark, cfg, now) {
   let postTp1PeakMove = pos.postTp1PeakMove != null ? pos.postTp1PeakMove : null;
   if (pos.tp1Done) postTp1PeakMove = Math.max(postTp1PeakMove ?? 0, move);
   const killzoneEvents = [];
-  const modestActive = !!pos.tp1Done && pos.pathClass === 'modest';
-  const zoneEligible = !!pos.tp1Done && !pos.tp2Done && cfg.killZoneFloorPct > 0 && (modestActive || !!pos.killZoneOverlay);
+  // STRIP (modestBranch): the lane no longer branches anything — a modest-classified
+  // remainder judges through the plain ladder exactly like any other remainder.
+  const modestActive = !STRIP.modestBranch && !!pos.tp1Done && pos.pathClass === 'modest';
+  const zoneEligible = !STRIP.modestBranch && !!pos.tp1Done && !pos.tp2Done && cfg.killZoneFloorPct > 0 && (modestActive || !!pos.killZoneOverlay);
   // Dead-flow-at-altitude arming (user 2026-10-15): a persisted flag on the
   // position, set on the first check the realizable peak move (peakMove — the
   // same series the ratchet arms from) reaches the arm line while the position
@@ -101,7 +133,7 @@ export function evaluateExit(pos, mark, cfg, now) {
   // out of scope: their stack owns them.
   let deadflowArmed = !!pos.deadflowArmed;
   const deadflowEvents = [];
-  if (!pos.tp1Done && cfg.deadflowWindowSec > 0 && !deadflowArmed && peakMove >= 1 + cfg.deadflowArmPct) {
+  if (!STRIP.deadflow && !pos.tp1Done && cfg.deadflowWindowSec > 0 && !deadflowArmed && peakMove >= 1 + cfg.deadflowArmPct) {
     deadflowArmed = true;
     deadflowEvents.push({ type: 'armed' });
   }
@@ -110,9 +142,10 @@ export function evaluateExit(pos, mark, cfg, now) {
   // coin himself. While protected, ONLY the stop-loss family (2a dip stop, 2a2 hard
   // floor, 2b grace stop), the break-even ratchet (4c) and the kill zone (4e — the
   // redesign widened the scope by exactly that one rule, user 2026-10-15) are
-  // skipped — the bleed, probation/stall, momentum failure, trailing stop, time
-  // stops and the full TP ladder all judge exactly as normal, and the modest +50%
-  // target still fires (it is a profit exit, not downside). The flag holds for the
+  // skipped — the momentum failure, time stops and the full TP ladder judge exactly
+  // as normal. (Since the 2026-10-15 strip, the stop family, kill zone, bleed,
+  // probation/stall and the trails are off for EVERY position, protected or not;
+  // the only suppression with live effect left is the ratchet's.) The flag holds for the
   // LIFE of the position: no timeout, no auto-expiry; it clears only when the
   // position closes or when POST /unprotect clears it (bot.js owns both, and
   // unprotect also resets the kill-zone record so the zone re-arms fresh). The
@@ -182,7 +215,8 @@ export function evaluateExit(pos, mark, cfg, now) {
 
   // 2a. dip stop: price fell dipStopPct below entry — sell, no exceptions
   //     (PROTECT: skipped while the position is protected — part of the stop-loss family)
-  if (cfg.dipStopPct > 0 && move <= 1 - cfg.dipStopPct) {
+  //     STRIP (stopFamily): disabled in code — the section below can never fire.
+  if (!STRIP.stopFamily && cfg.dipStopPct > 0 && move <= 1 - cfg.dipStopPct) {
     if (prot) noteBlock('dip stop');
     else return out(1, `dip stop (price ${((move - 1) * 100).toFixed(1)}% from entry)`);
   }
@@ -195,7 +229,7 @@ export function evaluateExit(pos, mark, cfg, now) {
   //      while a real collapse is still there ~4s later and sells. No flow veto once confirmed.
   //      An unconfirmed breach falls through: the grace stop (2b) arms on this same tick and
   //      governs the -10..-20 zone unless the floor confirms on the next check.
-  if (hardBreached) {
+  if (!STRIP.stopFamily && hardBreached) { // STRIP (stopFamily): the hard floor can never fire
     if (prot) noteBlock('stop-loss'); // PROTECT: the hard floor is stop-loss family — skipped, and its counters stay cleared (see the protect block above)
     else {
       floorChecks += 1;
@@ -210,7 +244,7 @@ export function evaluateExit(pos, mark, cfg, now) {
   //     sells outweighing buys (sellsM5 > buysM5) or almost no buys left (buysM5 <= 2) — or no flow
   //     data at all — confirms the death and sells. Buyers at least matching sells vetoes the sell
   //     (they're absorbing the dip) and disarms, so a later breach re-arms fresh.
-  if (cfg.stopLoss > 0 && ratio <= 1 - cfg.stopLoss) {
+  if (!STRIP.stopFamily && cfg.stopLoss > 0 && ratio <= 1 - cfg.stopLoss) { // STRIP (stopFamily): the grace stop can never arm or fire
     if (prot) noteBlock('stop-loss'); // PROTECT: the grace stop is stop-loss family — skipped, never arms while the flag is set
     else {
       if (stopArmedTs == null) stopArmedTs = now;
@@ -249,6 +283,8 @@ export function evaluateExit(pos, mark, cfg, now) {
   }
 
   // 3a. MODEST TARGET + SPLIT (two-path redesign, user 2026-10-15): a modest
+  //     STRIP (modestBranch): modestActive is forced false above, so this section
+  //     can never fire — the remainder judges through the plain ladder instead.
   //     remainder is NOT trailed (3b / 3d-pre / 3d / 4 all skip it below) — it rides
   //     to this target on `move`. At the target the remainder SPLITS: bank
   //     modestSplitBankFrac of it on this sell, and the surviving slice converts
@@ -285,12 +321,14 @@ export function evaluateExit(pos, mark, cfg, now) {
 
   // 4. trailing stop once armed (never on the moonbag — it has its own wider trail, 3c;
   //    never on an un-split modest remainder either — see 3d)
-  if (!modestActive && !pos.tp2Done && peakRatio >= 1 + cfg.trailArm && ratio <= peakRatio * (1 - cfg.trailPct)) return out(1, `trailing stop (${(cfg.trailPct * 100).toFixed(0)}% off peak ${(peakRatio).toFixed(2)}x)`);
+  //    STRIP (genericTrail): disabled in code — can never fire.
+  if (!STRIP.genericTrail && !modestActive && !pos.tp2Done && peakRatio >= 1 + cfg.trailArm && ratio <= peakRatio * (1 - cfg.trailPct)) return out(1, `trailing stop (${(cfg.trailPct * 100).toFixed(0)}% off peak ${(peakRatio).toFixed(2)}x)`);
 
   // 4a. profit lock: once up lockArm+ after costs, don't let it round-trip — sell if it gives back (1 - lockKeep) of its
   //     best real gain. Scales with the move: best +40% → sells at +20%; best +200% → sells at +100% (lockKeep 0.5).
   //     Skips the moonbag (post-TP2): the ladder, not the lock, governs the bag.
-  if (!pos.tp2Done && cfg.lockKeep > 0 && peakGain >= cfg.lockArm && gain <= peakGain * cfg.lockKeep) return out(1, `profit lock (best +${(peakGain * 100).toFixed(0)}%, now +${(gain * 100).toFixed(0)}% after fees)`);
+  //     STRIP (profitLock): disabled in code — can never fire.
+  if (!STRIP.profitLock && !pos.tp2Done && cfg.lockKeep > 0 && peakGain >= cfg.lockArm && gain <= peakGain * cfg.lockKeep) return out(1, `profit lock (best +${(peakGain * 100).toFixed(0)}%, now +${(gain * 100).toFixed(0)}% after fees)`);
 
   // 4b. entry stall (user 2026-10-13, endpoint version): at stallSec from entry, judge where the
   //     price IS, not where it has been — inside the entry range = stalling = sell, however it
@@ -317,7 +355,9 @@ export function evaluateExit(pos, mark, cfg, now) {
   // field absent) judge from entry exactly as before; the bleed below keeps the
   // true age (heldSec) — only the stall/probation deadlines re-anchor.
   const stallHeldSec = (now - (pos.stallBaseTs || pos.entryTs)) / 1000;
-  if (cfg.stallSec > 0 && !pos.tp1Done && stallHeldSec >= cfg.stallSec) {
+  // STRIP (stallProbation): the whole stall/probation block — deadline sell, the
+  // probation leash and the probation expiry — is disabled in code and can never fire.
+  if (!STRIP.stallProbation && cfg.stallSec > 0 && !pos.tp1Done && stallHeldSec >= cfg.stallSec) {
     if ((cfg.stallProbationSec || 0) > 0) {
       if (probationSince == null) {
         // deadline reached inside the range: probation starts, no sell
@@ -418,7 +458,7 @@ export function evaluateExit(pos, mark, cfg, now) {
   //     at both ends) — missing data never fires, the TP1-strength convention.
   //     PROTECT suppresses the fire like the ratchet's (noteBlock — it is a
   //     profit-side auto exit); TAKEOVER returned long before this section.
-  if (!pos.tp1Done && cfg.deadflowWindowSec > 0 && deadflowArmed) {
+  if (!STRIP.deadflow && !pos.tp1Done && cfg.deadflowWindowSec > 0 && deadflowArmed) { // STRIP (deadflow): can never fire
     const winMs = cfg.deadflowWindowSec * 1000;
     const winStart = now - winMs;
     let fStart = null, fNow = null;
@@ -465,8 +505,11 @@ export function evaluateExit(pos, mark, cfg, now) {
   //     the FULL condition, still-falling leg included, is re-tested fresh on every check of
   //     the window; a print that is merely still ≤ −bleedPct but recovering (current move
   //     back above the lookback reference) fails the leg and cancels the pending sell.
+  // STRIP (bleed): disabled in code — bleedFires can never become true and the
+  // whole fire/cancel block below is gated off with it, so a stale pre-strip
+  // bleed pending on a carried-over position passes through untouched and inert.
   let bleedFires = false;
-  if (cfg.bleedPct > 0 && heldSec >= (cfg.bleedMinAgeSec || 0) && move <= 1 - cfg.bleedPct) {
+  if (!STRIP.bleed && cfg.bleedPct > 0 && heldSec >= (cfg.bleedMinAgeSec || 0) && move <= 1 - cfg.bleedPct) {
     const target = now - (cfg.bleedLookbackSec || 60) * 1000;
     let ref = null;
     for (const h of pos.moveHist || []) {
@@ -475,15 +518,19 @@ export function evaluateExit(pos, mark, cfg, now) {
     }
     bleedFires = !!(ref && move <= ref.move);
   }
-  if (bleedFires) {
-    const d = failSafe('bleed', `bleed exit (${((move - 1) * 100).toFixed(1)}% and still falling)`);
-    if (d) return d;
-    // pending: fall through — the sections below still judge this check
-  } else {
-    cancelPending('bleed');
+  if (!STRIP.bleed) {
+    if (bleedFires) {
+      const d = failSafe('bleed', `bleed exit (${((move - 1) * 100).toFixed(1)}% and still falling)`);
+      if (d) return d;
+      // pending: fall through — the sections below still judge this check
+    } else {
+      cancelPending('bleed');
+    }
   }
 
   // 4e. KILL ZONE (two-path redesign, user 2026-10-15): the modest remainder's
+  //     STRIP (modestBranch): zoneEligible is forced false above — this section
+  //     can never arm, count an entry, or fire.
   //     downside floor, overlaid on sub-band ladder remainders (zoneEligible,
   //     computed in the state prep). Judged on `move`, never the chart:
   //     - ARMING: the zone is inert until the post-TP1 peak (postTp1PeakMove)

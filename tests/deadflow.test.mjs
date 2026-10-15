@@ -1,11 +1,14 @@
-// DEAD-FLOW EXIT AT ALTITUDE (user 2026-10-15, window picked: 45s): a PRE-TP1
-// position whose peak realizable move reached +8% sells in full when its own
-// flow flatlines for a full 45s window (buy count rises <= 1), no new peak
-// prints inside the window, and the move sits >= 1pt below the window-start
-// peak. The window IS the confirmation — no exitPending, no extra grace.
+// DEAD-FLOW EXIT AT ALTITUDE — STRIPPED (user order 2026-10-15 ~17:05 EDT, the
+// exit-stack strip): the rule is disabled IN CODE (src/exits.js STRIP.deadflow).
+// The drive sequences below are its former trigger conditions, kept verbatim —
+// every one now pins that the rule can neither arm nor fire, at the shipped
+// knob values. Original design, for the record: a PRE-TP1 position whose peak
+// realizable move reached +8% sold in full when its own flow flatlined for a
+// full 45s window (buy count rises <= 1), no new peak inside the window, and
+// the move >= 1pt below the window-start peak.
 // Founding case: Scout (Anti-AI Dog), 2026-10-15 — peaked ~+12% realizable,
 // buys flatlined for minutes, chopped, round-tripped to −0.4% (probation
-// expiry, −0.0009 SOL); this rule fires ~45s into the stall and banks ~+10%.
+// expiry, −0.0009 SOL); the rule used to fire ~45s into the stall.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { evaluateExit } from '../src/exits.js';
@@ -66,32 +69,29 @@ test('below the +8% arm line, dead flow never fires (and never arms)', () => {
   assert.ok(!p.deadflowArmed);
 });
 
-test('dead flow + stall fires exactly at window lapse, full sell, right reason', () => {
+test('strip: the full former trigger sequence — climb past +8%, 45s of dead flow — neither arms nor fires', () => {
   const p = fresh();
   const stallR = [1.115, 1.112, 1.11, 1.109, 1.108, 1.108, 1.107, 1.107, 1.106, 1.106, 1.105, 1.105];
   const ds = drive(p, [...seq(CLIMB_R, CLIMB_B), ...seq(stallR, 150)]);
-  const armedAt = ds.findIndex(d => (d.deadflowEvents || []).some(e => e.type === 'armed'));
-  assert.equal(armedAt, 3, 'arms on the check the peak move crosses +8%');
-  assert.equal(ds.filter(d => (d.deadflowEvents || []).some(e => e.type === 'armed')).length, 1, 'armed counted once');
-  assert.ok(ds.slice(0, -1).every(d => d.fraction === 0), 'nothing fires before the 45s window is fully dead');
+  assert.ok(ds.every(d => !(d.deadflowEvents || []).length), 'no arming event on the +8% crossing, no fire at window lapse');
+  assert.ok(ds.every(d => d.fraction === 0), 'every check holds, including the former fire check');
+  assert.ok(!p.deadflowArmed);
   const last = ds[ds.length - 1];
-  assert.equal(last.fraction, 1);
-  assert.match(last.reason, /^dead flow at altitude \(\+10\.5%, 0 new buys in 45s, peak stalled\)$/);
-  assert.ok((last.deadflowEvents || []).some(e => e.type === 'fired'));
+  assert.equal(last.reason, null);
 });
 
-test('a buy burst inside the window voids it — the rule fires only once the burst leaves the window', () => {
+test('strip: a buy burst and its aging out of the window change nothing — no fire anywhere', () => {
   const p = fresh();
   const pre = drive(p, [...seq(CLIMB_R, CLIMB_B), ...flat(10, 1.11, 150), { ratio: 1.118, buys: 156, sells: 40 }]);
-  assert.ok(pre.every(d => d.fraction === 0), 'no fire up to and including the burst check');
-  const post = drive(p, [...flat(11, 1.108, 156)]); // 44s of fresh dead flow — every window still spans the burst
-  assert.ok(post.every(d => d.fraction === 0), 'windows containing the burst stay void');
-  const tail = drive(p, [{ ratio: 1.105, buys: 156, sells: 40 }]); // window start now sits past the burst
-  assert.equal(tail[0].fraction, 1);
-  assert.match(tail[0].reason, /^dead flow at altitude /);
+  assert.ok(pre.every(d => d.fraction === 0));
+  const post = drive(p, [...flat(11, 1.108, 156)]);
+  assert.ok(post.every(d => d.fraction === 0));
+  const tail = drive(p, [{ ratio: 1.105, buys: 156, sells: 40 }]); // the former fire check, window clear of the burst
+  assert.equal(tail[0].fraction, 0);
+  assert.equal(tail[0].reason, null);
 });
 
-test('a new peak inside the window voids it — fires only after the new peak ages to a window start', () => {
+test('strip: a new peak inside the window and its aging to a window start change nothing', () => {
   const p = fresh();
   const ds = drive(p, [
     ...seq(CLIMB_R, CLIMB_B),
@@ -99,19 +99,19 @@ test('a new peak inside the window voids it — fires only after the new peak ag
     { ratio: 1.125, buys: 150, sells: 40 }, // new peak mid-window
     ...flat(10, 1.108, 150),
   ]);
-  assert.ok(ds.every(d => d.fraction === 0), 'the in-window peak keeps every window void');
+  assert.ok(ds.every(d => d.fraction === 0));
   const tail = drive(p, [{ ratio: 1.105, buys: 150, sells: 40 }, { ratio: 1.105, buys: 150, sells: 40 }]);
-  assert.equal(tail[0].fraction, 0, 'one check too early: the 1.125 print is still inside this window');
-  assert.equal(tail[1].fraction, 1, 'once the 1.125 print is the window-start peak and price sits below it, the rule fires');
+  assert.equal(tail[0].fraction, 0);
+  assert.equal(tail[1].fraction, 0, 'the former fire check (new peak aged to window start, price below) holds');
 });
 
-test('steady two-way flow at altitude never fires', () => {
+test('strip: steady two-way flow at altitude — no arming event, no fire (as before, now for a stronger reason)', () => {
   const p = fresh();
   const buys = Array.from({ length: 20 }, (_, i) => 153 + i * 3);
   const sells = Array.from({ length: 20 }, (_, i) => 42 + i * 2);
   const chop = Array.from({ length: 20 }, (_, i) => [1.115, 1.118, 1.112][i % 3]);
   const ds = drive(p, [...seq(CLIMB_R, CLIMB_B), ...seq(chop, buys, sells)]);
-  assert.ok(ds.some(d => (d.deadflowEvents || []).some(e => e.type === 'armed')), 'the position did arm — the void is the flow leg');
+  assert.ok(ds.every(d => !(d.deadflowEvents || []).length), 'the position never arms under the strip');
   assert.ok(ds.every(d => d.fraction === 0));
 });
 
@@ -122,12 +122,12 @@ test('TP1-done position is untouched by the rule', () => {
   assert.ok(ds.every(d => !(d.deadflowEvents || []).length && !d.deadflowArmed), 'no arming, no events post-TP1');
 });
 
-test('protected position: the fire is suppressed and reported as a dead-flow block', () => {
+test('strip + protect: a protected position rides the full former trigger sequence; no block is reported (nothing to suppress)', () => {
   const p = fresh({ protected: true });
   const stallR = [1.115, 1.112, 1.11, 1.109, 1.108, 1.108, 1.107, 1.107, 1.106, 1.106, 1.105, 1.105];
   const ds = drive(p, [...seq(CLIMB_R, CLIMB_B), ...seq(stallR, 150)]);
   assert.ok(ds.every(d => d.fraction === 0), 'protection never sells');
-  assert.equal(ds[ds.length - 1].protectedBlock, 'dead flow', 'the qualifying check reports the suppression bot.js counts');
+  assert.equal(ds[ds.length - 1].protectedBlock, null, 'the rule is off for everyone — the qualifying check reports no suppression');
 });
 
 test('TP1 firing on the same check wins over dead flow', () => {
@@ -149,16 +149,14 @@ test('TP1 firing on the same check wins over dead flow', () => {
   assert.equal(last.pathClass, 'modest');
 });
 
-test('AAD shape: choppy stall with micro-recoveries still fires near the top (~+10.6%)', () => {
+test('strip: AAD shape — the founding case itself now rides (choppy stall at +10.6% never sells)', () => {
   const p = fresh();
   const climbR = [1.04, 1.07, 1.09, 1.105, 1.115, 1.12];
   const climbB = [90, 102, 114, 126, 138, 150];
   const stallR = [1.108, 1.113, 1.106, 1.112, 1.107, 1.11, 1.105, 1.109, 1.104, 1.107, 1.103, 1.106];
   const ds = drive(p, [...seq(climbR, climbB, 55), ...seq(stallR, 150, 55)]);
-  assert.ok(ds.slice(0, -1).every(d => d.fraction === 0));
-  const last = ds[ds.length - 1];
-  assert.equal(last.fraction, 1);
-  assert.match(last.reason, /^dead flow at altitude \(\+10\.6%, 0 new buys in 45s, peak stalled\)$/);
+  assert.ok(ds.every(d => d.fraction === 0), 'the exact sequence that founded the rule now produces no exit at all');
+  assert.ok(ds.every(d => !(d.deadflowEvents || []).length));
 });
 
 test('SCRIP-shaped first stall — buys still ticking in two-way flow — does NOT fire', () => {
@@ -173,13 +171,15 @@ test('SCRIP-shaped first stall — buys still ticking in two-way flow — does N
   assert.ok(ds.every(d => d.fraction === 0), 'a live stall is not dead flow — the run continues untouched');
 });
 
-test('knob off (DEADFLOW_WINDOW_SEC=0): never arms, never fires', () => {
-  const cfgX = testCfg({ txFeeSol: 0, dipStopPct: 0, lockKeep: 0, stallSec: 0, stallProbationSec: 0, beArmPct: 0, deadflowWindowSec: 0 });
-  const p = fresh();
+test('strip is code, not config: the knob value is irrelevant — window 45 (shipped) and window 0 behave identically', () => {
   const stallR = [1.115, 1.112, 1.11, 1.109, 1.108, 1.108, 1.107, 1.107, 1.106, 1.106, 1.105, 1.105];
-  const ds = drive(p, [...seq(CLIMB_R, CLIMB_B), ...seq(stallR, 150)], cfgX);
-  assert.ok(ds.every(d => d.fraction === 0));
-  assert.ok(ds.every(d => !(d.deadflowEvents || []).length));
+  for (const w of [45, 0]) {
+    const cfgX = testCfg({ txFeeSol: 0, dipStopPct: 0, lockKeep: 0, stallSec: 0, stallProbationSec: 0, beArmPct: 0, deadflowWindowSec: w });
+    const p = fresh();
+    const ds = drive(p, [...seq(CLIMB_R, CLIMB_B), ...seq(stallR, 150)], cfgX);
+    assert.ok(ds.every(d => d.fraction === 0), `window ${w}: no fire`);
+    assert.ok(ds.every(d => !(d.deadflowEvents || []).length), `window ${w}: no events`);
+  }
 });
 
 test('missing flow data fails closed — a stall with unknown buy counts never fires', () => {
@@ -192,15 +192,15 @@ test('missing flow data fails closed — a stall with unknown buy counts never f
   assert.ok(ds.every(d => d.fraction === 0));
 });
 
-test('a data gap (restart) fails closed until the window is covered again', () => {
+test('strip: a data gap (restart) and a full fresh window after it — still no fire', () => {
   const p = fresh();
   const pre = drive(p, [...seq(CLIMB_R, CLIMB_B), ...flat(6, 1.11, 150), { dt: 60, ratio: 1.105, buys: 150, sells: 40 }]);
-  assert.ok(pre.every(d => d.fraction === 0), 'the first post-gap check cannot judge a window it did not see');
+  assert.ok(pre.every(d => d.fraction === 0));
   const post = drive(p, flat(11, 1.105, 150));
-  assert.ok(post.every(d => d.fraction === 0), 'windows still reaching back across the gap stay void');
+  assert.ok(post.every(d => d.fraction === 0));
   const tail = drive(p, [{ ratio: 1.105, buys: 150, sells: 40 }]);
-  assert.equal(tail[0].fraction, 1, 'once a full fresh window exists, the rule judges again');
-  assert.match(tail[0].reason, /^dead flow at altitude /);
+  assert.equal(tail[0].fraction, 0, 'the former post-gap fire check holds — there is no window judgment anymore');
+  assert.equal(tail[0].reason, null);
 });
 
 // ---- config ----

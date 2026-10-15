@@ -212,8 +212,10 @@ test('server: /shadowtrades serves pending + done in the paging envelope; /state
   await bot.start();
   bot.shadowTrades.open({ id: 'x-open', mint: 'MINT8', symbol: 'OPEN', setup: 'trend', price: 1, mc: 10, ts: T0, sizeSol: 0.02 });
   bot.shadowTrades.open({ id: 'x-done', mint: 'MINT9', symbol: 'DONE', setup: 'liftoff', price: 1, mc: 10, ts: T0, sizeSol: 0.02 });
-  // MINT9 halves on the view → the real dip stop closes that virtual in full
-  bot.shadowTrades.tick(mint => (mint === 'MINT9' ? view({ price: 0.5 }) : null), T0 + 60000, cfg, 150);
+  // MINT9 halves on the view into dead flow → at 10+ minutes the real momentum-
+  // failure dead check closes that virtual in full (the dip stop that used to
+  // take this print is stripped; the shadow book runs the same stack as live)
+  bot.shadowTrades.tick(mint => (mint === 'MINT9' ? view({ price: 0.5, buysM5: 1, sellsM5: 10 }) : null), T0 + 660000, cfg, 150);
   const srv = startServer(bot, 0);
   const base = `http://127.0.0.1:${srv.address().port}`;
   const get = async (p) => { const r = await fetch(base + p); assert.equal(r.status, 200, p); return r.json(); };
@@ -225,7 +227,7 @@ test('server: /shadowtrades serves pending + done in the paging envelope; /state
     assert.equal(dflt.done.length, 1);
     assert.equal(dflt.done[0].id, 'x-done');
     assert.equal(dflt.done[0].status, 'exited');
-    assert.match(dflt.done[0].exitReason, /dip stop/);
+    assert.match(dflt.done[0].exitReason, /momentum failure/);
     assert.equal(dflt.done[0].pnlBasis, 'viewQuote');
     const pg = await get('/shadowtrades?limit=1&offset=0');
     assert.equal(pg.total, 1);
