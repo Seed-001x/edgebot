@@ -13,6 +13,7 @@ export class Risk {
     this.s = { day: dayKey(now()), dayPnlSol: 0, tradeTs: [], cooldown: {}, losers: {}, startEquitySol: null, killed: false, killReason: null, totalCloses: 0, haltArmedAt: null };
     this.load();
     if (!this.s.losers) this.s.losers = {}; // risk.json from before this field existed
+    if (!this.s.wins) this.s.wins = {}; // winning closes — the winner re-buy block (mirrors losers)
     if (!this.s.closed) this.s.closed = {}; // every close (win or loss) — the re-entry block
     if (this.s.haltBalBaseline === undefined) this.s.haltBalBaseline = null; // balance-halt anchor (equity SOL)
     if (this.s.downHalted === undefined) this.s.downHalted = false;
@@ -157,6 +158,12 @@ export class Risk {
     const lost = this.s.losers[mint];
     if (lost && this.cfg.loserCooldownH > 0 && n - lost < this.cfg.loserCooldownH * 3600000)
       return { ok: false, reason: `lost on this coin ${((n - lost) / 60000).toFixed(0)}m ago (no re-buy for ${this.cfg.loserCooldownH}h)` };
+    // Winner re-buy block (user 2026-10-15): a WINNING close blocks re-entry for the same
+    // window — the HIMA rebuy (21m after a green close, 31% under the top) passed every
+    // guard because only losses anchored a cooldown. Same skip path as the loser block.
+    const won = this.s.wins[mint];
+    if (won && this.cfg.winnerCooldownH > 0 && n - won < this.cfg.winnerCooldownH * 3600000)
+      return { ok: false, reason: `closed this coin ${((n - won) / 60000).toFixed(0)}m ago (no re-buy for ${this.cfg.winnerCooldownH}h)` };
     const closedAt = this.s.closed[mint];
     if (closedAt && this.cfg.closedCooldownH > 0 && n - closedAt < this.cfg.closedCooldownH * 3600000)
       return { ok: false, reason: `already traded this coin — closed ${((n - closedAt) / 60000).toFixed(0)}m ago (no re-entry for ${this.cfg.closedCooldownH >= 1 ? `${this.cfg.closedCooldownH}h` : `${Math.round(this.cfg.closedCooldownH * 60)}m`})` };
@@ -247,8 +254,17 @@ export class Risk {
       for (const [k, t] of Object.entries(this.s.closed)) if (n - t > keepMs) delete this.s.closed[k];
       if (pnlSol < 0) {
         this.s.losers[mint] = n;
+        delete this.s.wins[mint]; // the most recent close governs: a later loss re-anchors
         const keepL = Math.max(this.cfg.loserCooldownH || 0, 1) * 3600000;
         for (const [k, t] of Object.entries(this.s.losers)) if (n - t > keepL) delete this.s.losers[k];
+      } else if (pnlSol > 0) {
+        // Win (pnlSol > 0, the mirror of the loser's pnlSol < 0 test): anchor the winner
+        // re-buy block. A scratch close (pnlSol == 0) is neither — it anchors neither
+        // block, exactly as it leaves the D4 streak untouched; the flat any-close
+        // sit-out above still applies to it.
+        this.s.wins[mint] = n;
+        const keepW = Math.max(this.cfg.winnerCooldownH || 0, 1) * 3600000;
+        for (const [k, t] of Object.entries(this.s.wins)) if (n - t > keepW) delete this.s.wins[k];
       }
     }
     this.save();
