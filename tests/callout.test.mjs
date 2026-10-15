@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { validateThesis, thesisViolation, simpleFallback, buildThesis } from '../src/callout.js';
+import { validateThesis, thesisViolation, simpleFallback, buildThesis, postCallout, progressThesis } from '../src/callout.js';
 
 // Thesis-only callouts (user, 2026-10-14): "no numbers or stats… just thesis."
 // The v2 facts line (entry mc / % moves / volume / buy share) is deleted.
@@ -155,4 +155,65 @@ test('simpleFallback: description sentence, name riff, and un-cleanable inputs',
   // Description carries a stat and the name carries a digit: nothing clean exists.
   assert.equal(simpleFallback({ description: 'Over 5000 holders strong and growing.' }, { name: 'Cat 3000', symbol: 'CAT3000' }), null);
   assert.equal(simpleFallback({}, {}), null);
+});
+
+// ---- live-callout gate (user 2026-10-15: CALLOUTS_ENABLED, default OFF) ----
+// Disabled must return BEFORE auth/thesis/network: with no wallet key in env,
+// a disabled call still resolves the skip (proving auth was never attempted),
+// while an enabled call rejects on the missing key (proving it proceeded).
+async function withCalloutEnv(fn) {
+  const realFetch = globalThis.fetch;
+  const saved = {};
+  for (const k of ['WALLET_PRIVATE_KEY', 'CALLOUTS_ENABLED']) { saved[k] = process.env[k]; delete process.env[k]; }
+  let fetchCalls = 0;
+  globalThis.fetch = async () => { fetchCalls++; return { ok: false, status: 404, json: async () => ({}), text: async () => '' }; };
+  try { return await fn(() => fetchCalls); }
+  finally {
+    globalThis.fetch = realFetch;
+    for (const k of Object.keys(saved)) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
+  }
+}
+
+test('postCallout gate: disabled returns the skip immediately — no auth, no fetch', async () => {
+  await withCalloutEnv(async (fetchCalls) => {
+    const r = await postCallout({ address: 'MINT1', symbol: 'CAT', mc: 1000 }, {}, { enabled: false });
+    assert.deepEqual(r, { skipped: 'callouts-disabled' });
+    assert.equal(fetchCalls(), 0);
+  });
+});
+
+test('postCallout gate: default (no opts, no env) is disabled too', async () => {
+  await withCalloutEnv(async (fetchCalls) => {
+    const r = await postCallout({ address: 'MINT1', symbol: 'CAT', mc: 1000 }, {});
+    assert.deepEqual(r, { skipped: 'callouts-disabled' });
+    assert.equal(fetchCalls(), 0);
+  });
+});
+
+test('postCallout gate: enabled proceeds past the gate (fails later on the missing wallet key)', async () => {
+  await withCalloutEnv(async () => {
+    await assert.rejects(() => postCallout({ address: 'MINT1', symbol: 'CAT', mc: 1000 }, {}, { enabled: true }));
+  });
+});
+
+test('postCallout gate: CALLOUTS_ENABLED=1 in env arms it when no opts are passed', async () => {
+  await withCalloutEnv(async () => {
+    process.env.CALLOUTS_ENABLED = '1';
+    await assert.rejects(() => postCallout({ address: 'MINT1', symbol: 'CAT', mc: 1000 }, {}));
+    delete process.env.CALLOUTS_ENABLED;
+    const r = await postCallout({ address: 'MINT1', symbol: 'CAT', mc: 1000 }, {});
+    assert.deepEqual(r, { skipped: 'callouts-disabled' });
+  });
+});
+
+// ---- the took-profit brag is deleted (user 2026-10-15) ----
+test('progressThesis: the "took profit… called it here first" text can no longer be produced', () => {
+  // progressThesis is the ONLY producer of progress-post text; stillHolding
+  // false used to switch it to the brag. Both states now say the same thing.
+  const sold = progressThesis({ symbol: 'CAT' }, { progress: true, stillHolding: false });
+  const held = progressThesis({ symbol: 'CAT' }, { progress: true, stillHolding: true });
+  assert.equal(sold, '$cat still running since the call.');
+  assert.equal(held, sold);
+  assert.ok(!/took profit/i.test(sold));
+  assert.equal(validateThesis(sold), sold); // and it still passes the hard gate
 });

@@ -19,6 +19,7 @@ import { bundleRisk, bundleDecision, pickTracked, linkedWeights, CREATOR_KEY } f
 import { Journal } from './journal.js';
 import { Risk } from './risk.js';
 import { postCallout } from './callout.js';
+import { CalloutLab } from './calloutLab.js';
 import { snapshotFeatures, externalExit } from './learn.js';
 
 import { PostExitTracker, PairedShadowExits } from './postExit.js';
@@ -37,6 +38,7 @@ export class Bot {
     fs.mkdirSync(cfg.dataDir, { recursive: true });
     this.history = new History();
     this.journal = new Journal(cfg.dataDir, { now: this.now });
+    this.calloutLab = new CalloutLab({ cfg, journal: this.journal, now: this.now }); // Callout Shadow Lab (record-only): journals would-calls + scores them as a follower would have fared; can never post, sign, or trade
     this.risk = new Risk(cfg, { dir: cfg.dataDir, now: this.now });
     this.closedIds = new Set(this.journal.trades.filter(t => t.type === 'close').map(t => t.id)); // journaling guarantee (ensureClose)
     for (const t of this.journal.trades) if (t.type === 'close' && t.mint) this.risk.seedClosed(t.mint, t.ts); // re-entry block survives restarts/deploys
@@ -54,6 +56,7 @@ export class Bot {
       fetchViews: deps.fetchViews,
       shadowGates: (v, setup) => this.shadowGateRecord(v, { setup, metrics: {} }, this.now()),
       noteMint: (m, s) => this.noteMint(m, s),
+      onEvent: (ev) => this.noteCalloutEvent(ev), // Callout Shadow Lab tap (record-only)
     });
     this.cfgStamp = configStamp(cfg); // D1: config version stamp carried by entries + closes (record-only)
     this.lastSolUsd = null; // last SOL/USD the position loop saw (feeds observer marks)
@@ -258,6 +261,17 @@ export class Bot {
         if (!this.positions.some(p => p.id !== pos.id && p.mint === pos.mint) && !(this.shadowTrades && this.shadowTrades.openVirtual(pos.mint))) this.shadowFlow.drop(pos.mint);
       }
     } catch { /* observer only — never disturb trading */ }
+    // Callout Shadow Lab (record-only): TP3 = this position's FINAL close, and
+    // only when it had reached TP2 — the moonbag stage completing. ensureClose
+    // is the single funnel every close passes through exactly once (bot sell,
+    // manual exit, reconcile, admin clear), which is what makes it the
+    // faithful seam: no close path can miss it and none can double-fire it.
+    try {
+      if (pos.tp2Done && this.calloutLab) {
+        const lv = this.latest.get(pos.mint);
+        this.calloutLab.record({ trigger: 'tp3', ts: rec.ts || this.now(), mint: pos.mint, symbol: pos.symbol, v: lv || { address: pos.mint, symbol: pos.symbol, name: pos.symbol, mc: pos.entryMc ?? null }, mc: lv ? lv.mc : (pos.entryMc ?? null), liquidity: lv ? lv.liq : null, setup: pos.setup, source: 'position', holding: false, linkId: pos.id }).catch(() => {});
+      }
+    } catch { /* observer only — never disturb trading */ }
     return true;
   }
 
@@ -418,6 +432,16 @@ export class Bot {
   }
 
   noteMint(mint, source = 'live-ws') {
+    // Callout Shadow Lab (record-only): a graduation feed is a would-call
+    // moment. Fires BEFORE the early returns below on purpose — the call is
+    // about the graduation itself, not about whether the mint is new to the
+    // watchlist (already-watched/held/blacklisted mints still graduated).
+    if (mint && source === 'graduated' && this.calloutLab) {
+      try {
+        const lv = this.latest.get(mint);
+        this.calloutLab.record({ trigger: 'graduation', ts: this.now(), mint, symbol: lv ? lv.symbol : null, v: lv || { address: mint }, mc: lv ? lv.mc : null, liquidity: lv ? lv.liq : null, setup: 'graduation', source: 'gradwatch', holding: this.positions.some(p => p.mint === mint), linkId: null }).catch(() => {});
+      } catch { /* observer only */ }
+    }
     if (!mint || this.watch.has(mint)) return false;
     if (this.journal.blacklistedMints().has(mint)) return false;
     if (this.positions.some(p => p.mint === mint)) return false;
@@ -575,6 +599,31 @@ export class Bot {
       }
     } catch { /* quote failed — the last tick move stands */ }
     this.journal.ratchetShadow({ kind: 'would-fire-stream', source: 'real', id: pos.id, ts: n, mint: pos.mint, symbol: pos.symbol, setup: pos.setup, streamMove: +hit.move.toFixed(4), streamPeakMove: +hit.peakMove.toFixed(4), sellShare: +hit.fire.sellShare.toFixed(3), sellSol: +hit.fire.sellSol.toFixed(4), buySol: +hit.fire.buySol.toFixed(4), windowSec: this.cfg.ratchetFlowWindowSec, jupArmed, jupMove: jupMove != null ? +jupMove.toFixed(4) : null });
+  }
+
+  /** Callout Shadow Lab tap for wallet-detector events (record-only): a
+   *  dev-launch or confluence event journaled by walletWatch is a would-call
+   *  moment. The view for thesis generation is rebuilt from the event plus the
+   *  freshest view the bot holds; buildThesis researches the rest itself. */
+  noteCalloutEvent(ev) {
+    try {
+      if (!ev || !this.calloutLab) return;
+      const trigger = ev.kind === 'dev' ? 'devlaunch' : ev.kind === 'confluence' ? 'confluence' : null;
+      if (!trigger) return;
+      const lv = this.latest.get(ev.mint);
+      const v = lv || { address: ev.mint, symbol: ev.symbol || null, name: ev.symbol || null, mc: ev.mc ?? null, pairAddress: ev.pool || null };
+      this.calloutLab.record({
+        trigger, ts: ev.ts || this.now(), mint: ev.mint, symbol: ev.symbol || (lv ? lv.symbol : null), v,
+        mc: ev.mc ?? (lv ? lv.mc : null), liquidity: lv ? lv.liq : null, pool: ev.pool || null,
+        setup: trigger, source: 'walletwatch', holding: this.positions.some(p => p.mint === ev.mint), linkId: ev.id || null,
+      }).catch(() => {});
+    } catch { /* observer only */ }
+  }
+
+  /** Read-only /callouts payload — the lab's scorecard over the FULL
+   *  callout_shadow.jsonl (see calloutLab.js; ~60s cached there). */
+  calloutCard() {
+    try { return this.calloutLab.scorecard(); } catch { return { enabled: false }; }
   }
 
   /**
@@ -796,7 +845,7 @@ export class Bot {
     try {
       this.evictBlacklisted(); // marked coins never even get priced, let alone signal
       const mints = [...new Set([...this.watch.keys(), ...this.positions.map(p => p.mint)])];
-      if (!mints.length) { try { await this.outcomeTick(this.now()); } catch { /* observer only */ } try { await this._flowRetryTick(this.now()); } catch { /* record-only retry */ } try { await this.walletWatch.finalizeTick(this.now()); } catch { /* shadow outcomes */ } return; }
+      if (!mints.length) { try { await this.outcomeTick(this.now()); } catch { /* observer only */ } try { await this._flowRetryTick(this.now()); } catch { /* record-only retry */ } try { await this.walletWatch.finalizeTick(this.now()); } catch { /* shadow outcomes */ } try { await this.calloutLab.tick(this.now()); } catch { /* shadow callouts */ } return; }
       const views = await this.d.fetchViews(mints);
       const n = this.now();
       // D4 (user 2026-10-13): market breadth — the share of sampled coins green on the hour —
@@ -858,6 +907,7 @@ export class Bot {
       try { await this.outcomeTick(n); } catch { /* observer only */ }
       try { await this._flowRetryTick(n); } catch { /* record-only retry */ }
       try { await this.walletWatch.finalizeTick(n); } catch { /* shadow outcomes */ }
+      try { await this.calloutLab.tick(n); } catch { /* shadow callouts */ }
       candidates.sort((a, b) => b.sig.strength - a.sig.strength);
       for (const c of candidates.slice(0, this.cfg.maxSignalsPerTick)) {
         this.lastSignal.set(c.v.address, this.now());
@@ -1303,15 +1353,23 @@ export class Bot {
     this.risk.recordEntry(v.address);
     this.stats.entries++;
     this.entryTimes.push(n);
+    // Callout Shadow Lab (record-only): the would-call for this entry is
+    // journaled whether or not live callouts are on — the lab scores what a
+    // follower would have made. Fire-and-forget; it can never post or trade.
+    this.calloutLab.record({ trigger: 'entry', ts: n, mint: v.address, symbol: v.symbol, v, sig, setup: sig.setup, source: 'entry', holding: true, linkId: pos.id }).catch(() => {});
     // Fire a pump.fun callout for this entry (non-blocking; rewards accrue to the user).
     // The thesis is generated from the signal that triggered the entry.
-    postCallout(v, sig).then(r => {
-      console.log('[callout] posted for', v.symbol);
-      this.lastCallout = { ok: true, symbol: v.symbol, ts: Date.now() };
-    }).catch(e => {
-      console.log('[callout] failed:', e.message);
-      this.lastCallout = { ok: false, error: e.message, symbol: v.symbol, ts: Date.now() };
-    });
+    // GATED (user 2026-10-15): live callouts OFF unless CALLOUTS_ENABLED=1 —
+    // postCallout is gated internally too, so a disabled bot makes no attempt.
+    if (this.cfg.calloutsEnabled) {
+      postCallout(v, sig, { enabled: true }).then(r => {
+        console.log('[callout] posted for', v.symbol);
+        this.lastCallout = { ok: true, symbol: v.symbol, ts: Date.now() };
+      }).catch(e => {
+        console.log('[callout] failed:', e.message);
+        this.lastCallout = { ok: false, error: e.message, symbol: v.symbol, ts: Date.now() };
+      });
+    }
     this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'taken', reasons: [], price: v.price, mc: v.mc, metrics: { ...sig.metrics, roundTrip: +rt.ratio.toFixed(3), sizeSol: size }, warnings: g.warnings, label: sig.label || null, gates: checks, gatePass: g.pass, fields: this._signalFields(v) });
     this.journal.trade({ type: 'open', id: pos.id, mint: pos.mint, symbol: pos.symbol, setup: pos.setup, entrySol: pos.entrySol, sig: fill.sig, simulated: fill.simulated, ts: n, stamp: pos.stamp, tokensRaw: fill.tokensRaw, entryFillSol: pos.entryFillSol, entryFillUsd: pos.entryFillSol != null && solUsd > 0 ? +(pos.entryFillSol * solUsd).toFixed(10) : null });
     // one-trade rules are spent the moment an entry executes
@@ -1448,9 +1506,13 @@ export class Bot {
       const ratio = valueSol / Math.max(1e-9, pos.entrySol * pos.remainingFrac);
       if (ratio >= 1.2) {
         pos.climbCalloutDone = true; this.savePositions();
-        postCallout({ address: pos.mint, symbol: pos.symbol, mc: v.mc }, { setup: pos.setup, metrics: {}, progress: true, gainPct: Math.round((ratio - 1) * 100) })
-          .then(() => console.log('[callout] climbing update posted for', pos.symbol))
-          .catch(e => console.log('[callout] climbing update failed:', e.message));
+        // GATED with the entry callout (CALLOUTS_ENABLED): the moment is still
+        // consumed either way; only the live post is skipped while disabled.
+        if (this.cfg.calloutsEnabled) {
+          postCallout({ address: pos.mint, symbol: pos.symbol, mc: v.mc }, { setup: pos.setup, metrics: {}, progress: true, gainPct: Math.round((ratio - 1) * 100) }, { enabled: true })
+            .then(() => console.log('[callout] climbing update posted for', pos.symbol))
+            .catch(e => console.log('[callout] climbing update failed:', e.message));
+        }
       }
     }
     // learning log: trajectory sample every ~10s, and detection of a sell the human made in their own wallet
@@ -1522,6 +1584,10 @@ export class Bot {
     if (decision.tp1) { pos.tp1Done = true; pos.remainingFrac *= (1 - decision.fraction); }
     if (decision.tp2) { pos.tp2Done = true; pos.remainingFrac *= (1 - decision.fraction); }
     this.journal.trade({ type: 'sell', id: pos.id, mint: pos.mint, symbol: pos.symbol, fraction: decision.fraction, solOut: res.solOut, reason: decision.reason, sig: res.sig, simulated: res.simulated, ts: n });
+    // Callout Shadow Lab (record-only): a banked TP is a would-call moment —
+    // journaled off the EXECUTED sell above, never off a decision alone.
+    if (decision.tp1) this.calloutLab.record({ trigger: 'tp1', ts: n, mint: pos.mint, symbol: pos.symbol, v, mc: v.mc ?? null, setup: pos.setup, source: 'position', holding: true, linkId: pos.id }).catch(() => {});
+    if (decision.tp2) this.calloutLab.record({ trigger: 'tp2', ts: n, mint: pos.mint, symbol: pos.symbol, v, mc: v.mc ?? null, setup: pos.setup, source: 'position', holding: true, linkId: pos.id }).catch(() => {});
 
     if (decision.fraction >= 1 || BigInt(pos.tokensRaw) <= 0n) {
       const pnl = pos.realizedSol - pos.entrySol - (pos.feesSol || 0); // net of SOL network fees

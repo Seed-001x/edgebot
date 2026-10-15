@@ -240,6 +240,15 @@ export function startServer(bot, port) {
       if (!bot.ratchetShadowView) return json(res, 200, { enabled: false });
       return json(res, 200, bot.ratchetShadowView());
     }
+    if (req.method === 'GET' && u.pathname === '/callouts') {
+      // Callout Shadow Lab (record-only): would-call scorecard computed from
+      // the full callout_shadow.jsonl — per-trigger follower-PnL aggregates
+      // with readiness flags, per-day rows, the first-3-per-day simulation,
+      // and the newest would-calls with their scores. Live callouts stay
+      // governed by CALLOUTS_ENABLED; this endpoint never posts anything.
+      if (!bot.calloutCard) return json(res, 200, { enabled: false });
+      return json(res, 200, bot.calloutCard());
+    }
     if (req.method === 'GET' && u.pathname === '/reports') {
       return json(res, 200, (bot.journal.tradeReports || []).slice().reverse());
     }

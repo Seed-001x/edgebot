@@ -310,6 +310,7 @@ export function loadConfig(env = process.env) {
     ratchetFlowMinSellSol: num(env, 'RATCHET_FLOW_MIN_SELL_SOL', 1.0), // ...AND at least this much SOL of sells in the window (one whale taking profit is not an exit wave)
     ratchetStreamEvalMs: num(env, 'RATCHET_STREAM_EVAL_MS', 300), // stream judge v2 (user 2026-10-15): per-mint throttle for evaluating the SAME shadow judge on streamed prints as they land, instead of only when the 4s quote tick asks — RECORD-ONLY like the rest of the layer (ratchet_shadow.jsonl, kind 'would-fire-stream'); the live ratchet and the tick judge are untouched
     ratchetStreamVwapSec: num(env, 'RATCHET_STREAM_VWAP_SEC', 2), // ...the stream judge's price basis: SOL/token VWAP (Σsol/Σtokens) over this many seconds of prints, measured from the position's actual entry fill — a window holding fewer than 2 prints is NO opinion, so one dust print can neither set the peak nor fake a fade
+    calloutsEnabled: num(env, 'CALLOUTS_ENABLED', 0),     // live pump.fun callouts (user 2026-10-15: OFF — under the new Callout Rewards rules, follower PnL drives rewards and the current book's tailer numbers are negative; the entry + progress posts stay dark until this is flipped to 1). 0 = postCallout returns immediately (no auth, no LLM, no network) and both bot call sites skip it entirely. The Callout Shadow Lab (calloutLab.js) is separate: record-only, always on, unaffected by this knob.
     bleedPct: num(env, 'BLEED_PCT', 0.07),                 // bleed exit (user 2026-10-14, "Still-falling test — down 7%+ and not recovering"): past the prove-itself window, a position down at least this much on `move` AND still falling sells in full — the probation leash freed from the band (TAILOOR bled to -52% in ~6 min because nothing owned a falling coin that never sat inside the band at the stall deadline); 0 = off
     bleedMinAgeSec: num(env, 'BLEED_MIN_AGE_SEC', 180),    // ...the prove-itself window: before this age the older exits judge alone
     bleedLookbackSec: num(env, 'BLEED_LOOKBACK_SEC', 60),  // ..."still falling" = the current move at/below the move this long ago, judged on the position's own per-check move history; no reading at least ~45s old = no fire yet
@@ -469,6 +470,7 @@ export function validateConfig(cfg) {
   if (cfg.ratchetFlowMinSellSol < 0) errs.push('RATCHET_FLOW_MIN_SELL_SOL must be >= 0');
   if (cfg.ratchetStreamEvalMs < 50 || cfg.ratchetStreamEvalMs > 5000) errs.push('RATCHET_STREAM_EVAL_MS must be 50..5000');
   if (cfg.ratchetStreamVwapSec < 1 || cfg.ratchetStreamVwapSec > 30) errs.push('RATCHET_STREAM_VWAP_SEC must be 1..30');
+  if (cfg.calloutsEnabled < 0 || cfg.calloutsEnabled > 1) errs.push('CALLOUTS_ENABLED must be 0 or 1');
   if (cfg.bleedPct < 0 || cfg.bleedPct >= 1) errs.push('BLEED_PCT must be 0 (off) or between 0 and 1');
   if (cfg.bleedMinAgeSec < 0) errs.push('BLEED_MIN_AGE_SEC must be >= 0');
   if (cfg.bleedLookbackSec < 0) errs.push('BLEED_LOOKBACK_SEC must be >= 0');

@@ -157,10 +157,11 @@ export class WalletWatch {
    * deps: { cfg, dir, now, rpcFn, fetchViews, fetchCoin, fetchCandles,
    *         shadowGates(view, setup) -> {gates, gatePass}, noteMint, log, sets }
    */
-  constructor({ cfg, dir, now = Date.now, rpcFn = null, fetchViews = null, fetchCoin = null, fetchCandles = null, shadowGates = null, noteMint = null, log = console.log, sets = null }) {
+  constructor({ cfg, dir, now = Date.now, rpcFn = null, fetchViews = null, fetchCoin = null, fetchCandles = null, shadowGates = null, noteMint = null, onEvent = null, log = console.log, sets = null }) {
     this.cfg = cfg; this.dir = dir; this.now = now; this.log = log;
     this.rpcFn = rpcFn || ((m, p) => flowRpc(cfg.rpcUrls, m, p));
     this.fetchViews = fetchViews; this.shadowGates = shadowGates; this.noteMint = noteMint;
+    this.onEvent = onEvent; // optional observer tap (Callout Shadow Lab): fired with the event right after it is journaled — record-only, fail-silent
     this.fetchCoin = fetchCoin || defaultCoinFacts;
     this.fetchCandles = fetchCandles || defaultCandles;
     this.sets = sets || loadSets();
@@ -301,6 +302,7 @@ export class WalletWatch {
     };
     this.events.set(ev.id, ev);
     this._append({ t: 'ev', ev });
+    if (this.onEvent) try { this.onEvent(ev); } catch { /* observer */ }
     if (this.noteMint) try { this.noteMint(buy.mint, 'devlaunch'); } catch { /* observer */ }
     this.log(`[walletwatch] DEV LAUNCH ${ev.devName} ${sub} ${ev.symbol || buy.mint} (bought ${buy.sol.toFixed(2)} SOL) — gates would ${verdict.gatePass === false ? `block (${verdict.firstBlocker})` : verdict.gatePass === true ? 'pass' : 'n/a'}`);
   }
@@ -344,6 +346,7 @@ export class WalletWatch {
     };
     this.events.set(ev.id, ev);
     this._append({ t: 'ev', ev });
+    if (this.onEvent) try { this.onEvent(ev); } catch { /* observer */ }
     if (this.noteMint) try { this.noteMint(mint, 'confluence'); } catch { /* observer */ }
     this.log(`[walletwatch] CONFLUENCE ${ev.symbol || mint}: ${trig.clusters.length} entities (${names.join(', ')}) within ${this.cfg.conflWindowMin}m — gates would ${verdict.gatePass === false ? `block (${verdict.firstBlocker})` : verdict.gatePass === true ? 'pass' : 'n/a'}`);
   }

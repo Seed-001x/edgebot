@@ -324,15 +324,25 @@ export async function buildThesis(v, sig) {
   return fb;
 }
 
-// Follow-up posts. Pass sig.stillHolding = false after the bot sells so the post stays true.
-// Number-free like everything else — the gain is a stat and never renders.
-function progressThesis(v, sig) {
+// Follow-up posts. Number-free like everything else — the gain is a stat and
+// never renders. (The old "took profit … called it here first" variant for
+// after-the-sell posts was DELETED 2026-10-15 on the user's order: bragging
+// about an exit the followers didn't share is exactly what the new Callout
+// Rewards rules punish. A progress post now only ever says the coin is still
+// running — there is no other branch.)
+export function progressThesis(v, sig) {
   const sym = '$' + (v.symbol || '???').replace(/^\$/, '').toLowerCase();
-  if (sig.stillHolding === false) return `took profit on ${sym}. called it here first.`;
   return `${sym} still running since the call.`;
 }
 
-export async function postCallout(v, sig = {}) {
+/** Post a live callout to pump.fun. GATED (user 2026-10-15): live callouts are
+ *  OFF unless CALLOUTS_ENABLED=1 (cfg.calloutsEnabled, passed by the bot as
+ *  opts.enabled). When disabled this returns immediately — before auth, before
+ *  thesis generation — so a disabled bot spends zero LLM calls and makes zero
+ *  pump.fun requests. Defense in depth: the bot's call sites are gated too. */
+export async function postCallout(v, sig = {}, opts = {}) {
+  const enabled = opts.enabled !== undefined ? !!opts.enabled : process.env.CALLOUTS_ENABLED === '1';
+  if (!enabled) return { skipped: 'callouts-disabled' };
   const token = await auth();
   const isProgress = !!sig.progress;
   const draft = isProgress ? progressThesis(v, sig) : await buildThesis(v, sig);

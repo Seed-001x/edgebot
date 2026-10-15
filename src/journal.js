@@ -50,7 +50,7 @@ export class Journal {
   constructor(dir, { now = Date.now } = {}) {
     this.now = now;
     this.dir = dir;
-    this.f = { sig: path.join(dir, 'signals.jsonl'), out: path.join(dir, 'outcomes.jsonl'), trades: path.join(dir, 'trades.jsonl'), fb: path.join(dir, 'feedback.jsonl'), ticks: path.join(dir, 'ticks.jsonl'), manual: path.join(dir, 'manual_exits.jsonl'), reports: path.join(dir, 'trade_reports.jsonl'), rshadow: path.join(dir, 'ratchet_shadow.jsonl'), pend: path.join(dir, 'outcome_pending.json'), scan: path.join(dir, 'scans.jsonl') };
+    this.f = { sig: path.join(dir, 'signals.jsonl'), out: path.join(dir, 'outcomes.jsonl'), trades: path.join(dir, 'trades.jsonl'), fb: path.join(dir, 'feedback.jsonl'), ticks: path.join(dir, 'ticks.jsonl'), manual: path.join(dir, 'manual_exits.jsonl'), reports: path.join(dir, 'trade_reports.jsonl'), rshadow: path.join(dir, 'ratchet_shadow.jsonl'), pend: path.join(dir, 'outcome_pending.json'), scan: path.join(dir, 'scans.jsonl'), cshadow: path.join(dir, 'callout_shadow.jsonl') };
     this._pendDirty = false;   // outcome-tracking progress changed since the last save
     this._pendSavedAt = 0;
     try { fs.mkdirSync(dir, { recursive: true }); } catch { /* ignore */ }
@@ -158,6 +158,8 @@ export class Journal {
   manualExit(rec) { this.manual.push(rec); if (this.manual.length > KEEP) this.manual.shift(); this.append(this.f.manual, rec); return rec; }
   /** shadow ratchet flow judge record (would-fire / would-fire-stream / fire-quality / close completion) — observer only, append-only; the capped in-memory tail feeds the /ratchetshadow aggregates */
   ratchetShadow(rec) { this.ratchet.push(rec); if (this.ratchet.length > 500) this.ratchet.shift(); this.append(this.f.rshadow, rec); return rec; }
+  /** Callout Shadow Lab record (would-call / score) — append-only, observer only. Deliberately NO in-memory tail: the scorecard reads the full file from disk (14-day windows outgrow any sane cap), so nothing is kept here. */
+  calloutShadow(rec) { this.append(this.f.cshadow, rec); return rec; }
   /** attach the reason the human gave (see learn.js EXIT_REASONS) */
   tagExit(id, reason, note) {
     let m = this.manual.find(x => x.id === id);
