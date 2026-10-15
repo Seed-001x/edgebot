@@ -213,7 +213,7 @@ export class Journal {
       out.push({
         key: feedbackKeyOf(f), ts: f.ts, mint: f.mint, symbol: f.symbol, good: f.good, signalId: f.signalId || null, note: f.note || null,
         signal: sig ? {
-          id: sig.id, ts: sig.ts, symbol: sig.symbol, setup: sig.setup, decision: sig.decision, mc: sig.mc, price: sig.price,
+          id: sig.id, ts: sig.ts, symbol: sig.symbol, setup: sig.setup, decision: sig.decision, mc: sig.mc, price: sig.price, label: sig.label || null,
           out: sig.out && sig.out.done
             ? { done: true, r5: sig.out.r5 ?? null, r15: sig.out.r15 ?? null, r60: sig.out.r60 ?? null, maxRet: sig.out.maxRet ?? null, minRet: sig.out.minRet ?? null, partial: !!sig.out.partial }
             : { done: false },

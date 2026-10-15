@@ -571,7 +571,7 @@ export class Bot {
     try {
       this.evictBlacklisted(); // marked coins never even get priced, let alone signal
       const mints = [...new Set([...this.watch.keys(), ...this.positions.map(p => p.mint)])];
-      if (!mints.length) { try { await this.outcomeTick(this.now()); } catch { /* observer only */ } return; }
+      if (!mints.length) { try { await this.outcomeTick(this.now()); } catch { /* observer only */ } try { await this._flowRetryTick(this.now()); } catch { /* record-only retry */ } return; }
       const views = await this.d.fetchViews(mints);
       const n = this.now();
       // D4 (user 2026-10-13): market breadth — the share of sampled coins green on the hour —
@@ -631,6 +631,7 @@ export class Bot {
       // outcome tracking in flight that the trading poll did NOT just cover,
       // so checkpoints stop depending on watchlist residence.
       try { await this.outcomeTick(n); } catch { /* observer only */ }
+      try { await this._flowRetryTick(n); } catch { /* record-only retry */ }
       candidates.sort((a, b) => b.sig.strength - a.sig.strength);
       for (const c of candidates.slice(0, this.cfg.maxSignalsPerTick)) {
         this.lastSignal.set(c.v.address, this.now());
@@ -782,19 +783,71 @@ export class Bot {
    */
   async _evalFlow(mint, agg) {
     const n = this.now();
-    if (this.positions.some(p => p.mint === mint)) return;
-    if (n - (this.lastSignal.get(mint) || 0) < this.cfg.signalCooldownMin * 60000) return;
     const views = await this.d.fetchViews([mint]).catch(() => null);
     const v = views && views.get(mint);
-    if (!v) return;
+    if (!v) { this._queueFlowRetry(mint, agg, n); return; }
+    if (this.flowPending) this.flowPending.delete(mint);
     this.latest.set(mint, v); this.latestAt.set(mint, n); this.history.record(v, n);
     this.noteMint(mint, 'flow'); // keep sampling it so classic/churn detectors can judge it too
-    if (eligible(v, this.cfg, n).length) return; // same tradability floor the classic detectors apply
+    const metrics = { wallets: agg.wallets || [], maxSol: agg.maxSol || 0, count: agg.count || 0, kind: agg.kind || null };
+    // User (2026-10-15): a tracked wallet's buy must LAND on the signals feed
+    // whether or not the coin passes parameters — the guards below used to
+    // swallow triggers whole (no record at all, so the buy was invisible and
+    // its impact unmeasurable). Now a blocked trigger still journals a
+    // record-only signal (decision 'skipped', the blocker as its reason, the
+    // wallet label intact) so it shows on the feed and gets outcome-tracked.
+    // What proceeds still faces the exact same pipeline; nothing about buying
+    // changes — the gates judge, the record just always exists.
+    const blocked = [];
+    if (this.positions.some(p => p.mint === mint)) blocked.push('already holding this coin — buy recorded, not re-evaluated');
+    else if (n - (this.lastSignal.get(mint) || 0) < this.cfg.signalCooldownMin * 60000) blocked.push(`this coin was already signaled in the last ${this.cfg.signalCooldownMin}m — buy recorded, not re-evaluated`);
+    if (!blocked.length) { const el = eligible(v, this.cfg, n); if (el.length) blocked.push(...el); }
+    if (blocked.length) { this._recordFlowOnly(v, agg, metrics, blocked, n); return; }
     this.lastSignal.set(mint, n);
     this.stats.flow = this.stats.flow || { fires: 0 };
     this.stats.flow.fires++;
     console.log(`[flow] ${v.symbol} fired from wallet flow: ${agg.label}`);
-    await this.onSignal(v, { setup: 'flow', strength: agg.maxSol || 0, metrics: { wallets: agg.wallets || [], maxSol: agg.maxSol || 0, count: agg.count || 0, kind: agg.kind || null }, label: agg.label || null });
+    await this.onSignal(v, { setup: 'flow', strength: agg.maxSol || 0, metrics, label: agg.label || null });
+  }
+
+  /** Journal a flow buy that a pipeline guard kept out of evaluation (record-only). */
+  _recordFlowOnly(v, agg, metrics, reasons, n) {
+    this.stats.flow = this.stats.flow || { fires: 0 };
+    // One record-only entry per mint per cooldown window — a wallet dribbling
+    // buys into the same coin must not spam the feed.
+    this.flowOnlyAt = this.flowOnlyAt || new Map();
+    if (n - (this.flowOnlyAt.get(v.address) || 0) < this.cfg.signalCooldownMin * 60000) return;
+    this.flowOnlyAt.set(v.address, n);
+    this.journal.signal({ mint: v.address, symbol: v.symbol, setup: 'flow', decision: 'skipped', reasons, price: v.price, mc: v.mc, metrics, label: agg.label || null, fields: this._signalFields(v) });
+    this.stats.flow.recordOnly = (this.stats.flow.recordOnly || 0) + 1;
+    console.log(`[flow] ${v.symbol} recorded (not evaluated: ${reasons[0]}) — ${agg.label}`);
+  }
+
+  /** A flow trigger whose mint has no DexScreener view yet (a just-launched coin
+   *  often isn't indexed for the first seconds): queue it and retry for up to
+   *  5 minutes instead of dropping it silently. If no view ever appears the
+   *  mint can't be priced or outcome-tracked, so it is counted and dropped. */
+  _queueFlowRetry(mint, agg, n) {
+    this.flowPending = this.flowPending || new Map();
+    const cur = this.flowPending.get(mint);
+    if (cur) { cur.agg = agg; return; }
+    this.flowPending.set(mint, { agg, firstTs: n, nextAt: n + 20000 });
+  }
+
+  async _flowRetryTick(n) {
+    if (!this.flowPending || !this.flowPending.size) return;
+    for (const [mint, p] of [...this.flowPending]) {
+      if (n - p.firstTs > 5 * 60000) {
+        this.flowPending.delete(mint);
+        this.stats.flow = this.stats.flow || { fires: 0 };
+        this.stats.flow.noViewDropped = (this.stats.flow.noViewDropped || 0) + 1;
+        console.log(`[flow] ${String(mint).slice(0, 4)}… dropped — no market view within 5m of the wallet buy`);
+        continue;
+      }
+      if (n < p.nextAt) continue;
+      p.nextAt = n + 20000;
+      await this._evalFlow(mint, p.agg); // re-queues itself (same entry) if the view is still missing
+    }
   }
 
   async onSignal(v, sig) {
