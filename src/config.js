@@ -20,6 +20,14 @@ export function loadConfig(env = process.env) {
     maxPositions: num(env, 'MAX_POSITIONS', 5),
     dailyLossSol: num(env, 'DAILY_LOSS_SOL', 0),        // realized loss in a UTC day that halts new entries; 0 = disabled
     haltAfterCloses: num(env, 'HALT_AFTER_CLOSES', 0),  // one-shot: halt new entries after this many more closes; 0 = off
+    // Risk brake (user 2026-10-15, his rule: "after the next 3 L trade half... if 1 trade
+    // wipes out the whole .05 then halt after that"): LOSS_HALVE_N red closes counted from
+    // arming halve the trade size until /risk/reset lifts it (a win does NOT reset the
+    // count); a single close losing >= WIPE_HALT_FRAC of its stake writes the HALT latch
+    // after the close completes. 0 = that leg off.
+    lossHalveN: num(env, 'LOSS_HALVE_N', 3),            // red closes that halve the trade size
+    lossHalveFactor: num(env, 'LOSS_HALVE_FACTOR', 0.5), // size multiplier once the brake trips
+    wipeHaltFrac: num(env, 'WIPE_HALT_FRAC', 0.90),     // one close losing this fraction of its stake → HALT
     haltDownSol: num(env, 'HALT_DOWN_SOL', 0),          // balance halt: once armed (baseline = wallet equity at first check), halt if equity falls this much below the baseline; 0 = off. Set 0.09 by user 2026-10-13 for overnight — user corrected: BALANCE, not day P&L.
     // D4 cold-market streak pause (user 2026-10-13, his design over his agent's timer version):
     // N straight red closes pause new entries; the bot keeps scanning and resumes ITSELF only
@@ -388,6 +396,9 @@ export function validateConfig(cfg) {
   if (cfg.maxPositions < 1 || cfg.maxPositions > 10) errs.push('MAX_POSITIONS must be 1..10');
   if (cfg.dailyLossSol < 0) errs.push('DAILY_LOSS_SOL must be >= 0 (0 = disabled)');
   if (cfg.haltAfterCloses < 0) errs.push('HALT_AFTER_CLOSES must be >= 0');
+  if (cfg.lossHalveN < 0) errs.push('LOSS_HALVE_N must be >= 0');
+  if (cfg.lossHalveFactor <= 0 || cfg.lossHalveFactor > 1) errs.push('LOSS_HALVE_FACTOR must be between 0 and 1');
+  if (cfg.wipeHaltFrac < 0 || cfg.wipeHaltFrac > 1) errs.push('WIPE_HALT_FRAC must be between 0 and 1');
   if (cfg.haltDownSol < 0) errs.push('HALT_DOWN_SOL must be >= 0');
   if (cfg.killEquityFrac <= 0 || cfg.killEquityFrac >= 1) errs.push('KILL_EQUITY_FRAC must be between 0 and 1');
   if (cfg.fastPopWindowSec < 10 || cfg.fastPopWindowSec > 600) errs.push('FAST_POP_WINDOW_SEC must be 10..600');

@@ -20,6 +20,12 @@ export class Risk {
     if (this.s.streakPausedAt === undefined) this.s.streakPausedAt = null; // D4: when the streak pause began (ms) or null
     if (this.s.heatSince === undefined) this.s.heatSince = null; // D4: breadth has been at/above the heat line since (ms) or null
     if (this.s.lastBreadth === undefined) this.s.lastBreadth = null; // D4: latest breadth reading (0..1) for /state
+    // Risk brake (user 2026-10-15): fields absent from an older risk.json arm the rule
+    // fresh at first boot of the new code — only closes after that boot count.
+    if (this.s.brakeRed === undefined) this.s.brakeRed = 0; // red closes counted since arming
+    if (this.s.sizeHalved === undefined) this.s.sizeHalved = false; // size currently halved by the brake
+    if (this.s.brakeWipeHalted === undefined) this.s.brakeWipeHalted = false; // a wipe halt has fired
+    if (this.s.brakeWipeReason === undefined) this.s.brakeWipeReason = null;
     // arm the one-shot auto-halt at startup so "N more closes" counts from now, not from the first close
     if ((this.cfg.haltAfterCloses || 0) > 0 && this.s.haltArmedAt == null) {
       this.s.haltArmedAt = this.s.totalCloses || 0;
@@ -90,6 +96,23 @@ export class Risk {
     this.save();
   }
 
+  /** The risk brake's lift, wired into POST /risk/reset (the deliberate human reset):
+   *  the red-close counter zeroes and the size halving releases, so the rule re-arms
+   *  fresh. The wipe-halt flag is NOT cleared here — only /resume answers a halt. */
+  clearBrake() {
+    this.s.brakeRed = 0;
+    this.s.sizeHalved = false;
+    this.save();
+  }
+
+  /** Deliberate human resume acknowledges a wipe halt: clear its flag (the /resume
+   *  handler removes the HALT file itself, like the other latches). */
+  clearBrakeWipe() {
+    this.s.brakeWipeHalted = false;
+    this.s.brakeWipeReason = null;
+    this.save();
+  }
+
   /** D4 breadth feed (bot calls this every poll tick with the share of sampled coins whose
    *  chgH1 > 0 and how many coins reported). While streak-paused, resume requires: the
    *  minimum pause served, breadth at/above the heat line with enough coins reporting, held
@@ -151,10 +174,17 @@ export class Risk {
     if (!this.s.closed[mint] || ts > this.s.closed[mint]) { this.s.closed[mint] = ts; this.save(); }
   }
 
-  /** Position size: configured size, capped at maxPoolFraction of pool liquidity. */
+  /** The size new entries actually use: the configured size, halved while the risk
+   *  brake is tripped. Never changes a live position — sizeFor is entry-time only. */
+  effectiveTradeSol() {
+    if (!this.s.sizeHalved) return this.cfg.tradeSol;
+    return +((this.cfg.tradeSol || 0) * (this.cfg.lossHalveFactor || 1)).toFixed(6);
+  }
+
+  /** Position size: effective size, capped at maxPoolFraction of pool liquidity. */
   sizeFor(liqUsd, solUsd) {
     const poolCapSol = (liqUsd * this.cfg.maxPoolFraction) / (solUsd || 150);
-    return Math.max(0, Math.min(this.cfg.tradeSol, poolCapSol));
+    return Math.max(0, Math.min(this.effectiveTradeSol(), poolCapSol));
   }
 
   recordEntry(mint) {
@@ -165,10 +195,11 @@ export class Risk {
     this.save();
   }
 
-  recordClose(pnlSol, mint = null) {
+  recordClose(pnlSol, mint = null, entrySol = null) {
     this.rollDay();
     this.s.dayPnlSol += pnlSol;
     this.s.totalCloses = (this.s.totalCloses || 0) + 1;
+    const ev = { red: false, halvedNow: false, wipeNow: false }; // risk-brake events, for the caller's stats
     // D4 streak pause (user 2026-10-13): count straight red closes — a win resets the count,
     // a scratch (pnl == 0) leaves it untouched. At cfg.streakPauseN the pause latches and
     // canEnter blocks until noteBreadth proves the market hot again (or the user resumes).
@@ -188,6 +219,27 @@ export class Risk {
         this.s.haltArmedAt = null;
       }
     }
+    // Risk brake (user 2026-10-15): count red closes from arming — unlike the D4 streak,
+    // a win does NOT reset this counter. At LOSS_HALVE_N the size halves and stays halved
+    // until clearBrake (/risk/reset). Separately, a single close whose loss reaches
+    // WIPE_HALT_FRAC of its stake writes the HALT latch — written here, inside close
+    // processing, now that the close is final (the HALT_AFTER_CLOSES pattern); partial
+    // TP sells never reach recordClose, so they can never trip either leg.
+    if (pnlSol < 0) {
+      const hn = this.cfg.lossHalveN || 0;
+      if (hn > 0) {
+        ev.red = true;
+        this.s.brakeRed = (this.s.brakeRed || 0) + 1;
+        if (!this.s.sizeHalved && this.s.brakeRed >= hn) { this.s.sizeHalved = true; ev.halvedNow = true; }
+      }
+      const wf = this.cfg.wipeHaltFrac || 0;
+      if (wf > 0 && entrySol > 0 && pnlSol <= -wf * entrySol && !this.s.brakeWipeHalted) {
+        this.s.brakeWipeHalted = true;
+        this.s.brakeWipeReason = `wipe halt: one trade lost ${(-pnlSol).toFixed(4)} SOL of its ${(+entrySol).toFixed(4)} SOL stake (>= ${(wf * 100).toFixed(0)}%)`;
+        ev.wipeNow = true;
+        try { fs.writeFileSync(path.join(path.dirname(this.file || '.'), 'HALT'), String(this.now())); } catch {}
+      }
+    }
     if (mint) {
       const n = this.now();
       this.s.closed[mint] = n;
@@ -200,10 +252,11 @@ export class Risk {
       }
     }
     this.save();
+    return ev;
   }
 
   snapshot() {
     this.rollDay();
-    return { day: this.s.day, dayPnlSol: +this.s.dayPnlSol.toFixed(5), dailyLossSol: this.cfg.dailyLossSol, tradesLastHour: this.s.tradeTs.filter(t => this.now() - t < 3600000).length, startEquitySol: this.s.startEquitySol, killed: this.s.killed, killReason: this.s.killReason, haltDownSol: this.cfg.haltDownSol || 0, haltBalBaseline: this.s.haltBalBaseline, downHalted: this.s.downHalted, lossStreak: this.s.lossStreak || 0, streakPaused: this.s.streakPausedAt != null, streakPausedAt: this.s.streakPausedAt, lastBreadth: this.s.lastBreadth };
+    return { day: this.s.day, dayPnlSol: +this.s.dayPnlSol.toFixed(5), dailyLossSol: this.cfg.dailyLossSol, tradesLastHour: this.s.tradeTs.filter(t => this.now() - t < 3600000).length, startEquitySol: this.s.startEquitySol, killed: this.s.killed, killReason: this.s.killReason, haltDownSol: this.cfg.haltDownSol || 0, haltBalBaseline: this.s.haltBalBaseline, downHalted: this.s.downHalted, lossStreak: this.s.lossStreak || 0, streakPaused: this.s.streakPausedAt != null, streakPausedAt: this.s.streakPausedAt, lastBreadth: this.s.lastBreadth, brakeRed: this.s.brakeRed || 0, sizeHalved: !!this.s.sizeHalved, brakeWipeHalted: !!this.s.brakeWipeHalted, brakeWipeReason: this.s.brakeWipeReason || null };
   }
 }

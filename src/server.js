@@ -341,13 +341,15 @@ export function startServer(bot, port) {
       try { fs.unlinkSync(path.join(bot.cfg.dataDir, 'HALT')); } catch {}
       try { bot.risk.clearDownHalt(); } catch {}
       try { bot.risk.clearStreakPause(); } catch {}
+      try { bot.risk.clearBrakeWipe(); } catch {}
       return json(res, 200, { ok: true, halted: false });
     }
     if (req.method === 'POST' && u.pathname === '/risk/reset') {
       bot.risk.s.dayPnlSol = 0;
       bot.risk.s.day = new Date().toISOString().slice(0, 10);
+      try { bot.risk.clearBrake(); } catch {} // the deliberate reset also lifts the risk brake (counter + halving)
       bot.risk.save();
-      return json(res, 200, { ok: true, dayPnlSol: 0 });
+      return json(res, 200, { ok: true, dayPnlSol: 0, brakeRed: 0, sizeHalved: false });
     }
     if (req.method === 'GET' && u.pathname === '/ticks') {
       const mint = u.searchParams.get('mint') || '';

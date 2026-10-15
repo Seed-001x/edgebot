@@ -376,13 +376,27 @@ export class Bot {
     };
   }
 
+  /** Every full close (bot exit, reconcile, manual, admin) funnels through here exactly
+   *  once: risk.recordClose does the books, and its risk-brake events mirror into the
+   *  lazy stats.riskBrake counters. Partial TP sells never pass through — they are not
+   *  closes and never count toward the brake. */
+  _recordClose(pnl, mint, entrySol) {
+    const ev = this.risk.recordClose(pnl, mint, entrySol);
+    if (ev && (ev.red || ev.halvedNow || ev.wipeNow)) {
+      const rb = this.stats.riskBrake = this.stats.riskBrake || { redCounted: 0, halvings: 0, wipeHalts: 0 };
+      if (ev.red) rb.redCounted++;
+      if (ev.halvedNow) rb.halvings++;
+      if (ev.wipeNow) rb.wipeHalts++;
+    }
+  }
+
   // Admin removals go THROUGH the funnel too — a removed position gets its close record
   // (estimated P&L) instead of vanishing silently.
   adminDrop(p, reason) {
     const n = this.now();
     const pnl = p.lastValueSol != null ? (p.realizedSol || 0) + p.lastValueSol - p.entrySol - (p.feesSol || 0) : null;
     this.positions = this.positions.filter(x => x.id !== p.id);
-    if (pnl != null) this.risk.recordClose(pnl, p.mint);
+    if (pnl != null) this._recordClose(pnl, p.mint, p.entrySol);
     this.ensureClose(p, { id: p.id, mint: p.mint, symbol: p.symbol, setup: p.setup, entrySol: p.entrySol, pnlSol: pnl != null ? +pnl.toFixed(6) : null, estimated: true, pnlSource: 'estimate', heldMin: +((n - p.entryTs) / 60000).toFixed(1), reason, simulated: p.simulated, ts: n });
   }
 
@@ -449,7 +463,7 @@ export class Bot {
     if (chain) { pnl = chain.pnl; source = 'chain'; }
     else if (p.lastValueSol != null) { pnl = (p.realizedSol || 0) + p.lastValueSol - p.entrySol - (p.feesSol || 0); source = 'estimate'; }
     this.positions = this.positions.filter(x => x.id !== p.id);
-    if (pnl != null) this.risk.recordClose(pnl, p.mint);
+    if (pnl != null) this._recordClose(pnl, p.mint, p.entrySol);
     const heldMin = +((n - p.entryTs) / 60000).toFixed(1);
     const snapshot = await this._manualSnapshot(p, p.lastValueSol ?? null, n, pnl);
     // D1 follow-up: the real fill from the sell tx, when it can be read
@@ -1629,7 +1643,7 @@ export class Bot {
           if (chain <= 0n) {
             const pnl = pos.realizedSol - pos.entrySol - (pos.feesSol || 0);
             this.positions = this.positions.filter(p => p.id !== pos.id);
-            this.risk.recordClose(pnl, pos.mint);
+            this._recordClose(pnl, pos.mint, pos.entrySol);
             this.ensureClose(pos, { id: pos.id, mint: pos.mint, symbol: pos.symbol, setup: pos.setup, entrySol: pos.entrySol, exitSol: pos.realizedSol, pnlSol: +pnl.toFixed(6), heldMin: +((n - pos.entryTs) / 60000).toFixed(1), reason: 'reconciled unbooked sell (chain resync)', simulated: pos.simulated, ts: n });
             this.savePositions();
             return;
@@ -1780,7 +1794,7 @@ export class Bot {
       const pnl = pos.realizedSol - pos.entrySol - (pos.feesSol || 0); // net of SOL network fees
       if (this.cfg.closeEmptyAccounts && this.exec.closeEmptyAccounts) this.exec.closeEmptyAccounts(pos.mint).catch(e => this.err('close account', e));
       this.positions = this.positions.filter(p => p.id !== pos.id);
-      this.risk.recordClose(pnl, pos.mint);
+      this._recordClose(pnl, pos.mint, pos.entrySol);
       // D1: the final sell's real fill (SOL per whole token, from the executed
       // quote's solOut ÷ tokens actually sold) rides on the close record.
       const soldWhole = pos.decimals != null && sold > 0n ? Number(sold) / 10 ** pos.decimals : null;
@@ -1859,7 +1873,7 @@ export class Bot {
     const snapshot = await this._manualSnapshot(pos, valueSol, n, pnl);
     const rec = this.journal.manualExit({ id: pos.id, mint: pos.mint, symbol: pos.symbol, ts: n, how, entry: pos.entry || null, heldMin: +((n - pos.entryTs) / 60000).toFixed(1), peakRatio: pos.peakRatio, bundleScore: pos.bundleScore || 0, pnlSolEstimate: +estPnl.toFixed(6), pnlSol: chain ? +pnl.toFixed(6) : null, pnlSource: chain ? 'chain' : 'estimate', reason: null, snapshot, exitFillSol: hasFill ? ff.exitFillSol : null, fillSource: hasFill ? ff.fillSource : null });
     this.positions = this.positions.filter(p => p.id !== pos.id);
-    this.risk.recordClose(pnl, pos.mint);
+    this._recordClose(pnl, pos.mint, pos.entrySol);
     this.ensureClose(pos, { manual: true, id: pos.id, mint: pos.mint, symbol: pos.symbol, setup: pos.setup, entrySol: pos.entrySol, pnlSol: +pnl.toFixed(6), estimated: !chain, pnlSource: chain ? 'chain' : 'estimate', heldMin: rec.heldMin, reason: `manual exit (${how})`, simulated: pos.simulated, entry: pos.entry, ts: n, ...(hasFill ? { exitFillSol: ff.exitFillSol, exitFillUsd: ff.exitFillUsd, fillSource: ff.fillSource, sellTxFeeSol: ff.sellTxFeeSol, sellSigs: ff.sellSigs, feesSol: ff.feesSol, feesSource: ff.feesSource } : {}) });
     // D1 paired shadow exit: keep judging this position's remainder virtually
     // (its manual side prices off the REAL fill when one was read)
@@ -1880,7 +1894,7 @@ export class Bot {
       modeWarning: this.cfg.modeWarning,
       halted: this.halted(),
       risk: this.risk.snapshot(),
-      limits: { tradeSol: this.cfg.tradeSol, maxPositions: this.cfg.maxPositions, dailyLossSol: this.cfg.dailyLossSol, maxTradesPerHour: this.cfg.maxTradesPerHour, tp1Pct: this.cfg.tp1Pct, tp1Frac: this.cfg.tp1Frac },
+      limits: { tradeSol: this.risk.effectiveTradeSol(), maxPositions: this.cfg.maxPositions, dailyLossSol: this.cfg.dailyLossSol, maxTradesPerHour: this.cfg.maxTradesPerHour, tp1Pct: this.cfg.tp1Pct, tp1Frac: this.cfg.tp1Frac },
       watchlist: this.watch.size,
       pairedShadow: this.paired ? { pending: this.paired.pending.size, done: this.paired.done.length } : { pending: 0, done: 0 },
       positions: this.positions.map(p => ({ id: p.id, symbol: p.symbol, mint: p.mint, setup: p.setup, entrySol: p.entrySol, remainingFrac: p.remainingFrac, peakRatio: +(p.peakRatio || 1).toFixed(2), heldMin: +((this.now() - p.entryTs) / 60000).toFixed(1), simulated: p.simulated, noTp: !!p.noTp, protected: p.protected || null })),
