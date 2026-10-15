@@ -775,6 +775,12 @@ export class Bot {
     try { return this.journal.resignalCard(); } catch { return { enabled: false }; }
   }
 
+  /** Read-only /deadentry payload — the Dead-Entry Veto study scorecard
+   *  (see deadEntryLab.js; ~30s cached in the journal). */
+  deadEntryCard() {
+    try { return this.journal.deadEntryCard(); } catch { return { enabled: false }; }
+  }
+
   /** Flow-Exit Watcher feed (record-only): the position's own mark state in
    *  the same measure the exit stack judges — the realizable move of the
    *  remaining position vs its entry round-trip, off the last live sell-quote
@@ -1122,9 +1128,21 @@ export class Bot {
   // by src/signalFields.js from the coin's own samples + this process's
   // RugCheck holder reads. Fail-silent: an error yields null and the record
   // simply omits the block; nothing anywhere branches on these values.
-  _signalFields(v) {
+  _signalFields(v, metrics = null) {
     let f = null;
-    try { f = computeSignalFields({ samples: this.history.get(v.address), view: v, holders: holderSamples(v.address), now: this.now(), veto: { distPct: this.cfg.peakVetoDistPct, ageSec: this.cfg.peakVetoAgeSec } }); }
+    // Dead-entry study stamp: the signal's own 5m volume USD as detection
+    // judged it rides in the signal metrics (classic pop: the view figure;
+    // fast pop: the stream figure converted to USD at fire time). One
+    // fast-pop wart to guard: when that SOL/USD conversion failed, metrics
+    // still carries the raw stream SOL number — a SOL figure must never be
+    // stamped as USD volume, so it reads as unknown and the view's figure
+    // (or null) stands instead. Record-only either way.
+    let mVol = null;
+    if (metrics && Number.isFinite(metrics.volM5)) {
+      mVol = metrics.volM5;
+      if (metrics.fastStream && Number.isFinite(metrics.streamVolSol) && mVol === metrics.streamVolSol) mVol = null;
+    }
+    try { f = computeSignalFields({ samples: this.history.get(v.address), view: v, holders: holderSamples(v.address), now: this.now(), veto: { distPct: this.cfg.peakVetoDistPct, ageSec: this.cfg.peakVetoAgeSec }, volM5: mVol }); }
     catch { f = null; }
     // Peak-veto shadow counters (record-only): one count per journaled signal —
     // stamped when the samples supported the peak stamps, unstamped when they
@@ -1154,7 +1172,7 @@ export class Bot {
   }
 
   skip(v, sig, reasons, warnings = [], gates = null, gatePass = null, shadowGates = null, shadowGatePass = null) {
-    this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'skipped', reasons, price: v.price, mc: v.mc, metrics: sig.metrics, warnings, label: sig.label || null, gates, gatePass, fields: this._signalFields(v), shadowGates, shadowGatePass });
+    this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'skipped', reasons, price: v.price, mc: v.mc, metrics: sig.metrics, warnings, label: sig.label || null, gates, gatePass, fields: this._signalFields(v, sig.metrics), shadowGates, shadowGatePass });
   }
 
   // Setups currently in shadow-only mode (user 2026-10-14, forward plan step 1b):
@@ -1167,7 +1185,7 @@ export class Bot {
   shadow(v, sig, gates = null, gatePass = null) {
     this.stats.shadowSignals = this.stats.shadowSignals || {};
     this.stats.shadowSignals[sig.setup] = (this.stats.shadowSignals[sig.setup] || 0) + 1;
-    const sigId = this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'shadow', reasons: [`shadow: ${sig.setup} is shadow-only — logged + outcome-tracked, no buy`], price: v.price, mc: v.mc, metrics: sig.metrics, warnings: [], label: sig.label || null, gates, gatePass, fields: this._signalFields(v) });
+    const sigId = this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'shadow', reasons: [`shadow: ${sig.setup} is shadow-only — logged + outcome-tracked, no buy`], price: v.price, mc: v.mc, metrics: sig.metrics, warnings: [], label: sig.label || null, gates, gatePass, fields: this._signalFields(v, sig.metrics) });
     // Trade-grade shadow (record-only, user 2026-10-14): a shadow signal that
     // PASSED its gate evaluation opens a VIRTUAL position at the signal
     // price, managed by the real exit stack (src/shadowTrades.js) — the
@@ -1346,7 +1364,7 @@ export class Bot {
     this.flowOnlyAt = this.flowOnlyAt || new Map();
     if (n - (this.flowOnlyAt.get(v.address) || 0) < this.cfg.signalCooldownMin * 60000) return;
     this.flowOnlyAt.set(v.address, n);
-    this.journal.signal({ mint: v.address, symbol: v.symbol, setup: 'flow', decision: 'skipped', reasons, price: v.price, mc: v.mc, metrics, label: agg.label || null, fields: this._signalFields(v) });
+    this.journal.signal({ mint: v.address, symbol: v.symbol, setup: 'flow', decision: 'skipped', reasons, price: v.price, mc: v.mc, metrics, label: agg.label || null, fields: this._signalFields(v, metrics) });
     this.stats.flow.recordOnly = (this.stats.flow.recordOnly || 0) + 1;
     console.log(`[flow] ${v.symbol} recorded (not evaluated: ${reasons[0]}) — ${agg.label}`);
   }
@@ -1658,7 +1676,7 @@ export class Bot {
         this.lastCallout = { ok: false, error: e.message, symbol: v.symbol, ts: Date.now() };
       });
     }
-    this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'taken', reasons: [], price: v.price, mc: v.mc, metrics: { ...sig.metrics, roundTrip: +rt.ratio.toFixed(3), sizeSol: size }, warnings: g.warnings, label: sig.label || null, gates: checks, gatePass: g.pass, fields: this._signalFields(v) });
+    this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'taken', reasons: [], price: v.price, mc: v.mc, metrics: { ...sig.metrics, roundTrip: +rt.ratio.toFixed(3), sizeSol: size }, warnings: g.warnings, label: sig.label || null, gates: checks, gatePass: g.pass, fields: this._signalFields(v, sig.metrics) });
     this.journal.trade({ type: 'open', id: pos.id, mint: pos.mint, symbol: pos.symbol, setup: pos.setup, entrySol: pos.entrySol, sig: fill.sig, simulated: fill.simulated, ts: n, stamp: pos.stamp, tokensRaw: fill.tokensRaw, entryFillSol: pos.entryFillSol, entryFillUsd: pos.entryFillSol != null && solUsd > 0 ? +(pos.entryFillSol * solUsd).toFixed(10) : null });
     // Flow-Exit Watcher (record-only): a flow-triggered entry starts a watch
     // on the wallet whose buy nominated it — its trim/exit get journaled and

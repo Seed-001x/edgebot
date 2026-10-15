@@ -257,6 +257,16 @@ export function startServer(bot, port) {
       if (!bot.resignalCard) return json(res, 200, { enabled: false });
       return json(res, 200, bot.resignalCard());
     }
+    if (req.method === 'GET' && u.pathname === '/deadentry') {
+      // Dead-Entry Veto study (record-only): every pop signal's stamp —
+      // its own 5m volume + buy velocity and the would-block verdicts at
+      // four volume lines and a 30/min velocity line — folded against the
+      // signals' forward outcomes, vetoed vs passed, split into time
+      // halves. Nothing gates on any of it; the card reports progress
+      // toward the judging bar (>=300 vetoed + >=14 days).
+      if (!bot.deadEntryCard) return json(res, 200, { enabled: false });
+      return json(res, 200, bot.deadEntryCard());
+    }
     if (req.method === 'GET' && u.pathname === '/flowexits') {
       // Flow-Exit Watcher (record-only): for flow-triggered entries, whether
       // the wallet that took the bot in exited first, how long it held, what

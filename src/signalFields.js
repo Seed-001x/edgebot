@@ -52,9 +52,35 @@
 //                         rollover measurable on every signal so a veto can
 //                         be scored before it is ever made real: NO gate,
 //                         detector or sizing path reads any of the three.
+//   volM5 / buyVel / deadEntryVeto / buyVelBlock30 — the dead-entry veto
+//                         study stamps (user GO 2026-10-15, off the Job 2d
+//                         separator analysis): the signal's own 5m volume in
+//                         USD (the figure detection itself judged on — the
+//                         signal metrics' volM5 when the caller carries it,
+//                         else the view's) and the buy velocity (the same
+//                         value as buyVelPerMin, restated so the stamp is
+//                         self-contained for re-scoring), plus would-block
+//                         verdicts at FOUR volume lines ($15k / $17.5k / $20k
+//                         / $25k — the whole curve is shadowed because the
+//                         in-sample candidate at $17.5k flipped sign against
+//                         $15k over a $2.5k gap, i.e. it was fit to the data)
+//                         and at a 30/min buy-velocity line. Job 2d found ten
+//                         entry-time features at coin-flip separation and
+//                         only immediate activity intensity (volM5, buyVel)
+//                         separating at all. Tri-state discipline, same as
+//                         babyPool: a missing volM5 leaves ALL FOUR verdicts
+//                         null — unknown never reads as block or pass — and a
+//                         missing buyVel leaves buyVelBlock30 null. Values
+//                         ride along verbatim so any threshold can be
+//                         re-scored later from the journal alone. NOTHING
+//                         branches on any of it: no gate, detector, sizing or
+//                         exit path reads these fields; the /deadentry
+//                         scorecard is the only consumer.
 
 export const GRAD_MC_USD = 69000; // nominal pump.fun graduation market cap (USD)
 export const BABY_POOL_MAX_MIN = 15; // baby-pool band ceiling (min) from the 2026-10-14 audit
+export const DEAD_ENTRY_THRESHOLDS_USD = [15000, 17500, 20000, 25000]; // dead-entry veto curve (USD 5m volume)
+export const BUY_VEL_BLOCK_PER_MIN = 30; // dead-entry study's buy-velocity line (buys/min)
 
 // Minimum evidence per field (below → null):
 export const FIELDS_MIN = {
@@ -75,9 +101,12 @@ const round = (v, d) => (Number.isFinite(v) ? Math.round(v * 10 ** d) / 10 ** d 
  * @param now      signal time (ms)
  * @param veto     optional shadow-veto lines { distPct, ageSec } — when given, a
  *                 peakVeto verdict block is computed from the peak stamps (record-only)
+ * @param volM5    optional: the signal's own 5m volume USD as detection judged
+ *                 it (the signal metrics figure). Wins over the view's volM5
+ *                 when finite; null/absent falls back to the view.
  */
-export function computeSignalFields({ samples = [], view = null, holders = [], now = Date.now(), veto = null } = {}) {
-  const out = { holderGrowthPerMin: null, holderGrowthPctPerMin: null, curveFillPctPerMin: null, buyVelPerMin: null, poolAgeMin: null, babyPool: null, distFromPeakPct: null, peakAgeSec: null, peakVeto: null };
+export function computeSignalFields({ samples = [], view = null, holders = [], now = Date.now(), veto = null, volM5 = null } = {}) {
+  const out = { holderGrowthPerMin: null, holderGrowthPctPerMin: null, curveFillPctPerMin: null, buyVelPerMin: null, poolAgeMin: null, babyPool: null, distFromPeakPct: null, peakAgeSec: null, peakVeto: null, volM5: null, buyVel: null, deadEntryVeto: null, buyVelBlock30: null };
 
   // ---- pool age / baby-pool tag (view's pairCreatedAt; no samples needed) ----
   if (view && Number.isFinite(view.createdAt) && view.createdAt > 0) {
@@ -139,6 +168,19 @@ export function computeSignalFields({ samples = [], view = null, holders = [], n
         distPct: d, ageSec: a,
       };
     }
+  }
+
+  // ---- dead-entry veto study stamps (record-only; see header) ----
+  {
+    let vol = null;
+    if (Number.isFinite(volM5) && volM5 >= 0) vol = volM5;
+    else if (view && Number.isFinite(view.volM5) && view.volM5 >= 0) vol = view.volM5;
+    out.volM5 = vol != null ? round(vol, 2) : null;
+    out.buyVel = out.buyVelPerMin;
+    const vetoMap = {};
+    for (const t of DEAD_ENTRY_THRESHOLDS_USD) vetoMap[`wouldBlock${t}`] = vol != null ? vol < t : null;
+    out.deadEntryVeto = vetoMap;
+    out.buyVelBlock30 = out.buyVelPerMin != null ? out.buyVelPerMin < BUY_VEL_BLOCK_PER_MIN : null;
   }
 
   return out;

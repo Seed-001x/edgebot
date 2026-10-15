@@ -26,6 +26,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { mean, median, round } from './util.js';
 import { pickResignalMark, verdictOf, buildResignalCard } from './resignalLab.js';
+import { foldStampedPopSignals, buildDeadEntryCard } from './deadEntryLab.js';
 
 const CPS = [5, 15, 60];          // minutes
 const EXPIRE_MIN = 90;
@@ -35,6 +36,12 @@ function readTail(file, n) {
   try {
     const lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean);
     return lines.slice(-n).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+  } catch { return []; }
+}
+
+function readAll(file) {
+  try {
+    return fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
   } catch { return []; }
 }
 
@@ -219,6 +226,22 @@ export class Journal {
   resignalCard() {
     const outcomeOf = (id) => { const s = id ? this.byId.get(id) : null; return s && s.out && s.out.done ? s.out : null; };
     return { enabled: true, ...buildResignalCard(this.resignalRecords(), outcomeOf) };
+  }
+
+  /** Read-only /deadentry payload (record-only study, user GO 2026-10-15):
+   *  the dead-entry veto stamps folded against forward outcomes. Computed
+   *  from the FULL signals + outcomes files — the judging window spans
+   *  >= 14 days, past the in-memory KEEP tail — with a ~30s cache (the
+   *  callout lab's pattern). Outcomes are appended synchronously by
+   *  finish(), so the file fold is current; still-tracking signals fold
+   *  as pending, never as scored zeros. */
+  deadEntryCard() {
+    const n = this.now();
+    if (this._deCard && n - this._deCardTs < 30000) return this._deCard;
+    const rows = foldStampedPopSignals(readAll(this.f.sig), readAll(this.f.out));
+    const card = buildDeadEntryCard(rows, n);
+    this._deCard = card; this._deCardTs = n;
+    return card;
   }
   /** attach the reason the human gave (see learn.js EXIT_REASONS) */
   tagExit(id, reason, note) {
