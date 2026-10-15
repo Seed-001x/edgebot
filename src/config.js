@@ -375,6 +375,16 @@ export function loadConfig(env = process.env) {
     tpTrailPct: num(env, 'TP_TRAIL_PCT', 0.25),           // after TP1, trail the rest this far below its peak (hard floor at entry)
     tp2RejectZone: num(env, 'TP2_REJECT_ZONE', 0.80),     // middle stage: peak net gain at/above this = it reached for the TP2 mark (user 2026-10-13)
     tp2RejectDrop: num(env, 'TP2_REJECT_DROP', 0.10),     // ...and this far off that peak without converting = rejected → sell the remainder (zone 0 = off)
+    // Two-path exit redesign (user 2026-10-15, variant c): at TP1 the position is classified by the
+    // TP1 sell's realized gain — [modestMinPct, modestMaxPct] → MODEST: the remainder skips the middle
+    // trail / generic trail and rides to the modestTargetPct split under the kill zone; above the band
+    // → LADDER (today's stack, unchanged); below the band → LADDER plus the kill-zone overlay (4e).
+    modestMinPct: num(env, 'MODEST_MIN_PCT', 0.20),       // TP1 fire at/above this net gain can classify modest
+    modestMaxPct: num(env, 'MODEST_MAX_PCT', 0.40),       // ...and at/below this (a fire above it = ladder)
+    modestTargetPct: num(env, 'MODEST_TARGET_PCT', 0.50), // modest remainder's split target on `move` (0 = target off: the remainder rides the kill zone / downside stack only)
+    modestSplitBankFrac: num(env, 'MODEST_SPLIT_BANK_FRAC', 0.6667), // at the target, bank this fraction OF THE REMAINDER; the surviving slice converts to the ladder path
+    killZoneFloorPct: num(env, 'KILL_ZONE_FLOOR_PCT', 0.10), // kill zone floor: the remainder's `move` at/below 1 + this (once armed) enters the zone (0 = zone off)
+    killZoneArmMult: num(env, 'KILL_ZONE_ARM_MULT', 1.25),   // ...the zone arms only once the post-TP1 peak `move` reaches this multiple of entry — before that the bleed/leash own the downside
     lockArm: num(env, 'PROFIT_LOCK_ARM', 0.15),           // once up +15% or more after fees...
     lockKeep: num(env, 'PROFIT_LOCK_KEEP', 0.5),          // ...sell the rest if it falls below half of its best gain (0 = off)
     trailArm: num(env, 'TRAIL_ARM', 1.00),
@@ -512,6 +522,12 @@ export function validateConfig(cfg) {
   if (cfg.tpTrailPct < 0 || cfg.tpTrailPct >= 1) errs.push('TP_TRAIL_PCT must be between 0 and 1');
   if (cfg.tp2RejectZone < 0 || cfg.tp2RejectZone > 5) errs.push('TP2_REJECT_ZONE must be between 0 and 5');
   if (cfg.tp2RejectDrop < 0 || cfg.tp2RejectDrop >= 0.9) errs.push('TP2_REJECT_DROP must be between 0 and 0.9');
+  if (cfg.modestMinPct < 0 || cfg.modestMinPct >= 1) errs.push('MODEST_MIN_PCT must be between 0 and 1');
+  if (cfg.modestMaxPct < cfg.modestMinPct || cfg.modestMaxPct >= 2) errs.push('MODEST_MAX_PCT must be >= MODEST_MIN_PCT and below 2');
+  if (cfg.modestTargetPct < 0 || cfg.modestTargetPct > 5) errs.push('MODEST_TARGET_PCT must be between 0 and 5 (0 = off)');
+  if (cfg.modestSplitBankFrac <= 0 || cfg.modestSplitBankFrac >= 1) errs.push('MODEST_SPLIT_BANK_FRAC must be between 0 and 1 (exclusive)');
+  if (cfg.killZoneFloorPct < 0 || cfg.killZoneFloorPct >= 1) errs.push('KILL_ZONE_FLOOR_PCT must be 0 (off) or between 0 and 1');
+  if (cfg.killZoneArmMult < 1 || cfg.killZoneArmMult > 10) errs.push('KILL_ZONE_ARM_MULT must be between 1 and 10');
   if (cfg.stallBandPct < -0.5 || cfg.stallBandPct > 1) errs.push('STALL_BAND_PCT must be between -0.5 and 1 (breakout bar above entry for the entry stall)');
   if (cfg.stallBandUpPct < 0 || cfg.stallBandUpPct > 1) errs.push('STALL_BAND_UP_PCT must be between 0 and 1 (upside edge of the entry-stall dead zone)');
   if (cfg.stallProbationSec < 0) errs.push('STALL_PROBATION_SEC must be >= 0 (0 = probation off, sell at the stall deadline)');

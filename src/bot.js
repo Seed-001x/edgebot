@@ -244,6 +244,7 @@ export class Bot {
       if (full.exitFillSol === undefined) full.exitFillSol = null;
       if (full.exitFillUsd === undefined) full.exitFillUsd = null;
       if (full.feesSol === undefined) { full.feesSol = +((pos.feesSol || 0)).toFixed(6); full.feesSource = 'calibratedTxFees'; }
+      if (full.path === undefined) full.path = pos.pathClass ?? null; // two-path class (user 2026-10-15): the 30-position judging sample reads it off the close
       if (full.pnlPct === undefined) full.pnlPct = full.pnlSol != null && full.entrySol > 0 ? +(full.pnlSol / full.entrySol * 100).toFixed(2) : null;
     } catch { /* record enrichment must never disturb the close itself */ }
     this.journal.trade(full);
@@ -417,8 +418,9 @@ export class Bot {
 
   // PROTECT switch (user 2026-10-15, "just the stop loss… no ratchet", "no SL until I
   // say"): a one-time, per-position flag set via POST /protect. While set, exits.js
-  // skips ONLY that position's stop-loss family and break-even ratchet; everything
-  // else — bleed, probation, stall, trails, the TP ladder — judges as normal. The
+  // skips ONLY that position's stop-loss family, break-even ratchet and kill zone
+  // (the redesign's one-rule scope widening); everything else — bleed, probation,
+  // stall, trails, the TP ladder, the modest target — judges as normal. The
   // flag lives ON the position record (persisted by savePositions, so it survives
   // restarts), holds for the life of the position with no expiry, and clears only
   // when the position closes (the record goes with it — a rebuy starts unprotected)
@@ -445,8 +447,13 @@ export class Bot {
     if (!p) return null;
     if (!p.protected) return false;
     delete p.protected;
+    // Two-path redesign (user 2026-10-15): the kill zone re-arms FRESH on
+    // unprotect, like the stop and the ratchet — its record resets here so no
+    // window or counted entry can survive from the protected window; arming
+    // re-derives from the live post-TP1 peak on the next judged check.
+    p.killZone = null;
     this.savePositions();
-    console.log(`[protect] ${p.symbol} unprotected — stop-loss + ratchet re-armed`);
+    console.log(`[protect] ${p.symbol} unprotected — stop-loss + ratchet + kill zone re-armed`);
     return p;
   }
 
@@ -1773,6 +1780,8 @@ export class Bot {
     if ('probationSince' in decision) pos.probationSince = decision.probationSince;
     if ('moveHist' in decision) pos.moveHist = decision.moveHist;
     if ('exitPending' in decision) pos.exitPending = decision.exitPending;
+    if ('killZone' in decision) pos.killZone = decision.killZone;
+    if ('postTp1PeakMove' in decision) pos.postTp1PeakMove = decision.postTp1PeakMove;
     // fail-safe confirmation outcomes (user 2026-10-14): count the windows that held to a
     // sell vs the triggers that recovered and were cancelled — the layer's report card.
     if (decision.exitConfirmEvents && decision.exitConfirmEvents.length) {
@@ -1780,6 +1789,19 @@ export class Bot {
       for (const ev of decision.exitConfirmEvents) {
         if (ev.type === 'confirmed') { this.stats.exitConfirm.confirmed++; console.log(`[exit-confirm] ${pos.symbol}: ${ev.kind} breakdown held through the ${this.cfg.exitConfirmSec}s window — selling`); }
         else if (ev.type === 'cancelled') { this.stats.exitConfirm.cancelled++; console.log(`[exit-confirm] ${pos.symbol}: ${ev.kind} trigger recovered inside the window — pending sell cancelled`); }
+      }
+    }
+    // Two-path redesign (user 2026-10-15): kill-zone lifecycle counts — arming,
+    // lapse fires, recovery cancels and instant re-entry kills, across modest
+    // remainders and overlay ladder remainders alike (the class rides the
+    // journal records, so the two stay separable in the sample).
+    if (decision.killzoneEvents && decision.killzoneEvents.length) {
+      this.stats.killzone = this.stats.killzone || { armed: 0, fired: 0, cancelled: 0, reentryKills: 0 };
+      for (const ev of decision.killzoneEvents) {
+        if (ev.type === 'armed') { this.stats.killzone.armed++; console.log(`[killzone] ${pos.symbol}: zone armed (post-TP1 peak reached ${this.cfg.killZoneArmMult}x)`); }
+        else if (ev.type === 'fired') this.stats.killzone.fired++;
+        else if (ev.type === 'cancelled') this.stats.killzone.cancelled++;
+        else if (ev.type === 'reentry') this.stats.killzone.reentryKills++;
       }
     }
     // PROTECT switch (user 2026-10-15): count the checks where protection suppressed
@@ -1888,9 +1910,35 @@ export class Bot {
     pos.realizedSol += res.solOut;
     pos.feesSol = (pos.feesSol || 0) + (this.cfg.txFeeSol || 0);
     this.stats.exits++;
-    if (decision.tp1) { pos.tp1Done = true; pos.remainingFrac *= (1 - decision.fraction); }
+    if (decision.tp1) {
+      pos.tp1Done = true; pos.remainingFrac *= (1 - decision.fraction);
+      // Two-path classification (user 2026-10-15): exits.js stamped the class from
+      // the TP1 fire's realized gain — persist it on the position (the journal
+      // records below pick it up via pos.pathClass) and count modest classifications.
+      if (decision.pathClass) {
+        pos.pathClass = decision.pathClass;
+        pos.killZoneOverlay = !!decision.killZoneOverlay;
+        if (decision.pathClass === 'modest') {
+          this.stats.modestPath = this.stats.modestPath || { classified: 0, targetHits: 0, splits: 0 };
+          this.stats.modestPath.classified++;
+        }
+        console.log(`[paths] ${pos.symbol}: TP1 classified ${decision.pathClass}${pos.killZoneOverlay ? ' + kill-zone overlay' : ''}`);
+      }
+    }
+    if (decision.modestSplit) {
+      // The modest target banked modestSplitBankFrac of the remainder; the
+      // surviving slice converts to the ladder path from this moment — TP2, the
+      // trails and the moonbag judge it as a ladder remainder from here on.
+      pos.pathClass = 'ladder';
+      pos.splitDone = true;
+      pos.remainingFrac *= (1 - decision.fraction);
+      this.stats.modestPath = this.stats.modestPath || { classified: 0, targetHits: 0, splits: 0 };
+      this.stats.modestPath.targetHits++;
+      this.stats.modestPath.splits++;
+      console.log(`[paths] ${pos.symbol}: modest target hit — remainder split banked, slice converted to ladder`);
+    }
     if (decision.tp2) { pos.tp2Done = true; pos.remainingFrac *= (1 - decision.fraction); }
-    this.journal.trade({ type: 'sell', id: pos.id, mint: pos.mint, symbol: pos.symbol, fraction: decision.fraction, solOut: res.solOut, reason: decision.reason, sig: res.sig, simulated: res.simulated, ts: n });
+    this.journal.trade({ type: 'sell', id: pos.id, mint: pos.mint, symbol: pos.symbol, fraction: decision.fraction, solOut: res.solOut, reason: decision.reason, sig: res.sig, simulated: res.simulated, ts: n, path: pos.pathClass || undefined });
     // Callout Shadow Lab (record-only): a banked TP is a would-call moment —
     // journaled off the EXECUTED sell above, never off a decision alone.
     if (decision.tp1) this.calloutLab.record({ trigger: 'tp1', ts: n, mint: pos.mint, symbol: pos.symbol, v, mc: v.mc ?? null, setup: pos.setup, source: 'position', holding: true, linkId: pos.id }).catch(() => {});
@@ -2003,7 +2051,7 @@ export class Bot {
       limits: { tradeSol: this.risk.effectiveTradeSol(), maxPositions: this.cfg.maxPositions, dailyLossSol: this.cfg.dailyLossSol, maxTradesPerHour: this.cfg.maxTradesPerHour, tp1Pct: this.cfg.tp1Pct, tp1Frac: this.cfg.tp1Frac },
       watchlist: this.watch.size,
       pairedShadow: this.paired ? { pending: this.paired.pending.size, done: this.paired.done.length } : { pending: 0, done: 0 },
-      positions: this.positions.map(p => ({ id: p.id, symbol: p.symbol, mint: p.mint, setup: p.setup, entrySol: p.entrySol, remainingFrac: p.remainingFrac, peakRatio: +(p.peakRatio || 1).toFixed(2), heldMin: +((this.now() - p.entryTs) / 60000).toFixed(1), simulated: p.simulated, noTp: !!p.noTp, protected: p.protected || null, takenOver: p.takenOver || null })),
+      positions: this.positions.map(p => ({ id: p.id, symbol: p.symbol, mint: p.mint, setup: p.setup, entrySol: p.entrySol, remainingFrac: p.remainingFrac, peakRatio: +(p.peakRatio || 1).toFixed(2), heldMin: +((this.now() - p.entryTs) / 60000).toFixed(1), simulated: p.simulated, noTp: !!p.noTp, protected: p.protected || null, takenOver: p.takenOver || null, path: p.pathClass || null })),
       // stats.shadowTrades is read from the tracker at read time so /state can
       // never show a stale report card between the maintained sync points
       stats: this.shadowTrades ? { ...this.stats, shadowTrades: this.shadowTrades.totalsView() } : this.stats,

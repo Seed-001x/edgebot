@@ -79,24 +79,41 @@ export function evaluateExit(pos, mark, cfg, now) {
   // initializes exitPending: {} at entry, so every position it opens is covered.
   let exitPending = (pos.exitPending && typeof pos.exitPending === 'object') ? { ...pos.exitPending } : null;
   const exitConfirmEvents = [];
+  // Two-path redesign state (user 2026-10-15, variant c): the kill-zone record
+  // ({armed, entries}) and the POST-TP1 peak of `move` — both persisted by the
+  // caller alongside exitPending. The peak is tracked per check once TP1 has
+  // banked (the TP1 fire check itself still reads tp1Done=false here, so the
+  // tracker seeds on the first judged check after the bank). A position with no
+  // pathClass (opened before this build) is never modest and carries no overlay —
+  // the new sections simply never engage for it.
+  let killZone = (pos.killZone && typeof pos.killZone === 'object') ? { armed: !!pos.killZone.armed, entries: pos.killZone.entries || 0 } : null;
+  let postTp1PeakMove = pos.postTp1PeakMove != null ? pos.postTp1PeakMove : null;
+  if (pos.tp1Done) postTp1PeakMove = Math.max(postTp1PeakMove ?? 0, move);
+  const killzoneEvents = [];
+  const modestActive = !!pos.tp1Done && pos.pathClass === 'modest';
+  const zoneEligible = !!pos.tp1Done && !pos.tp2Done && cfg.killZoneFloorPct > 0 && (modestActive || !!pos.killZoneOverlay);
   // PROTECT switch (user 2026-10-15, "just the stop loss… no ratchet", "no SL until I
   // say"): a one-time, per-position flag set via POST /protect while the user rides a
   // coin himself. While protected, ONLY the stop-loss family (2a dip stop, 2a2 hard
-  // floor, 2b grace stop) and the break-even ratchet (4c) are skipped — the bleed,
-  // probation/stall, momentum failure, trailing stop, time stops and the full TP
-  // ladder all judge exactly as normal. The flag holds for the LIFE of the position:
-  // no timeout, no auto-expiry; it clears only when the position closes or when
-  // POST /unprotect clears it (bot.js owns both). The stop's armed state and any
-  // ratchet pending are dropped from the returned state below so neither can execute
-  // while the flag is set; bleed/leash pendings pass through untouched. Each
-  // suppression is reported on the decision as protectedBlock (the first suppressed
-  // kind, once per check) for bot.js to count in stats.protect.
+  // floor, 2b grace stop), the break-even ratchet (4c) and the kill zone (4e — the
+  // redesign widened the scope by exactly that one rule, user 2026-10-15) are
+  // skipped — the bleed, probation/stall, momentum failure, trailing stop, time
+  // stops and the full TP ladder all judge exactly as normal, and the modest +50%
+  // target still fires (it is a profit exit, not downside). The flag holds for the
+  // LIFE of the position: no timeout, no auto-expiry; it clears only when the
+  // position closes or when POST /unprotect clears it (bot.js owns both, and
+  // unprotect also resets the kill-zone record so the zone re-arms fresh). The
+  // stop's armed state and any ratchet/kill-zone pending are dropped from the
+  // returned state below so none can execute while the flag is set; bleed/leash
+  // pendings pass through untouched. Each suppression is reported on the decision
+  // as protectedBlock (the first suppressed kind, once per check) for bot.js to
+  // count in stats.protect.
   const prot = !!pos.protected;
   let protectedBlock = null;
   const noteBlock = (kind) => { if (prot && !protectedBlock) protectedBlock = kind; };
   if (prot) {
     stopArmedTs = null; floorChecks = 0; floorSince = null;
-    if (exitPending != null) delete exitPending.ratchet;
+    if (exitPending != null) { delete exitPending.ratchet; delete exitPending.killzone; }
   }
   // TAKEOVER switch (user 2026-10-15, the XZON race: his manual sell collided with
   // the bot's own ratchet sell and the bot's sell found no balance): POST /takeover
@@ -113,7 +130,7 @@ export function evaluateExit(pos, mark, cfg, now) {
   // section 4b), so no clock that matured during the takeover can fire. Takeover
   // supersedes protect: with both flags set, this return wins and nothing judges.
   const taken = !!pos.takenOver;
-  const out = (fraction, reason) => ({ fraction, reason, newPeak: peakRatio, newPeakMove: peakMove, ratio, stallSince: null, stopArmedTs, floorChecks, floorSince, probationSince, tp1Arm, moveHist, exitPending, exitConfirmEvents, protectedBlock });
+  const out = (fraction, reason) => ({ fraction, reason, newPeak: peakRatio, newPeakMove: peakMove, ratio, stallSince: null, stopArmedTs, floorChecks, floorSince, probationSince, tp1Arm, moveHist, exitPending, exitConfirmEvents, protectedBlock, killZone, postTp1PeakMove, killzoneEvents });
   if (taken) {
     stopArmedTs = null; floorChecks = 0; floorSince = null; probationSince = null; tp1Arm = null;
     if (exitPending != null) exitPending = {};
@@ -205,13 +222,35 @@ export function evaluateExit(pos, mark, cfg, now) {
       if (gain >= cfg.tp1AdaptMax) fire = `ceiling +${Math.round(cfg.tp1AdaptMax * 100)}%`;
       else if (peakGain - gain >= cfg.tp1Giveback) fire = 'rollover';
       else if (!strong) fire = 'strength faded';
-      if (fire) return { ...out(cfg.tp1Frac, `TP1 +${(gain * 100).toFixed(0)}% (adaptive: ${fire})`), tp1: true, tp1Arm: null };
+      if (fire) {
+        // Two-path classification (user 2026-10-15, variant c): the fire's realized
+        // gain — the same `gain` this sell record prints — picks the remainder's
+        // path: inside [modestMinPct, modestMaxPct] → MODEST; above → LADDER;
+        // below → LADDER plus the kill-zone overlay (4e). Stamped on the decision
+        // for bot.js to persist on the position and journal on this sell + the close.
+        const pathClass = gain > cfg.modestMaxPct ? 'ladder' : (gain >= cfg.modestMinPct ? 'modest' : 'ladder');
+        const killZoneOverlay = gain < cfg.modestMinPct;
+        return { ...out(cfg.tp1Frac, `TP1 +${(gain * 100).toFixed(0)}% (adaptive: ${fire})`), tp1: true, tp1Arm: null, pathClass, killZoneOverlay };
+      }
     }
+  }
+
+  // 3a. MODEST TARGET + SPLIT (two-path redesign, user 2026-10-15): a modest
+  //     remainder is NOT trailed (3b / 3d-pre / 3d / 4 all skip it below) — it rides
+  //     to this target on `move`. At the target the remainder SPLITS: bank
+  //     modestSplitBankFrac of it on this sell, and the surviving slice converts
+  //     to the ladder path (bot.js flips pos.pathClass on the modestSplit flag),
+  //     where TP2, the trails and the moonbag judge it under the ladder's existing
+  //     semantics and fraction conventions. A profit event: protect does NOT
+  //     suppress it; takeover returned long before this section.
+  if (modestActive && cfg.modestTargetPct > 0 && move >= 1 + cfg.modestTargetPct) {
+    return { ...out(cfg.modestSplitBankFrac, `modest target +${(cfg.modestTargetPct * 100).toFixed(0)}% — banked ${(cfg.modestSplitBankFrac * 100).toFixed(0)}% of remainder, rest to ladder`), modestSplit: true };
   }
 
   // 3b. TP2: the second bank, at tp2Pct — sells tp2Frac of the ORIGINAL position (converted to a
   //     fraction of what remains). Fires on the way up, near the level, before the dump candle.
-  if (pos.tp1Done && !pos.tp2Done && !pos.noTp && cfg.tp2Frac > 0 && gain >= cfg.tp2Pct) {
+  //     An un-split MODEST remainder never reaches this section's rule (3a owns it until the split).
+  if (!modestActive && pos.tp1Done && !pos.tp2Done && !pos.noTp && cfg.tp2Frac > 0 && gain >= cfg.tp2Pct) {
     const frac = Math.min(1, cfg.tp2Frac / Math.max(pos.remainingFrac, 1e-9));
     return { ...out(frac, `TP2 +${(gain * 100).toFixed(0)}%`), tp2: true };
   }
@@ -224,14 +263,16 @@ export function evaluateExit(pos, mark, cfg, now) {
   //     mark (peak net gain >= tp2RejectZone) but never converted; a fade of tp2RejectDrop off
   //     that peak is a rejection, not a pullback — sell the remainder instead of riding the wide
   //     trail down (wizardcat: peaked +80% net, rode the 25% trail out at +34%).
-  if (pos.tp1Done && !pos.tp2Done && cfg.tp2RejectZone > 0 && peakGain >= cfg.tp2RejectZone && ratio <= peakRatio * (1 - cfg.tp2RejectDrop)) return out(1, `TP2 rejection (peak +${(peakGain * 100).toFixed(0)}%, now ${((ratio - 1) * 100).toFixed(1)}%)`);
+  if (!modestActive && pos.tp1Done && !pos.tp2Done && cfg.tp2RejectZone > 0 && peakGain >= cfg.tp2RejectZone && ratio <= peakRatio * (1 - cfg.tp2RejectDrop)) return out(1, `TP2 rejection (peak +${(peakGain * 100).toFixed(0)}%, now ${((ratio - 1) * 100).toFixed(1)}%)`);
 
   // 3d. post-TP1 trail (middle stage, pre-TP2): trail the rest tpTrailPct below its peak with a hard
   //     floor at entry — sell everything if it gives back the trail or fades back to cost.
-  if (pos.tp1Done && !pos.tp2Done && (ratio <= peakRatio * (1 - cfg.tpTrailPct) || ratio <= 1)) return out(1, `post-TP1 trail (peak ${(peakRatio).toFixed(2)}x, now ${((ratio - 1) * 100).toFixed(1)}%)`);
+  //     MODEST remainders skip it — their downside is the kill zone (4e), not a trail.
+  if (!modestActive && pos.tp1Done && !pos.tp2Done && (ratio <= peakRatio * (1 - cfg.tpTrailPct) || ratio <= 1)) return out(1, `post-TP1 trail (peak ${(peakRatio).toFixed(2)}x, now ${((ratio - 1) * 100).toFixed(1)}%)`);
 
-  // 4. trailing stop once armed (never on the moonbag — it has its own wider trail, 3c)
-  if (!pos.tp2Done && peakRatio >= 1 + cfg.trailArm && ratio <= peakRatio * (1 - cfg.trailPct)) return out(1, `trailing stop (${(cfg.trailPct * 100).toFixed(0)}% off peak ${(peakRatio).toFixed(2)}x)`);
+  // 4. trailing stop once armed (never on the moonbag — it has its own wider trail, 3c;
+  //    never on an un-split modest remainder either — see 3d)
+  if (!modestActive && !pos.tp2Done && peakRatio >= 1 + cfg.trailArm && ratio <= peakRatio * (1 - cfg.trailPct)) return out(1, `trailing stop (${(cfg.trailPct * 100).toFixed(0)}% off peak ${(peakRatio).toFixed(2)}x)`);
 
   // 4a. profit lock: once up lockArm+ after costs, don't let it round-trip — sell if it gives back (1 - lockKeep) of its
   //     best real gain. Scales with the move: best +40% → sells at +20%; best +200% → sells at +100% (lockKeep 0.5).
@@ -363,6 +404,71 @@ export function evaluateExit(pos, mark, cfg, now) {
     // pending: fall through — the sections below still judge this check
   } else {
     cancelPending('bleed');
+  }
+
+  // 4e. KILL ZONE (two-path redesign, user 2026-10-15): the modest remainder's
+  //     downside floor, overlaid on sub-band ladder remainders (zoneEligible,
+  //     computed in the state prep). Judged on `move`, never the chart:
+  //     - ARMING: the zone is inert until the post-TP1 peak (postTp1PeakMove)
+  //       reaches killZoneArmMult. A dip before that accrues NO zone state at
+  //       all — the bleed/leash window owns it, exactly as before this section
+  //       existed (FEEMAIL's class can never start inside an armed zone).
+  //     - FIRST ENTRY (armed, move at/below 1 + killZoneFloorPct): the same 10s
+  //       confirmation window the fail-safes use, on the same exitPending slot
+  //       under kind 'killzone'. Recovery above the floor inside the window
+  //       cancels it and COUNTS the entry; still at/below at lapse, the FULL
+  //       remainder sells at market.
+  //     - SECOND ENTRY after a cancelled window: instant sell, no window — the
+  //       window already forgave one wick ("kill it on the way down").
+  //     - SLOT PRECEDENCE: the zone never arms a window while a fail-safe
+  //       pending (leash/ratchet/bleed) owns the slot — it waits, counts no
+  //       entry, and re-judges next check; a zone window already running still
+  //       completes on its own clock. One pending, one owner, one sell.
+  //     - PROTECT: triggers are suppressed like the stop family (noteBlock; the
+  //       pending itself was already dropped in the protect block above).
+  //       Arming keeps tracking underneath, so an unprotect finds live state —
+  //       bot.js additionally resets the record so entries start fresh.
+  //     EXIT_CONFIRM_SEC = 0 (or a legacy position with no exitPending) restores
+  //     the pre-layer behavior for the zone too: the first entry sells at once.
+  if (zoneEligible) {
+    const kz = killZone || { armed: false, entries: 0 };
+    const kzFloor = 1 + cfg.killZoneFloorPct;
+    if (!kz.armed && postTp1PeakMove != null && postTp1PeakMove >= cfg.killZoneArmMult) {
+      kz.armed = true;
+      killzoneEvents.push({ type: 'armed' });
+    }
+    if (kz.armed) {
+      if (move <= kzFloor) {
+        if (prot) noteBlock('kill zone');
+        else if (kz.entries >= 1) {
+          killzoneEvents.push({ type: 'reentry' });
+          return out(1, `kill zone (re-entry at ${((move - 1) * 100).toFixed(1)}% — second dip into the zone, no window)`);
+        } else if (exitPending != null && exitPending.killzone != null) {
+          if (!((cfg.exitConfirmSec || 0) > 0) || now - exitPending.killzone >= cfg.exitConfirmSec * 1000) {
+            delete exitPending.killzone;
+            exitConfirmEvents.push({ type: 'confirmed', kind: 'killzone' });
+            killzoneEvents.push({ type: 'fired' });
+            return out(1, `kill zone (move ${((move - 1) * 100).toFixed(1)}% held at/below the +${(cfg.killZoneFloorPct * 100).toFixed(0)}% floor through the ${cfg.exitConfirmSec}s window)`);
+          }
+          // window running, condition holds: fall through — later sections still judge this check
+        } else if (!((cfg.exitConfirmSec || 0) > 0) || exitPending == null) {
+          killzoneEvents.push({ type: 'fired' });
+          return out(1, `kill zone (move ${((move - 1) * 100).toFixed(1)}% at/below the +${(cfg.killZoneFloorPct * 100).toFixed(0)}% floor)`);
+        } else if (Object.keys(exitPending).length === 0) {
+          exitPending.killzone = now; // first entry: arm the window; later sections still judge this check
+        }
+        // else: a fail-safe pending owns the slot — the zone waits, no entry counted
+      } else if (exitPending != null && exitPending.killzone != null) {
+        // recovery above the floor inside the window: cancel it and count the entry
+        delete exitPending.killzone;
+        exitConfirmEvents.push({ type: 'cancelled', kind: 'killzone' });
+        killzoneEvents.push({ type: 'cancelled' });
+        kz.entries = 1;
+      }
+    }
+    // the record only exists once the zone has armed or counted an entry —
+    // before that, no zone state accrues at all (the returned killZone stays null)
+    if (killZone != null || kz.armed || kz.entries > 0) killZone = kz;
   }
 
   // 5. momentum failure: underwater, 10 min in, essentially no buyers (only sell when truly dead)
