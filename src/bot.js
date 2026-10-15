@@ -1782,6 +1782,7 @@ export class Bot {
     if ('exitPending' in decision) pos.exitPending = decision.exitPending;
     if ('killZone' in decision) pos.killZone = decision.killZone;
     if ('postTp1PeakMove' in decision) pos.postTp1PeakMove = decision.postTp1PeakMove;
+    if ('deadflowArmed' in decision) pos.deadflowArmed = decision.deadflowArmed;
     // fail-safe confirmation outcomes (user 2026-10-14): count the windows that held to a
     // sell vs the triggers that recovered and were cancelled — the layer's report card.
     if (decision.exitConfirmEvents && decision.exitConfirmEvents.length) {
@@ -1802,6 +1803,16 @@ export class Bot {
         else if (ev.type === 'fired') this.stats.killzone.fired++;
         else if (ev.type === 'cancelled') this.stats.killzone.cancelled++;
         else if (ev.type === 'reentry') this.stats.killzone.reentryKills++;
+      }
+    }
+    // Dead-flow exit at altitude (user 2026-10-15): count armings (a pre-TP1
+    // position's peak move reached the arm line — counted once per position,
+    // exits.js emits the event only on the transition) and fires.
+    if (decision.deadflowEvents && decision.deadflowEvents.length) {
+      this.stats.deadflow = this.stats.deadflow || { armed: 0, fired: 0 };
+      for (const ev of decision.deadflowEvents) {
+        if (ev.type === 'armed') { this.stats.deadflow.armed++; console.log(`[deadflow] ${pos.symbol}: armed (peak move reached +${Math.round(this.cfg.deadflowArmPct * 100)}% pre-TP1)`); }
+        else if (ev.type === 'fired') this.stats.deadflow.fired++;
       }
     }
     // PROTECT switch (user 2026-10-15): count the checks where protection suppressed

@@ -385,6 +385,14 @@ export function loadConfig(env = process.env) {
     modestSplitBankFrac: num(env, 'MODEST_SPLIT_BANK_FRAC', 0.6667), // at the target, bank this fraction OF THE REMAINDER; the surviving slice converts to the ladder path
     killZoneFloorPct: num(env, 'KILL_ZONE_FLOOR_PCT', 0.10), // kill zone floor: the remainder's `move` at/below 1 + this (once armed) enters the zone (0 = zone off)
     killZoneArmMult: num(env, 'KILL_ZONE_ARM_MULT', 1.25),   // ...the zone arms only once the post-TP1 peak `move` reaches this multiple of entry — before that the bleed/leash own the downside
+    // Dead-flow exit at altitude (user 2026-10-15, the Scout/AAD round-trip: peaked ~+12% realizable,
+    // buys flatlined, chopped, gave it all back to probation expiry at −0.4%): a PRE-TP1 position whose
+    // peak `move` reached the arm line sells in full when its own flow flatlines for a full window —
+    // the window IS the confirmation, no extra grace (exits.js 4d-pre).
+    deadflowArmPct: num(env, 'DEADFLOW_ARM_PCT', 0.08),      // arm: the position's peak `move` reaches 1 + this (pre-TP1)
+    deadflowWindowSec: num(env, 'DEADFLOW_WINDOW_SEC', 45), // rolling window of dead flow that must hold in full (0 = rule off)
+    deadflowMaxBuyDelta: num(env, 'DEADFLOW_MAX_BUY_DELTA', 1), // max rise in the 5m buy count across the window — one stray buy tolerated
+    deadflowPeakGapPct: num(env, 'DEADFLOW_PEAK_GAP_PCT', 0.01), // current `move` must sit at least this far below the window-start peak (price stopped pushing)
     lockArm: num(env, 'PROFIT_LOCK_ARM', 0.15),           // once up +15% or more after fees...
     lockKeep: num(env, 'PROFIT_LOCK_KEEP', 0.5),          // ...sell the rest if it falls below half of its best gain (0 = off)
     trailArm: num(env, 'TRAIL_ARM', 1.00),
@@ -528,6 +536,10 @@ export function validateConfig(cfg) {
   if (cfg.modestSplitBankFrac <= 0 || cfg.modestSplitBankFrac >= 1) errs.push('MODEST_SPLIT_BANK_FRAC must be between 0 and 1 (exclusive)');
   if (cfg.killZoneFloorPct < 0 || cfg.killZoneFloorPct >= 1) errs.push('KILL_ZONE_FLOOR_PCT must be 0 (off) or between 0 and 1');
   if (cfg.killZoneArmMult < 1 || cfg.killZoneArmMult > 10) errs.push('KILL_ZONE_ARM_MULT must be between 1 and 10');
+  if (cfg.deadflowArmPct < 0 || cfg.deadflowArmPct >= 1) errs.push('DEADFLOW_ARM_PCT must be between 0 and 1');
+  if (cfg.deadflowWindowSec < 0 || cfg.deadflowWindowSec > 600) errs.push('DEADFLOW_WINDOW_SEC must be between 0 (off) and 600');
+  if (cfg.deadflowMaxBuyDelta < 0 || cfg.deadflowMaxBuyDelta > 1000) errs.push('DEADFLOW_MAX_BUY_DELTA must be between 0 and 1000');
+  if (cfg.deadflowPeakGapPct < 0 || cfg.deadflowPeakGapPct > 0.5) errs.push('DEADFLOW_PEAK_GAP_PCT must be between 0 and 0.5');
   if (cfg.stallBandPct < -0.5 || cfg.stallBandPct > 1) errs.push('STALL_BAND_PCT must be between -0.5 and 1 (breakout bar above entry for the entry stall)');
   if (cfg.stallBandUpPct < 0 || cfg.stallBandUpPct > 1) errs.push('STALL_BAND_UP_PCT must be between 0 and 1 (upside edge of the entry-stall dead zone)');
   if (cfg.stallProbationSec < 0) errs.push('STALL_PROBATION_SEC must be >= 0 (0 = probation off, sell at the stall deadline)');

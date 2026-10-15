@@ -92,6 +92,19 @@ export function evaluateExit(pos, mark, cfg, now) {
   const killzoneEvents = [];
   const modestActive = !!pos.tp1Done && pos.pathClass === 'modest';
   const zoneEligible = !!pos.tp1Done && !pos.tp2Done && cfg.killZoneFloorPct > 0 && (modestActive || !!pos.killZoneOverlay);
+  // Dead-flow-at-altitude arming (user 2026-10-15): a persisted flag on the
+  // position, set on the first check the realizable peak move (peakMove — the
+  // same series the ratchet arms from) reaches the arm line while the position
+  // is still pre-TP1; counted once via deadflowEvents. Arming is bookkeeping
+  // only — section 4d-pre judges the fire fresh from the flow/move history on
+  // every check. Window 0 (rule off) never arms, and post-TP1 positions are
+  // out of scope: their stack owns them.
+  let deadflowArmed = !!pos.deadflowArmed;
+  const deadflowEvents = [];
+  if (!pos.tp1Done && cfg.deadflowWindowSec > 0 && !deadflowArmed && peakMove >= 1 + cfg.deadflowArmPct) {
+    deadflowArmed = true;
+    deadflowEvents.push({ type: 'armed' });
+  }
   // PROTECT switch (user 2026-10-15, "just the stop loss… no ratchet", "no SL until I
   // say"): a one-time, per-position flag set via POST /protect while the user rides a
   // coin himself. While protected, ONLY the stop-loss family (2a dip stop, 2a2 hard
@@ -130,7 +143,7 @@ export function evaluateExit(pos, mark, cfg, now) {
   // section 4b), so no clock that matured during the takeover can fire. Takeover
   // supersedes protect: with both flags set, this return wins and nothing judges.
   const taken = !!pos.takenOver;
-  const out = (fraction, reason) => ({ fraction, reason, newPeak: peakRatio, newPeakMove: peakMove, ratio, stallSince: null, stopArmedTs, floorChecks, floorSince, probationSince, tp1Arm, moveHist, exitPending, exitConfirmEvents, protectedBlock, killZone, postTp1PeakMove, killzoneEvents });
+  const out = (fraction, reason) => ({ fraction, reason, newPeak: peakRatio, newPeakMove: peakMove, ratio, stallSince: null, stopArmedTs, floorChecks, floorSince, probationSince, tp1Arm, moveHist, exitPending, exitConfirmEvents, protectedBlock, killZone, postTp1PeakMove, killzoneEvents, deadflowArmed, deadflowEvents });
   if (taken) {
     stopArmedTs = null; floorChecks = 0; floorSince = null; probationSince = null; tp1Arm = null;
     if (exitPending != null) exitPending = {};
@@ -369,6 +382,70 @@ export function evaluateExit(pos, mark, cfg, now) {
     }
   } else {
     cancelPending('ratchet');
+  }
+
+  // 4d-pre. DEAD FLOW AT ALTITUDE (user 2026-10-15): the founding case is Scout
+  //     (Anti-AI Dog) — spiked to ~+12% realizable, the buys flatlined for
+  //     minutes while the price chopped, and it round-tripped to −0.4% where
+  //     probation expiry closed it red; a sell inside the stall banks ~+10%.
+  //     Nothing else owned that shape: the ratchet arms at +15% and even armed
+  //     waits for +5%; TP1's strength test starts at +20%; momentum failure
+  //     needs 10 minutes of death. This rule owns it, PRE-TP1 ONLY (post-TP1
+  //     remainders belong to the trails / kill zone). Placement: after the TP
+  //     ladder — a firing TP1 on the same check has already returned and wins —
+  //     and after the ratchet, whose armed confirmation owns a fade it is
+  //     already judging (the rule waits while a ratchet pending runs).
+  //     ARM: the position's peak `move` reached 1 + deadflowArmPct (state prep
+  //     above, persisted as pos.deadflowArmed).
+  //     TRIGGER — all three over a rolling deadflowWindowSec window, judged on
+  //     the ~4s checks from the position's OWN recorded series:
+  //       1. the buy count barely moves: flowHist's per-check `buys` (the
+  //          view's trailing-5m buy count bot.js records every check — the
+  //          closest per-check flow series the bot keeps) rises by at most
+  //          deadflowMaxBuyDelta across the window. A flatlined coin's count
+  //          only ages out flat-to-down; one stray buy is tolerated.
+  //       2. no new peak inside the window: the best `move` printed since the
+  //          window opened does not exceed the peak as of the window's start
+  //          (both off moveHist, the position's own per-check move prints).
+  //       3. the price actually stopped pushing: the current `move` sits at
+  //          least deadflowPeakGapPct below that window-start peak — and the
+  //          window-start peak itself must be at/above the arm line, so the
+  //          stall being judged is a stall AT ALTITUDE, not a later sag.
+  //     The window IS the confirmation — 45s of accumulated dead flow, not one
+  //     bad tick — so the fire is instant: no exitPending, no extra grace.
+  //     FAIL-CLOSED: the window must be fully covered (flow + move samples at
+  //     or just before its start, a fresh current sample, buy counts present
+  //     at both ends) — missing data never fires, the TP1-strength convention.
+  //     PROTECT suppresses the fire like the ratchet's (noteBlock — it is a
+  //     profit-side auto exit); TAKEOVER returned long before this section.
+  if (!pos.tp1Done && cfg.deadflowWindowSec > 0 && deadflowArmed) {
+    const winMs = cfg.deadflowWindowSec * 1000;
+    const winStart = now - winMs;
+    let fStart = null, fNow = null;
+    for (const s of pos.flowHist || []) {
+      if (!s || s.ts == null) continue;
+      if (s.ts <= winStart && (fStart == null || s.ts > fStart.ts)) fStart = s;
+      if (fNow == null || s.ts > fNow.ts) fNow = s;
+    }
+    let peakAtStart = null, peakInWindow = null;
+    for (const h of moveHist) {
+      if (h.ts <= winStart) peakAtStart = peakAtStart == null ? h.move : Math.max(peakAtStart, h.move);
+      else peakInWindow = peakInWindow == null ? h.move : Math.max(peakInWindow, h.move);
+    }
+    const covered = fStart != null && fNow != null && winStart - fStart.ts <= 12000 && now - fNow.ts <= 12000
+      && fStart.buys != null && fNow.buys != null && peakAtStart != null && peakInWindow != null;
+    if (covered && peakAtStart >= 1 + cfg.deadflowArmPct) {
+      const buyDelta = fNow.buys - fStart.buys;
+      if (buyDelta <= cfg.deadflowMaxBuyDelta && peakInWindow <= peakAtStart + 1e-9 && move <= peakAtStart - cfg.deadflowPeakGapPct) {
+        if (prot) noteBlock('dead flow');
+        else if (exitPending != null && exitPending.ratchet != null) {
+          // the ratchet's confirmation window owns this fade — it sells or cancels first
+        } else {
+          deadflowEvents.push({ type: 'fired' });
+          return out(1, `dead flow at altitude (${move >= 1 ? '+' : ''}${((move - 1) * 100).toFixed(1)}%, ${Math.max(0, buyDelta)} new buys in ${cfg.deadflowWindowSec}s, peak stalled)`);
+        }
+      }
+    }
   }
 
   // 4d. bleed exit (user 2026-10-14, "Still-falling test — down 7%+ and not recovering"):
