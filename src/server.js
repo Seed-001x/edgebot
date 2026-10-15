@@ -266,6 +266,16 @@ export function startServer(bot, port) {
       if (!bot.flowExitsCard) return json(res, 200, { enabled: false });
       return json(res, 200, bot.flowExitsCard());
     }
+    if (req.method === 'GET' && u.pathname === '/structurewatch') {
+      // Structure Watch (record-only): the 'healthy trend' dataset — coins
+      // seeded at signal time and followed for hours: staircase state on 5m
+      // candles, a holder-count series (DAS), would-enter marks at each
+      // confirmed higher low scored forward, split by holder growth at the
+      // mark. Aggregates over the full structure_watch.jsonl; nothing here
+      // gates, buys, or sells.
+      if (!bot.structureWatchCard) return json(res, 200, { enabled: false });
+      return json(res, 200, bot.structureWatchCard());
+    }
     if (req.method === 'GET' && u.pathname === '/reports') {
       return json(res, 200, (bot.journal.tradeReports || []).slice().reverse());
     }
