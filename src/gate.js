@@ -307,6 +307,31 @@ export function freshHistoryCheck(samples, view, now, { maxChgM5 = 25, smallMc =
   return { pass: true, judged: false, reason: 'thin history, but aggregates are not extended' };
 }
 
+// 7f. Flow-entry snapshot collapse check (user 2026-10-15, from the DACITY forensic):
+//     the downside mirror of the fresh check's move cap, for the one entry path that
+//     carries no detector shape of its own. Pop/trend/liftoff/fast-pop entries can only
+//     exist when their detector's price-shape legs already hold (a positive gain band, a
+//     draw-from-peak cap, a chgM5 floor, a near-high rule) — a coin mid-collapse never
+//     produces those signals. A flow entry fires on a tracked wallet's buy instead, and
+//     the shared stack judged it without ever reading the downside of its own snapshot:
+//     the fresh check caps only the UPSIDE (+chgM5) and only while sampled history is
+//     thin (DACITY had history by its second signal, so even that stood down), and the
+//     shallow-dip veto names pop/trend/liftoff only. This leg judges the flow entry on
+//     the same field DACITY's snapshot carried: the view's own chgM5. At/below the floor
+//     the coin is not dipping, it is collapsing — skip. Missing chgM5 = no print to judge
+//     (pass; the tradability/gate legs still apply). No volume bypass: heavy flow is
+//     evidence on the way UP (the fresh bypass), never a reason to follow a wallet into
+//     a crash. Wired for setup 'flow' only in bot.js — other setups are byte-identical.
+export function flowSnapshotCheck(view, { minChgM5 = -20 } = {}) {
+  if (!(minChgM5 < 0)) return { pass: true, reason: 'flow snapshot check off' };
+  const chgM5 = view ? view.chgM5 : null;
+  if (chgM5 == null || !Number.isFinite(chgM5)) return { pass: true, reason: 'no 5m print in the flow snapshot — nothing to judge' };
+  if (chgM5 <= minChgM5) {
+    return { pass: false, reason: `coin collapsing (chgM5 ${chgM5.toFixed(1)}% — at/below the ${minChgM5}% floor)` };
+  }
+  return { pass: true, reason: `chgM5 ${chgM5.toFixed(1)}% — above the ${minChgM5}% collapse floor` };
+}
+
 // 7h. Ran-rebuy block (user 2026-10-15, "for tonight" — knobbed so it lifts
 //     without a code change): if the bot has ALREADY TRADED a mint and the coin
 //     has since printed >= RAN_REBUY_MULT x that trade's entry price at ANY

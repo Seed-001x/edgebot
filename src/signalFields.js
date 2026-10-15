@@ -39,6 +39,19 @@
 //                         false when the age is known, null when it is not
 //                         (no pairCreatedAt on the view, or a future-dated
 //                         timestamp) — unknown never masquerades as "old".
+//   distFromPeakPct / peakAgeSec / peakVeto — distance of the signal price
+//                         under the trailing-60m SAMPLED peak (the bot's own
+//                         price samples, the series the detectors judge on),
+//                         how long ago that peak last printed, and a SHADOW
+//                         veto verdict (user order 2026-10-15): wouldBlock
+//                         when dist ≥ PEAK_VETO_DIST_PCT and age ≤
+//                         PEAK_VETO_AGE_SEC. The 2026-10-15 forensic found
+//                         the day's bad entries were mostly invisible in the
+//                         stamps the gates judge on — coins bought after the
+//                         local high was already in. This stamp makes the
+//                         rollover measurable on every signal so a veto can
+//                         be scored before it is ever made real: NO gate,
+//                         detector or sizing path reads any of the three.
 
 export const GRAD_MC_USD = 69000; // nominal pump.fun graduation market cap (USD)
 export const BABY_POOL_MAX_MIN = 15; // baby-pool band ceiling (min) from the 2026-10-14 audit
@@ -48,6 +61,7 @@ export const FIELDS_MIN = {
   buyVel: { samples: 2, spanMin: 2, windowMin: 10 },
   curveFill: { samples: 3, spanMin: 2, windowMin: 30 },
   holders: { samples: 2, spanMin: 5, windowMin: 90 },
+  peak: { samples: 2, spanSec: 30, windowMin: 60 },
 };
 
 const inWindow = (arr, now, windowMin) => (arr || []).filter(x => x && now - x.ts <= windowMin * 60000 && now - x.ts >= -60000);
@@ -59,9 +73,11 @@ const round = (v, d) => (Number.isFinite(v) ? Math.round(v * 10 ** d) / 10 ** d 
  * @param view     the signal-time view (dex decides curve membership)
  * @param holders  holder samples [{ ts, holders }] oldest first (gate.js holderSamples)
  * @param now      signal time (ms)
+ * @param veto     optional shadow-veto lines { distPct, ageSec } — when given, a
+ *                 peakVeto verdict block is computed from the peak stamps (record-only)
  */
-export function computeSignalFields({ samples = [], view = null, holders = [], now = Date.now() } = {}) {
-  const out = { holderGrowthPerMin: null, holderGrowthPctPerMin: null, curveFillPctPerMin: null, buyVelPerMin: null, poolAgeMin: null, babyPool: null };
+export function computeSignalFields({ samples = [], view = null, holders = [], now = Date.now(), veto = null } = {}) {
+  const out = { holderGrowthPerMin: null, holderGrowthPctPerMin: null, curveFillPctPerMin: null, buyVelPerMin: null, poolAgeMin: null, babyPool: null, distFromPeakPct: null, peakAgeSec: null, peakVeto: null };
 
   // ---- pool age / baby-pool tag (view's pairCreatedAt; no samples needed) ----
   if (view && Number.isFinite(view.createdAt) && view.createdAt > 0) {
@@ -99,6 +115,29 @@ export function computeSignalFields({ samples = [], view = null, holders = [], n
       const perMin = (last.holders - first.holders) / spanMinOf(w);
       out.holderGrowthPerMin = round(perMin, 2);
       if (first.holders > 0) out.holderGrowthPctPerMin = round((perMin / first.holders) * 100, 3);
+    }
+  }
+
+  // ---- distance under the trailing sampled peak + shadow veto ----
+  {
+    const w = inWindow(samples, now, FIELDS_MIN.peak.windowMin).filter(s => Number.isFinite(s.price) && s.price > 0);
+    const spanSec = w.length >= 2 ? (w[w.length - 1].ts - w[0].ts) / 1000 : 0;
+    if (w.length >= FIELDS_MIN.peak.samples && spanSec >= FIELDS_MIN.peak.spanSec) {
+      let peak = 0, peakTs = null;
+      for (const s of w) { if (s.price >= peak) { peak = s.price; peakTs = s.ts; } } // >= : the peak's age runs from its MOST RECENT print
+      const cur = view && Number.isFinite(view.price) && view.price > 0 ? view.price : w[w.length - 1].price;
+      if (cur >= peak) { out.distFromPeakPct = 0; out.peakAgeSec = 0; } // at/above the sampled top right now
+      else {
+        out.distFromPeakPct = round((peak - cur) / peak, 3);
+        out.peakAgeSec = Math.max(0, Math.round((now - peakTs) / 1000));
+      }
+    }
+    if (veto) {
+      const d = out.distFromPeakPct, a = out.peakAgeSec;
+      out.peakVeto = {
+        wouldBlock: d != null && a != null && d >= veto.distPct && a <= veto.ageSec,
+        distPct: d, ageSec: a,
+      };
     }
   }
 

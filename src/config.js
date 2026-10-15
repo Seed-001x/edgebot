@@ -287,6 +287,27 @@ export function loadConfig(env = process.env) {
     // itself), and at/above the D1 bundle-bait ceiling there is no bypass either.
     freshBypassMinVolM5: num(env, 'FRESH_BYPASS_MIN_VOL_M5', 50000), // 0 = bypass off
     freshBypassMinBuyRatio: num(env, 'FRESH_BYPASS_MIN_BUY_RATIO', 0.65), // buy share the bypass demands (the ceiling is MAX_BUY_RATIO_M5, wired in bot.js)
+    // flow-entry snapshot collapse floor (user 2026-10-15, from the DACITY forensic): the
+    // classic detectors carry their own price-shape protection (pop's positive gain band +
+    // draw-from-peak cap, trend's chgM5 floor + near-high rule), but a flow entry fires on a
+    // tracked wallet's buy and reaches the shared stack with NO shape requirement — and the
+    // one shared check that reads chgM5 (the fresh check above) caps only the UPSIDE and
+    // only while sampled history is thin. DACITY was taken at chgM5 -41.8% in its own entry
+    // snapshot, ~62% under its peak, and bled out. A flow entry whose OWN snapshot prints
+    // chgM5 at/below this floor is skipped. The floor is a negative percent; 0 = off. The
+    // -20 default sits in the empty band of the recorded flow-entry distribution (every
+    // taken flow entry 2026-10-12..15 printed chgM5 in [-11.9, +35.2] except DACITY's
+    // -41.8 collapse) — dip-follows still pass, only collapses are blocked. Flow only:
+    // every other setup keeps its detector shape and is untouched by this knob.
+    flowSnapshotMinChgM5: num(env, 'FLOW_SNAPSHOT_MIN_CHG_M5', -20), // <= this chgM5 (%) in a flow entry's own snapshot = skip (0 = off)
+    // peak-distance stamps + shadow veto (RECORD-ONLY, user 2026-10-15): every signal
+    // record's fields block carries distFromPeakPct / peakAgeSec (distance under the
+    // trailing-60m sampled peak, and the peak's age) plus a peakVeto verdict computed
+    // with these lines. NOTHING reads the verdict — no gate, detector or sizing path
+    // branches on it; it exists so the veto can be scored against outcomes before
+    // anyone proposes making it real. Defaults are the design-note starting lines.
+    peakVetoDistPct: num(env, 'PEAK_VETO_DIST_PCT', 0.15),  // shadow line: at/above this distance under the sampled peak…
+    peakVetoAgeSec: num(env, 'PEAK_VETO_AGE_SEC', 1800),    // …with the peak at most this old (sec), the shadow would block
     // shallow-dip veto (user 2026-10-14): a classic entry (pop/trend/liftoff) may be taken at
     // the trailing SHALLOW_DIP_WINDOW_MIN sampled top, breaking above it, or on a real dip
     // (SHALLOW_DIP_MAX_PCT or more under the top — deep dips included) — but not in the
@@ -430,6 +451,9 @@ export function validateConfig(cfg) {
   if (cfg.freshM5ShareH1 < 0 || cfg.freshM5ShareH1 > 1) errs.push('FRESH_M5_SHARE_H1 must be between 0 and 1 (0 = off)');
   if (cfg.freshBypassMinVolM5 < 0) errs.push('FRESH_BYPASS_MIN_VOL_M5 must be >= 0 (0 = bypass off)');
   if (cfg.freshBypassMinBuyRatio < 0 || cfg.freshBypassMinBuyRatio > 1) errs.push('FRESH_BYPASS_MIN_BUY_RATIO must be between 0 and 1');
+  if (cfg.flowSnapshotMinChgM5 > 0 || cfg.flowSnapshotMinChgM5 < -100) errs.push('FLOW_SNAPSHOT_MIN_CHG_M5 must be between -100 and 0 (0 = off)');
+  if (cfg.peakVetoDistPct < 0 || cfg.peakVetoDistPct > 1) errs.push('PEAK_VETO_DIST_PCT must be between 0 and 1');
+  if (cfg.peakVetoAgeSec < 0 || cfg.peakVetoAgeSec > 86400) errs.push('PEAK_VETO_AGE_SEC must be between 0 and 86400');
   if (cfg.shallowDipMaxPct < 0 || cfg.shallowDipMaxPct > 0.9) errs.push('SHALLOW_DIP_MAX_PCT must be between 0 and 0.9 (0 = off)');
   if (cfg.shallowDipWindowMin < 1 || cfg.shallowDipWindowMin > 720) errs.push('SHALLOW_DIP_WINDOW_MIN must be between 1 and 720');
   if (cfg.ranRebuy < 0 || cfg.ranRebuy > 1) errs.push('RAN_REBUY must be 0 or 1');

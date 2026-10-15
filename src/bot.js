@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { History } from './history.js';
 import { detect, detectChurn, detectLiftoff, eligible, fastPop, fastPopFloors } from './detect.js';
-import { runGates, hasHardFail, tempRuleViolation, blockedNameWord, extensionCheck, freshHistoryCheck, shallowDipCheck, summarizeGateChecks, holderSamples, foldLastTrades } from './gate.js';
+import { runGates, hasHardFail, tempRuleViolation, blockedNameWord, extensionCheck, freshHistoryCheck, flowSnapshotCheck, shallowDipCheck, summarizeGateChecks, holderSamples, foldLastTrades } from './gate.js';
 import { computeSignalFields } from './signalFields.js';
 import { evaluateExit } from './exits.js';
 import { ShadowFlow, ratchetArmed, ratchetShadowFire } from './ratchetShadow.js';
@@ -1059,8 +1059,19 @@ export class Bot {
   // RugCheck holder reads. Fail-silent: an error yields null and the record
   // simply omits the block; nothing anywhere branches on these values.
   _signalFields(v) {
-    try { return computeSignalFields({ samples: this.history.get(v.address), view: v, holders: holderSamples(v.address), now: this.now() }); }
-    catch { return null; }
+    let f = null;
+    try { f = computeSignalFields({ samples: this.history.get(v.address), view: v, holders: holderSamples(v.address), now: this.now(), veto: { distPct: this.cfg.peakVetoDistPct, ageSec: this.cfg.peakVetoAgeSec } }); }
+    catch { f = null; }
+    // Peak-veto shadow counters (record-only): one count per journaled signal —
+    // stamped when the samples supported the peak stamps, unstamped when they
+    // didn't, wouldBlock when the shadow verdict would have vetoed. The verdict
+    // is never read back for any decision; /state just exposes the tallies.
+    this.stats.peakVeto = this.stats.peakVeto || { stamped: 0, wouldBlock: 0, unstamped: 0 };
+    if (f && f.distFromPeakPct != null) {
+      this.stats.peakVeto.stamped++;
+      if (f.peakVeto && f.peakVeto.wouldBlock) this.stats.peakVeto.wouldBlock++;
+    } else this.stats.peakVeto.unstamped++;
+    return f;
   }
 
   // Holder-count sampling, second source (record-only, 2026-10-14): a Helius
@@ -1149,6 +1160,14 @@ export class Bot {
           const sd = shallowDipCheck(this.history.get(v.address), v.price, n, { maxPct: this.cfg.shallowDipMaxPct, windowMin: this.cfg.shallowDipWindowMin });
           checks.shallowDip = { pass: !!sd.pass, reason: sd.reason || null };
         }
+      }
+      // Flow snapshot verdict for the record (user 2026-10-15): the same
+      // collapse check the live flow path runs — journaled here so records
+      // written before the live check is reached (shadow, risk-preempted)
+      // carry it too. Record-only in this path, never branched on.
+      if (sig.setup === 'flow') {
+        const fs = flowSnapshotCheck(v, { minChgM5: this.cfg.flowSnapshotMinChgM5 });
+        checks.flowSnapshot = { pass: !!fs.pass, reason: `flow snapshot: ${fs.reason}` };
       }
       // Ran-rebuy verdict for the record (user 2026-10-15): the same
       // already-ran check the gate path runs — journaled here so shadow
@@ -1401,6 +1420,23 @@ export class Bot {
         sig.metrics = sig.metrics || {};
         sig.metrics.freshBypass = fc.bypass;
         console.log(`[fresh] bypass: ${v.symbol} — ${fc.reason}`);
+      }
+    }
+    // Flow-entry snapshot collapse check (user 2026-10-15, from the DACITY forensic):
+    // a flow entry fires on a tracked wallet's buy and carries NO detector price-shape
+    // of its own — pop/trend/liftoff/fast-pop signals can only exist while their
+    // shape legs hold, so a mid-collapse coin never produces them, but DACITY's flow
+    // entry was taken with chgM5 -41.8% printed in its own snapshot (~62% under the
+    // peak) because nothing in the shared stack reads the downside of that print:
+    // the fresh check above caps only the upside and only on thin history. Judge the
+    // flow entry on its own snapshot here (gate.js flowSnapshotCheck); flow only —
+    // every other setup's pipeline is byte-identical.
+    if (sig.setup === 'flow') {
+      const fs = flowSnapshotCheck(v, { minChgM5: this.cfg.flowSnapshotMinChgM5 });
+      checks.flowSnapshot = { pass: !!fs.pass, reason: `flow snapshot: ${fs.reason}` };
+      if (!fs.pass) {
+        console.log(`[flow] skip: ${v.symbol} — flow snapshot: ${fs.reason}`);
+        return this.skip(v, sig, [`flow snapshot: ${fs.reason}`], [], checks);
       }
     }
     // Shallow-dip veto (user 2026-10-14): classic entries (pop + trend + liftoff) may be
