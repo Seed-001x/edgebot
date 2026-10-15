@@ -401,6 +401,41 @@ export class Bot {
     return count;
   }
 
+  // PROTECT switch (user 2026-10-15, "just the stop loss… no ratchet", "no SL until I
+  // say"): a one-time, per-position flag set via POST /protect. While set, exits.js
+  // skips ONLY that position's stop-loss family and break-even ratchet; everything
+  // else — bleed, probation, stall, trails, the TP ladder — judges as normal. The
+  // flag lives ON the position record (persisted by savePositions, so it survives
+  // restarts), holds for the life of the position with no expiry, and clears only
+  // when the position closes (the record goes with it — a rebuy starts unprotected)
+  // or when unprotectPosition clears it early. Re-protecting an already-protected
+  // position is a no-op that does not double-count the set.
+  protectPosition(key) {
+    const p = this.positions.find(x => x.mint === key || x.id === key || x.symbol === key);
+    if (!p) return null;
+    if (!p.protected) {
+      p.protected = this.now();
+      this.stats.protect = this.stats.protect || { set: 0, blocked: 0 };
+      this.stats.protect.set++;
+      console.log(`[protect] ${p.symbol} protected at ${new Date(p.protected).toISOString()} — stop-loss + ratchet off until unprotect or close`);
+    }
+    this.savePositions();
+    return p;
+  }
+
+  // Clears the protect flag early (POST /unprotect). Returns the position when a flag
+  // was cleared, false when the position exists but is not protected, null when no
+  // open position matches — the route maps those to 200 / 404 / 404.
+  unprotectPosition(key) {
+    const p = this.positions.find(x => x.mint === key || x.id === key || x.symbol === key);
+    if (!p) return null;
+    if (!p.protected) return false;
+    delete p.protected;
+    this.savePositions();
+    console.log(`[protect] ${p.symbol} unprotected — stop-loss + ratchet re-armed`);
+    return p;
+  }
+
   // Tokens left the wallet outside the bot. P&L comes from the chain when the user's sell
   // transactions parse (marked pnlSource 'chain'), else an estimate from the last sell
   // quote (marked estimated) — and it counts toward the daily loss cap either way.
@@ -1637,6 +1672,14 @@ export class Bot {
         else if (ev.type === 'cancelled') { this.stats.exitConfirm.cancelled++; console.log(`[exit-confirm] ${pos.symbol}: ${ev.kind} trigger recovered inside the window — pending sell cancelled`); }
       }
     }
+    // PROTECT switch (user 2026-10-15): count the checks where protection suppressed
+    // a stop-loss/ratchet exit on this position (first suppressed kind per check,
+    // as reported by exits.js on the decision).
+    if (decision.protectedBlock) {
+      this.stats.protect = this.stats.protect || { set: 0, blocked: 0 };
+      this.stats.protect.blocked++;
+      console.log(`[protect] ${pos.symbol}: ${decision.protectedBlock} suppressed by protection`);
+    }
     if ('tp1Arm' in decision) pos.tp1Arm = decision.tp1Arm;
     // shadow ratchet judge (record-only): judged on the same check, off the same
     // realizable move evaluateExit just used — it only ever writes journal records.
@@ -1840,7 +1883,7 @@ export class Bot {
       limits: { tradeSol: this.cfg.tradeSol, maxPositions: this.cfg.maxPositions, dailyLossSol: this.cfg.dailyLossSol, maxTradesPerHour: this.cfg.maxTradesPerHour, tp1Pct: this.cfg.tp1Pct, tp1Frac: this.cfg.tp1Frac },
       watchlist: this.watch.size,
       pairedShadow: this.paired ? { pending: this.paired.pending.size, done: this.paired.done.length } : { pending: 0, done: 0 },
-      positions: this.positions.map(p => ({ id: p.id, symbol: p.symbol, mint: p.mint, setup: p.setup, entrySol: p.entrySol, remainingFrac: p.remainingFrac, peakRatio: +(p.peakRatio || 1).toFixed(2), heldMin: +((this.now() - p.entryTs) / 60000).toFixed(1), simulated: p.simulated, noTp: !!p.noTp })),
+      positions: this.positions.map(p => ({ id: p.id, symbol: p.symbol, mint: p.mint, setup: p.setup, entrySol: p.entrySol, remainingFrac: p.remainingFrac, peakRatio: +(p.peakRatio || 1).toFixed(2), heldMin: +((this.now() - p.entryTs) / 60000).toFixed(1), simulated: p.simulated, noTp: !!p.noTp, protected: p.protected || null })),
       // stats.shadowTrades is read from the tracker at read time so /state can
       // never show a stale report card between the maintained sync points
       stats: this.shadowTrades ? { ...this.stats, shadowTrades: this.shadowTrades.totalsView() } : this.stats,

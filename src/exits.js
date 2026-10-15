@@ -79,7 +79,26 @@ export function evaluateExit(pos, mark, cfg, now) {
   // initializes exitPending: {} at entry, so every position it opens is covered.
   let exitPending = (pos.exitPending && typeof pos.exitPending === 'object') ? { ...pos.exitPending } : null;
   const exitConfirmEvents = [];
-  const out = (fraction, reason) => ({ fraction, reason, newPeak: peakRatio, newPeakMove: peakMove, ratio, stallSince: null, stopArmedTs, floorChecks, floorSince, probationSince, tp1Arm, moveHist, exitPending, exitConfirmEvents });
+  // PROTECT switch (user 2026-10-15, "just the stop loss… no ratchet", "no SL until I
+  // say"): a one-time, per-position flag set via POST /protect while the user rides a
+  // coin himself. While protected, ONLY the stop-loss family (2a dip stop, 2a2 hard
+  // floor, 2b grace stop) and the break-even ratchet (4c) are skipped — the bleed,
+  // probation/stall, momentum failure, trailing stop, time stops and the full TP
+  // ladder all judge exactly as normal. The flag holds for the LIFE of the position:
+  // no timeout, no auto-expiry; it clears only when the position closes or when
+  // POST /unprotect clears it (bot.js owns both). The stop's armed state and any
+  // ratchet pending are dropped from the returned state below so neither can execute
+  // while the flag is set; bleed/leash pendings pass through untouched. Each
+  // suppression is reported on the decision as protectedBlock (the first suppressed
+  // kind, once per check) for bot.js to count in stats.protect.
+  const prot = !!pos.protected;
+  let protectedBlock = null;
+  const noteBlock = (kind) => { if (prot && !protectedBlock) protectedBlock = kind; };
+  if (prot) {
+    stopArmedTs = null; floorChecks = 0; floorSince = null;
+    if (exitPending != null) delete exitPending.ratchet;
+  }
+  const out = (fraction, reason) => ({ fraction, reason, newPeak: peakRatio, newPeakMove: peakMove, ratio, stallSince: null, stopArmedTs, floorChecks, floorSince, probationSince, tp1Arm, moveHist, exitPending, exitConfirmEvents, protectedBlock });
   // failSafe(kind, reason): a fail-safe exit whose FULL condition is true on this check calls
   // this instead of returning its sell directly. EXIT_CONFIRM_SEC = 0 (or a legacy position)
   // → the sell decision, exactly as before the layer. Otherwise the first trigger only ARMS
@@ -112,7 +131,11 @@ export function evaluateExit(pos, mark, cfg, now) {
   if (mark.liqUsd != null && (mark.liqUsd < 2000 || mark.liqUsd < valueUsd * 2)) return out(1, `liquidity death ($${Math.round(mark.liqUsd)} liq vs $${Math.round(valueUsd)} position)`);
 
   // 2a. dip stop: price fell dipStopPct below entry — sell, no exceptions
-  if (cfg.dipStopPct > 0 && move <= 1 - cfg.dipStopPct) return out(1, `dip stop (price ${((move - 1) * 100).toFixed(1)}% from entry)`);
+  //     (PROTECT: skipped while the position is protected — part of the stop-loss family)
+  if (cfg.dipStopPct > 0 && move <= 1 - cfg.dipStopPct) {
+    if (prot) noteBlock('dip stop');
+    else return out(1, `dip stop (price ${((move - 1) * 100).toFixed(1)}% from entry)`);
+  }
 
   // 2a2. hard floor on realizable value — but confirmed (user 2026-10-13): one tick under the
   //      floor is a wick until the next check proves the price is still there. Both of today's
@@ -123,10 +146,13 @@ export function evaluateExit(pos, mark, cfg, now) {
   //      An unconfirmed breach falls through: the grace stop (2b) arms on this same tick and
   //      governs the -10..-20 zone unless the floor confirms on the next check.
   if (hardBreached) {
-    floorChecks += 1;
-    const checksOk = floorChecks >= (cfg.stopHardConfirmChecks ?? 2);
-    const timeOk = now - floorSince >= (cfg.stopHardConfirmSec || 0) * 1000;
-    if (checksOk && timeOk) return out(1, `stop-loss (${((ratio - 1) * 100).toFixed(0)}%, hard floor${(cfg.stopHardConfirmSec || 0) > 0 ? `, confirmed ${((now - floorSince) / 1000).toFixed(0)}s under` : ((cfg.stopHardConfirmChecks ?? 2) > 1 ? `, confirmed ${floorChecks} checks` : '')})`);
+    if (prot) noteBlock('stop-loss'); // PROTECT: the hard floor is stop-loss family — skipped, and its counters stay cleared (see the protect block above)
+    else {
+      floorChecks += 1;
+      const checksOk = floorChecks >= (cfg.stopHardConfirmChecks ?? 2);
+      const timeOk = now - floorSince >= (cfg.stopHardConfirmSec || 0) * 1000;
+      if (checksOk && timeOk) return out(1, `stop-loss (${((ratio - 1) * 100).toFixed(0)}%, hard floor${(cfg.stopHardConfirmSec || 0) > 0 ? `, confirmed ${((now - floorSince) / 1000).toFixed(0)}s under` : ((cfg.stopHardConfirmChecks ?? 2) > 1 ? `, confirmed ${floorChecks} checks` : '')})`);
+    }
   }
 
   // 2b. grace stop (user 2026-10-13): breaching the arm line (cfg.stopLoss) starts a grace window
@@ -135,11 +161,14 @@ export function evaluateExit(pos, mark, cfg, now) {
   //     data at all — confirms the death and sells. Buyers at least matching sells vetoes the sell
   //     (they're absorbing the dip) and disarms, so a later breach re-arms fresh.
   if (cfg.stopLoss > 0 && ratio <= 1 - cfg.stopLoss) {
-    if (stopArmedTs == null) stopArmedTs = now;
-    if (now - stopArmedTs >= (cfg.stopGraceSec || 0) * 1000) {
-      const flowAlive = cfg.stopFlowVeto > 0 && mark.buysM5 != null && mark.buysM5 > 2 && mark.sellsM5 <= mark.buysM5;
-      if (!flowAlive) return out(1, `stop-loss (${((ratio - 1) * 100).toFixed(0)}%, confirmed after ${cfg.stopGraceSec}s grace, flow ${mark.buysM5 ?? '?'}b/${mark.sellsM5 ?? '?'}s)`);
-      stopArmedTs = null;
+    if (prot) noteBlock('stop-loss'); // PROTECT: the grace stop is stop-loss family — skipped, never arms while the flag is set
+    else {
+      if (stopArmedTs == null) stopArmedTs = now;
+      if (now - stopArmedTs >= (cfg.stopGraceSec || 0) * 1000) {
+        const flowAlive = cfg.stopFlowVeto > 0 && mark.buysM5 != null && mark.buysM5 > 2 && mark.sellsM5 <= mark.buysM5;
+        if (!flowAlive) return out(1, `stop-loss (${((ratio - 1) * 100).toFixed(0)}%, confirmed after ${cfg.stopGraceSec}s grace, flow ${mark.buysM5 ?? '?'}b/${mark.sellsM5 ?? '?'}s)`);
+        stopArmedTs = null;
+      }
     }
   }
 
@@ -264,10 +293,13 @@ export function evaluateExit(pos, mark, cfg, now) {
   //     recovery back above the trigger line cancels via the else-branch below); the reason
   //     string is built fresh on the selling check, exactly as before.
   if (!pos.tp1Done && cfg.beArmPct > 0 && pos.peakMove != null && peakMove >= 1 + cfg.beArmPct && move <= 1 + cfg.beTriggerPct) {
-    const pctFmt = (x) => `${x >= 0 ? '+' : ''}${(x * 100).toFixed(1)}%`;
-    const d = failSafe('ratchet', `break-even ratchet (peaked ${pctFmt(peakMove - 1)}, back to ${pctFmt(move - 1)})`);
-    if (d) return d;
-    // pending: fall through — the bleed section and everything below still judge this check
+    if (prot) noteBlock('ratchet'); // PROTECT: "no ratchet" — skipped; its pending was already dropped from the returned state above
+    else {
+      const pctFmt = (x) => `${x >= 0 ? '+' : ''}${(x * 100).toFixed(1)}%`;
+      const d = failSafe('ratchet', `break-even ratchet (peaked ${pctFmt(peakMove - 1)}, back to ${pctFmt(move - 1)})`);
+      if (d) return d;
+      // pending: fall through — the bleed section and everything below still judge this check
+    }
   } else {
     cancelPending('ratchet');
   }

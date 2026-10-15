@@ -39,7 +39,7 @@ export function startServer(bot, port) {
   // ADMIN_KEY set (local/tests), everything behaves as before.
   const ADMIN_KEY = process.env.ADMIN_KEY || '';
   if (!ADMIN_KEY) console.log('[server] ADMIN_KEY not set — write endpoints are OPEN');
-  const GUARDED = new Set(['/feedback', '/feedback/clear', '/feedback/note', '/exittag', '/temprules', '/positions/clear', '/positions/notp', '/halt', '/resume', '/risk/reset']);
+  const GUARDED = new Set(['/feedback', '/feedback/clear', '/feedback/note', '/exittag', '/temprules', '/positions/clear', '/positions/notp', '/protect', '/unprotect', '/halt', '/resume', '/risk/reset']);
   const srv = http.createServer((req, res) => {
     const u = new URL(req.url, 'http://x');
     // CORS preflight
@@ -298,6 +298,37 @@ export function startServer(bot, port) {
           if (!pos) return json(res, 404, { error: 'no such position' });
           pos.noTp = true; bot.savePositions();
           return json(res, 200, { ok: true, symbol: pos.symbol });
+        } catch { return json(res, 400, { error: 'invalid JSON' }); }
+      });
+      return;
+    }
+    // POST /protect {mint|symbol} — the user's one-time per-coin switch (user
+    // 2026-10-15, "just the stop loss… no ratchet", "no SL until I say"): while the
+    // flag is set on the open position, exits.js skips ONLY its stop-loss family
+    // (dip stop, hard floor, grace stop) and the break-even ratchet; the bleed,
+    // probation, stall, trails and the full TP ladder keep running. The flag holds
+    // for the LIFE of the position — no timeout, survives restarts (it is stored on
+    // the persisted position record) — and clears only when the position closes or
+    // POST /unprotect clears it. A rebuy of the same mint starts unprotected.
+    // POST /unprotect {mint|symbol} clears the flag early and re-arms both exits.
+    if (req.method === 'POST' && (u.pathname === '/protect' || u.pathname === '/unprotect')) {
+      let body = '';
+      req.on('data', c => { body += c; if (body.length > 2000) req.destroy(); });
+      req.on('end', () => {
+        try {
+          const { mint, symbol } = JSON.parse(body || '{}');
+          const key = mint || symbol;
+          if (!key) return json(res, 400, { error: 'mint required' });
+          const snap = (p) => ({ id: p.id, symbol: p.symbol, mint: p.mint, setup: p.setup, entrySol: p.entrySol, remainingFrac: p.remainingFrac, protected: p.protected || null });
+          if (u.pathname === '/protect') {
+            const pos = bot.protectPosition ? bot.protectPosition(key) : null;
+            if (!pos) return json(res, 404, { error: 'no open position for that mint' });
+            return json(res, 200, { ok: true, protected: pos.protected, position: snap(pos) });
+          }
+          const r = bot.unprotectPosition ? bot.unprotectPosition(key) : null;
+          if (r === null) return json(res, 404, { error: 'no open position for that mint' });
+          if (r === false) return json(res, 404, { error: 'position is not protected' });
+          return json(res, 200, { ok: true, protected: null, position: snap(r) });
         } catch { return json(res, 400, { error: 'invalid JSON' }); }
       });
       return;

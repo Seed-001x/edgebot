@@ -525,3 +525,104 @@ test('exit confirmation: a TP1 decision during a ratchet pending executes immedi
   assert.equal(d2.exitPending.ratchet, NOW);                             // ...and the ratchet pending is still ticking on the remainder
   assert.deepEqual(d2.exitConfirmEvents, []);
 });
+
+// ---- PROTECT switch (user 2026-10-15, "just the stop loss… no ratchet", "no SL until
+//      I say"): a one-time per-position flag (pos.protected, set via POST /protect).
+//      While set, ONLY the stop-loss family (2a dip stop, 2a2 hard floor, 2b grace
+//      stop) and the break-even ratchet (4c) are skipped — bleed, probation/stall,
+//      momentum, trails and the full TP ladder judge as normal. The flag holds for
+//      the life of the position; /unprotect (deleting the field) re-arms both exits.
+//      The stop's armed state and any ratchet pending are dropped from the returned
+//      state while the flag is set; bleed/leash pendings are untouched. ----
+const protPos = (o = {}) => pos({ protected: NOW - 60000, ...o });
+test('protect: dip stop is skipped and reported, and no stop state accumulates', () => {
+  const d = evaluateExit(protPos(), mark(0.011), cfg, NOW);   // move 0.55 — deep in dip-stop / floor / grace territory
+  assert.equal(d.fraction, 0);
+  assert.equal(d.protectedBlock, 'dip stop');
+  assert.equal(d.stopArmedTs, null);                          // the grace stop never armed
+  assert.equal(d.floorChecks, 0);                             // the hard floor never counted a check
+  assert.equal(evaluateExit(pos(), mark(0.011), cfg, NOW).fraction, 1); // control: unprotected sells
+  assert.equal(evaluateExit(pos(), mark(0.011), cfg, NOW).protectedBlock, null); // unprotected decisions carry no block
+});
+test('protect: grace stop is skipped even with the grace long elapsed and flow dead', () => {
+  const c = { ...cfg, dipStopPct: 0, stopHardPct: 0 };
+  const dead = mark(0.011, { buysM5: 1, sellsM5: 1 });        // ratio 0.55, no buyers to veto
+  const d = evaluateExit(protPos({ stopArmedTs: NOW - 10000 }), dead, c, NOW);
+  assert.equal(d.fraction, 0);
+  assert.equal(d.protectedBlock, 'stop-loss');
+  assert.equal(d.stopArmedTs, null);                          // pre-flag arming is cleared, not carried
+  const ctl = evaluateExit(pos({ stopArmedTs: NOW - 10000 }), dead, c, NOW); // control: unprotected sells
+  assert.equal(ctl.fraction, 1); assert.match(ctl.reason, /stop-loss.*confirmed after 5s grace/);
+});
+test('protect: hard floor is skipped even with its confirmation already satisfied', () => {
+  const c = { ...cfg, dipStopPct: 0 };
+  const p = protPos({ floorChecks: 1, floorSince: NOW - 10000 });
+  const d = evaluateExit(p, mark(0.011, { buysM5: 1, sellsM5: 1 }), c, NOW);
+  assert.equal(d.fraction, 0);
+  assert.equal(d.protectedBlock, 'stop-loss');
+  assert.equal(d.floorChecks, 0); assert.equal(d.floorSince, null);
+  const ctl = evaluateExit(pos({ floorChecks: 1, floorSince: NOW - 10000 }), mark(0.011, { buysM5: 1, sellsM5: 1 }), c, NOW);
+  assert.equal(ctl.fraction, 1); assert.match(ctl.reason, /stop-loss/); // control: the second confirmed check sells
+});
+test('protect: ratchet is skipped even with a matured pending, and the pending is dropped silently', () => {
+  const p = protPos({ entryTs: NOW - 30 * S, peakMove: 1.12, exitPending: { ratchet: NOW - 12000 } });
+  const d = evaluateExit(p, mark(0.0204), confBeCfg, NOW);    // move 1.02 — the armed ratchet's trigger
+  assert.equal(d.fraction, 0);
+  assert.equal(d.protectedBlock, 'ratchet');
+  assert.equal(d.exitPending.ratchet, undefined);             // dropped — it can never execute under the flag
+  assert.ok(!d.exitConfirmEvents.some(e => e.kind === 'ratchet')); // and it is NOT counted as a cancelled window
+  const ctl = evaluateExit(pos({ entryTs: NOW - 30 * S, peakMove: 1.12, exitPending: { ratchet: NOW - 12000 } }), mark(0.0204), confBeCfg, NOW);
+  assert.equal(ctl.fraction, 1); assert.match(ctl.reason, /break-even ratchet/); // control: matured pending sells
+});
+test('protect: a bleed pending is left exactly as it was — still armed, still ticking', () => {
+  const p = protPos({ entryTs: NOW - 200 * S, moveHist: hist([60, 0.92]), exitPending: { ratchet: NOW - 5000, bleed: NOW - 5000 } });
+  const d = evaluateExit(p, mark(0.0182), confBleedCfg, NOW); // move 0.91 and falling: the bleed trigger holds
+  assert.equal(d.fraction, 0);                                // 5s into its 10s window: not sold YET — the layer's normal timing
+  assert.equal(d.exitPending.bleed, NOW - 5000);              // bleed pending preserved to the tick
+  assert.equal(d.exitPending.ratchet, undefined);             // only the ratchet pending was dropped
+  assert.deepEqual(d.exitConfirmEvents, []);
+  assert.equal(d.protectedBlock, null);                       // nothing was suppressed — the bleed proceeded normally
+});
+test('protect: bleed exit still fires in full', () => {
+  const p = protPos({ entryTs: NOW - 200 * S, moveHist: hist([60, 0.92]), exitPending: {} });
+  const d = evaluateExit(p, mark(0.0182), { ...confBleedCfg, exitConfirmSec: 0 }, NOW);
+  assert.equal(d.fraction, 1);
+  assert.equal(d.reason, 'bleed exit (-9.0% and still falling)');
+});
+test('protect: probation leash still fires in full', () => {
+  const p = protPos({ entryTs: NOW - 200 * S, probationSince: NOW - 20 * S, exitPending: {} });
+  const d = evaluateExit(p, mark(0.0185), { ...confProbCfg, exitConfirmSec: 0 }, NOW); // move 0.925 — through the −7% leash
+  assert.equal(d.fraction, 1);
+  assert.match(d.reason, /probation leash/);
+});
+test('protect: TP1 still banks on schedule', () => {
+  const fixed = { ...cfg, tp1AdaptMax: cfg.tp1Pct };
+  const d = evaluateExit(protPos({ stallSince: NOW }), mark(0.0264), fixed, NOW);
+  assert.equal(d.tp1, true);
+  assert.equal(d.fraction, 0.65);
+});
+test('protect off again (unprotect): the grace stop re-arms fresh and sells after its grace', () => {
+  const c = { ...cfg, dipStopPct: 0, stopHardPct: 0 };
+  const dead = mark(0.011, { buysM5: 1, sellsM5: 1 });
+  const p = protPos({ stopArmedTs: NOW - 10000 });
+  const d1 = evaluateExit(p, dead, c, NOW);
+  assert.equal(d1.fraction, 0); assert.equal(d1.stopArmedTs, null); // protection cleared the stale arming
+  delete p.protected;                                              // POST /unprotect
+  p.stopArmedTs = d1.stopArmedTs;                                  // bot.js threads the returned state back
+  const d2 = evaluateExit(p, dead, c, NOW);
+  assert.equal(d2.fraction, 0); assert.equal(d2.stopArmedTs, NOW); // re-armed fresh — no instant sell off the old arming
+  p.stopArmedTs = d2.stopArmedTs;
+  const d3 = evaluateExit(p, dead, c, NOW + 6 * S);
+  assert.equal(d3.fraction, 1); assert.match(d3.reason, /stop-loss.*grace/);
+});
+test('protect off again (unprotect): the ratchet re-arms and sells through its window', () => {
+  const p = pos({ entryTs: NOW - 30 * S, peakMove: 1.12, exitPending: {}, protected: NOW - 60000 });
+  const d1 = run(p, mark(0.0204), confBeCfg, NOW);
+  assert.equal(d1.fraction, 0); assert.equal(d1.protectedBlock, 'ratchet');
+  assert.deepEqual(p.exitPending, {});                             // no pending could arm under the flag
+  delete p.protected;                                              // POST /unprotect
+  const d2 = run(p, mark(0.0204), confBeCfg, NOW + 2 * S);
+  assert.equal(d2.fraction, 0); assert.equal(p.exitPending.ratchet, NOW + 2 * S); // fresh window opens
+  const d3 = run(p, mark(0.0204), confBeCfg, NOW + 13 * S);
+  assert.equal(d3.fraction, 1); assert.match(d3.reason, /break-even ratchet/);
+});
