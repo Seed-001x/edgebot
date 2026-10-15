@@ -39,7 +39,7 @@ export function startServer(bot, port) {
   // ADMIN_KEY set (local/tests), everything behaves as before.
   const ADMIN_KEY = process.env.ADMIN_KEY || '';
   if (!ADMIN_KEY) console.log('[server] ADMIN_KEY not set — write endpoints are OPEN');
-  const GUARDED = new Set(['/feedback', '/feedback/clear', '/feedback/note', '/exittag', '/temprules', '/positions/clear', '/positions/notp', '/protect', '/unprotect', '/halt', '/resume', '/risk/reset']);
+  const GUARDED = new Set(['/feedback', '/feedback/clear', '/feedback/note', '/exittag', '/temprules', '/positions/clear', '/positions/notp', '/protect', '/unprotect', '/takeover', '/release', '/halt', '/resume', '/risk/reset']);
   const srv = http.createServer((req, res) => {
     const u = new URL(req.url, 'http://x');
     // CORS preflight
@@ -329,6 +329,36 @@ export function startServer(bot, port) {
           if (r === null) return json(res, 404, { error: 'no open position for that mint' });
           if (r === false) return json(res, 404, { error: 'position is not protected' });
           return json(res, 200, { ok: true, protected: null, position: snap(r) });
+        } catch { return json(res, 400, { error: 'invalid JSON' }); }
+      });
+      return;
+    }
+    // POST /takeover {mint|symbol} — the manual takeover switch (user 2026-10-15,
+    // the XZON race): the user takes the open position fully manual and the bot
+    // must never sell it again — exit judging is skipped ENTIRELY for that
+    // position (ladder, trails, stops, bleed, leash, time stops, liquidity death)
+    // until POST /release hands it back with fresh arming, or the position closes
+    // (his own manual sell books through the usual detector, race-free). The flag
+    // lives on the persisted position record, holds for the life of the position,
+    // and supersedes the protect flag when both are set. A rebuy starts untaken.
+    if (req.method === 'POST' && (u.pathname === '/takeover' || u.pathname === '/release')) {
+      let body = '';
+      req.on('data', c => { body += c; if (body.length > 2000) req.destroy(); });
+      req.on('end', () => {
+        try {
+          const { mint, symbol } = JSON.parse(body || '{}');
+          const key = mint || symbol;
+          if (!key) return json(res, 400, { error: 'mint required' });
+          const snap = (p) => ({ id: p.id, symbol: p.symbol, mint: p.mint, setup: p.setup, entrySol: p.entrySol, remainingFrac: p.remainingFrac, protected: p.protected || null, takenOver: p.takenOver || null });
+          if (u.pathname === '/takeover') {
+            const pos = bot.takeoverPosition ? bot.takeoverPosition(key) : null;
+            if (!pos) return json(res, 404, { error: 'no open position for that mint' });
+            return json(res, 200, { ok: true, takenOver: pos.takenOver, position: snap(pos) });
+          }
+          const r = bot.releasePosition ? bot.releasePosition(key) : null;
+          if (r === null) return json(res, 404, { error: 'no open position for that mint' });
+          if (r === false) return json(res, 404, { error: 'position is not taken over' });
+          return json(res, 200, { ok: true, takenOver: null, position: snap(r) });
         } catch { return json(res, 400, { error: 'invalid JSON' }); }
       });
       return;

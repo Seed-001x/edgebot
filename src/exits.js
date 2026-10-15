@@ -98,7 +98,27 @@ export function evaluateExit(pos, mark, cfg, now) {
     stopArmedTs = null; floorChecks = 0; floorSince = null;
     if (exitPending != null) delete exitPending.ratchet;
   }
+  // TAKEOVER switch (user 2026-10-15, the XZON race: his manual sell collided with
+  // the bot's own ratchet sell and the bot's sell found no balance): POST /takeover
+  // hands the position to the user ENTIRELY. While pos.takenOver is set, NO exit
+  // section below runs — not the TP ladder, not the trails, not the stop family,
+  // not bleed/leash/ratchet, not the time stops, not even liquidity death: the bot
+  // must never sell any fraction of a coin the user is driving himself. Tracking
+  // still runs (ratio/peak/moveHist above are computed and returned, so marks and
+  // the true peak stay current for the dashboard and for release), but all ARMING
+  // state is dropped from the returned state: pendings cleared silently (no fake
+  // cancel events — exitConfirmEvents stays empty), the stop un-armed, probation
+  // and the adaptive-TP1 arm cleared. On release (bot.js), judging resumes fresh:
+  // the stall/probation clock re-anchors to the release moment (stallBaseTs,
+  // section 4b), so no clock that matured during the takeover can fire. Takeover
+  // supersedes protect: with both flags set, this return wins and nothing judges.
+  const taken = !!pos.takenOver;
   const out = (fraction, reason) => ({ fraction, reason, newPeak: peakRatio, newPeakMove: peakMove, ratio, stallSince: null, stopArmedTs, floorChecks, floorSince, probationSince, tp1Arm, moveHist, exitPending, exitConfirmEvents, protectedBlock });
+  if (taken) {
+    stopArmedTs = null; floorChecks = 0; floorSince = null; probationSince = null; tp1Arm = null;
+    if (exitPending != null) exitPending = {};
+    return { ...out(0, null), takenOver: true };
+  }
   // failSafe(kind, reason): a fail-safe exit whose FULL condition is true on this check calls
   // this instead of returning its sell directly. EXIT_CONFIRM_SEC = 0 (or a legacy position)
   // → the sell decision, exactly as before the layer. Otherwise the first trigger only ARMS
@@ -237,7 +257,13 @@ export function evaluateExit(pos, mark, cfg, now) {
   //     the original sell-at-the-deadline line, unchanged.
   const stallBandUp = cfg.stallBandUpPct ?? cfg.stallBandPct;
   const heldSec = heldMin * 60;
-  if (cfg.stallSec > 0 && !pos.tp1Done && heldSec >= cfg.stallSec) {
+  // TAKEOVER: after a release, the stall/probation clock re-anchors to the release
+  // moment (pos.stallBaseTs, set by bot.js releasePosition) — the takeover window
+  // never counts toward the prove-itself deadlines. Positions never released (the
+  // field absent) judge from entry exactly as before; the bleed below keeps the
+  // true age (heldSec) — only the stall/probation deadlines re-anchor.
+  const stallHeldSec = (now - (pos.stallBaseTs || pos.entryTs)) / 1000;
+  if (cfg.stallSec > 0 && !pos.tp1Done && stallHeldSec >= cfg.stallSec) {
     if ((cfg.stallProbationSec || 0) > 0) {
       if (probationSince == null) {
         // deadline reached inside the range: probation starts, no sell
@@ -249,11 +275,11 @@ export function evaluateExit(pos, mark, cfg, now) {
         // this very check if the deadline has passed, as any other exit would.
         const d = failSafe('leash', `probation leash (${((move - 1) * 100).toFixed(1)}% after stall deadline)`);
         if (d) return d;
-        if (heldSec >= cfg.stallProbationSec) return out(1, `probation expired (still in entry range at ${cfg.stallProbationSec}s, ${((move - 1) * 100).toFixed(1)}%)`);
+        if (stallHeldSec >= cfg.stallProbationSec) return out(1, `probation expired (still in entry range at ${cfg.stallProbationSec}s, ${((move - 1) * 100).toFixed(1)}%)`);
       } else if (move > 1 + stallBandUp) {
         probationSince = null; // breakout: probation over — the sections below judge normally
         cancelPending('leash');
-      } else if (heldSec >= cfg.stallProbationSec) {
+      } else if (stallHeldSec >= cfg.stallProbationSec) {
         return out(1, `probation expired (still in entry range at ${cfg.stallProbationSec}s, ${((move - 1) * 100).toFixed(1)}%)`);
       } else {
         cancelPending('leash'); // on probation, back above the leash line: a pending leash sell is disarmed

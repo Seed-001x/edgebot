@@ -450,6 +450,63 @@ export class Bot {
     return p;
   }
 
+  // TAKEOVER switch (user 2026-10-15, the XZON race: his manual sell and the bot's
+  // ratchet sell fired into the same balance): POST /takeover hands the position to
+  // the user ENTIRELY — wider than protect, which only silences the stop family +
+  // ratchet. While pos.takenOver is set, exits.js returns a hold before any exit
+  // section runs (the whole ladder, trails, stops, bleed, leash, time stops and
+  // liquidity death included), the bundle watcher cannot sell it, and the no-quote
+  // fallback cannot force it out: the bot must never sell a coin the user is
+  // driving himself. Marks, peaks and flow history keep updating, and the
+  // manual-exit detector + reconciler keep working — when the user sells by hand,
+  // the close books exactly as manual sells book today, now race-free. The flag
+  // lives ON the position record (persisted, survives restarts, no expiry) and
+  // clears only when the position closes (a rebuy starts untaken) or on release.
+  // Takeover supersedes protect: both flags may coexist; takeover wins.
+  takeoverPosition(key) {
+    const p = this.positions.find(x => x.mint === key || x.id === key || x.symbol === key);
+    if (!p) return null;
+    if (!p.takenOver) {
+      p.takenOver = this.now();
+      // any stored exitPending dies HERE, silently — a pending fail-safe sell can
+      // never execute into the takeover window (the judge drops them again on
+      // every check while the flag is set; this covers the gap before the next).
+      if (p.exitPending && typeof p.exitPending === 'object') p.exitPending = {};
+      this.stats.takeover = this.stats.takeover || { set: 0, released: 0, sellsSuppressed: 0 };
+      this.stats.takeover.set++;
+      console.log(`[takeover] ${p.symbol} taken over at ${new Date(p.takenOver).toISOString()} — bot will not sell this position until release or close`);
+    }
+    this.savePositions();
+    return p;
+  }
+
+  // Hands the position back (POST /release). Judging resumes FRESH, mirroring the
+  // protect switch's re-arm precedent: no pendings survive, the stop is un-armed,
+  // probation and the adaptive-TP1 arm are cleared, and the stall/probation clock
+  // re-anchors to the release moment (stallBaseTs — exits.js 4b judges from it), so
+  // no deadline that matured while the user held the coin can fire. Peaks are NOT
+  // reset: they tracked the whole takeover, so the trails judge against the true
+  // peak. Returns the position when a flag was cleared, false when the position
+  // exists but is not taken over, null when no open position matches.
+  releasePosition(key) {
+    const p = this.positions.find(x => x.mint === key || x.id === key || x.symbol === key);
+    if (!p) return null;
+    if (!p.takenOver) return false;
+    delete p.takenOver;
+    p.stallBaseTs = this.now();
+    p.stopArmedTs = null;
+    p.floorChecks = 0;
+    p.floorSince = null;
+    p.probationSince = null;
+    p.tp1Arm = null;
+    if (p.exitPending && typeof p.exitPending === 'object') p.exitPending = {};
+    this.stats.takeover = this.stats.takeover || { set: 0, released: 0, sellsSuppressed: 0 };
+    this.stats.takeover.released++;
+    this.savePositions();
+    console.log(`[takeover] ${p.symbol} released — exit judging resumed with fresh arming (stall clock re-anchored)`);
+    return p;
+  }
+
   // Tokens left the wallet outside the bot. P&L comes from the chain when the user's sell
   // transactions parse (marked pnlSource 'chain'), else an estimate from the last sell
   // quote (marked estimated) — and it counts toward the daily loss cap either way.
@@ -1693,8 +1750,11 @@ export class Bot {
 
     let decision;
     if (valueSol == null) {
+      // TAKEOVER: a position the user is driving himself is never force-exited —
+      // not even by the no-quote fallback below; the pass is a hold like any other.
+      if (pos.takenOver) decision = { fraction: 0, reason: null, newPeak: pos.peakRatio, takenOver: true };
       // no sell quote at all: after repeated failures, try to exit anyway — a coin we can't price is a coin we can't leave
-      if (pos.markFails >= 4) decision = { fraction: 1, reason: `no sell quote for ${pos.markFails} ticks`, newPeak: pos.peakRatio };
+      else if (pos.markFails >= 4) decision = { fraction: 1, reason: `no sell quote for ${pos.markFails} ticks`, newPeak: pos.peakRatio };
       else return;
     } else {
       const markNow = { valueSol, liqUsd: v.liq != null ? v.liq : null, buysM5: v.buysM5 != null ? v.buysM5 : null, sellsM5: v.sellsM5 || 0, solUsd, volH1: v.volH1 || 0 };
@@ -1729,6 +1789,15 @@ export class Bot {
       this.stats.protect = this.stats.protect || { set: 0, blocked: 0 };
       this.stats.protect.blocked++;
       console.log(`[protect] ${pos.symbol}: ${decision.protectedBlock} suppressed by protection`);
+    }
+    // TAKEOVER switch (user 2026-10-15): count the position checks whose exit
+    // judging was suppressed by a takeover — one per check while the flag is set.
+    // This counts suppressed JUDGING PASSES, not individual would-be exits: the
+    // judges never ran, so which exits would have fired is unknowable without
+    // running them — and running them is exactly what takeover forbids.
+    if (decision.takenOver) {
+      this.stats.takeover = this.stats.takeover || { set: 0, released: 0, sellsSuppressed: 0 };
+      this.stats.takeover.sellsSuppressed++;
     }
     if ('tp1Arm' in decision) pos.tp1Arm = decision.tp1Arm;
     // shadow ratchet judge (record-only): judged on the same check, off the same
@@ -1779,8 +1848,9 @@ export class Bot {
         }
       }
     }
-    // bundle exit risk: watch the big wallets while we hold; fail-open (any error = no signal)
-    if (valueSol != null && this.cfg.bundleWatch && !(decision.fraction >= 1)) {
+    // bundle exit risk: watch the big wallets while we hold; fail-open (any error = no signal).
+    // TAKEOVER: the bundle watcher is an exit judge too — it never runs on a taken-over position.
+    if (valueSol != null && this.cfg.bundleWatch && !pos.takenOver && !(decision.fraction >= 1)) {
       const bd = await this.bundleCheck(pos, valueSol, n).catch(() => null);
       if (bd && bd.fraction > (decision.fraction || 0)) decision = { ...bd, newPeak: pos.peakRatio };
     }
@@ -1933,7 +2003,7 @@ export class Bot {
       limits: { tradeSol: this.risk.effectiveTradeSol(), maxPositions: this.cfg.maxPositions, dailyLossSol: this.cfg.dailyLossSol, maxTradesPerHour: this.cfg.maxTradesPerHour, tp1Pct: this.cfg.tp1Pct, tp1Frac: this.cfg.tp1Frac },
       watchlist: this.watch.size,
       pairedShadow: this.paired ? { pending: this.paired.pending.size, done: this.paired.done.length } : { pending: 0, done: 0 },
-      positions: this.positions.map(p => ({ id: p.id, symbol: p.symbol, mint: p.mint, setup: p.setup, entrySol: p.entrySol, remainingFrac: p.remainingFrac, peakRatio: +(p.peakRatio || 1).toFixed(2), heldMin: +((this.now() - p.entryTs) / 60000).toFixed(1), simulated: p.simulated, noTp: !!p.noTp, protected: p.protected || null })),
+      positions: this.positions.map(p => ({ id: p.id, symbol: p.symbol, mint: p.mint, setup: p.setup, entrySol: p.entrySol, remainingFrac: p.remainingFrac, peakRatio: +(p.peakRatio || 1).toFixed(2), heldMin: +((this.now() - p.entryTs) / 60000).toFixed(1), simulated: p.simulated, noTp: !!p.noTp, protected: p.protected || null, takenOver: p.takenOver || null })),
       // stats.shadowTrades is read from the tracker at read time so /state can
       // never show a stale report card between the maintained sync points
       stats: this.shadowTrades ? { ...this.stats, shadowTrades: this.shadowTrades.totalsView() } : this.stats,
