@@ -49,6 +49,15 @@ if (cfg.flowEnabled && (cfg.flowWallets.length || cfg.flowSoloWallets.length)) {
   console.log(`[edgebot] flow watch: ${flow.wallets.length} wallets (${cfg.flowSoloWallets.length} solo), polling every ${cfg.flowPollSec}s`);
 }
 
+// Wallet-task shadow detectors (user brief 2026-10-14 Phases 4–6; go 2026-10-15):
+// dev launches + survivor confluence over the Phase 1–3 wallet sets. LOG-ONLY —
+// events are gate-judged in shadow and outcome-tracked; promotion is a flag the
+// user acts on. Polls the existing Helius RPC; fail-open.
+if (cfg.walletWatchEnabled && bot.walletWatch) {
+  bot.walletWatch.start();
+  process.on('SIGTERM', () => bot.walletWatch.stop());
+}
+
 // Graduation watch (user 2026-10-14): polls pump.fun's v3 API for fresh
 // completions every GRAD_POLL_SEC and feeds them into the watchlist through
 // noteMint's reserved slice (source 'graduated'). The /reallists graduated list

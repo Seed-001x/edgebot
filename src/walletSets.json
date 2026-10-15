@@ -1,0 +1,1979 @@
+{
+ "generatedFrom": "k1llsw1tch-investigation/data/wallets (Phases 1-3, 2026-10-14)",
+ "baseline": {
+  "runnerShare": 0.218,
+  "crashShare": 0.381,
+  "r60Median": -0.375,
+  "runnerDef": "maxRet >= +50%",
+  "crashDef": "minRet <= -50%",
+  "rugDef": "minRet <= -90%"
+ },
+ "devs": [
+  {
+   "address": "7fUaeJtTSg9NcgerLpbByEAwsGyu2goXC4r3j439v4am",
+   "name": "good dev?"
+  },
+  {
+   "address": "HEa1ovPLw4dXd6QtYANGr3838wqRABt43mFXw8v6c1jD",
+   "name": "insider"
+  },
+  {
+   "address": "6uDd3tKSdw3j2yxaC8DFmYZzgofn2P5fj6gfXNMwFZ96",
+   "name": "j dev"
+  },
+  {
+   "address": "6NceTehWXtdQ6sQxmqRUuRqGvu4sWfJWJA5Y6fizvDUY",
+   "name": "secret bundle"
+  },
+  {
+   "address": "Bisnq9ZHwdrVw5pGy8rw2XgJS5oEGufGb91ds8wcZL7V",
+   "name": "secret bundle"
+  },
+  {
+   "address": "CvhUR9GTbMFKFR6Cx24NiDgNcCncyTUGauhq9SWkBYuU",
+   "name": "bundler"
+  },
+  {
+   "address": "F65G3ABGPoDTYoJLdq1vP8G66X7hqGYE5inrNGb4U7Mu",
+   "name": "rosclaw dev"
+  },
+  {
+   "address": "GpTXmkdvrTajqkzX1fBmC4BUjSboF9dHgfnqPqj8WAc4",
+   "name": "ALPHA DEV"
+  },
+  {
+   "address": "8HeDT75s5g4CtCimH5B5nySqCiQhtWii8UnZhxBtFo38",
+   "name": "KREO DEV"
+  },
+  {
+   "address": "FM1YCKED2KaqB8Uat8aB1nsffR1vezr7s6FAEieXJgke",
+   "name": "76 DEV"
+  },
+  {
+   "address": "9hD5wsPWy7xzU8aVxToZsgiAVvjhHgf4A6AmA1Cjn49o",
+   "name": "GAKE INSIDER"
+  },
+  {
+   "address": "23QuARJvRDKYy7c9QM8NCVZJSBKy3EALUkzSvf5Gft3U",
+   "name": "good dev"
+  },
+  {
+   "address": "DCj2TAjbSujcdPNVzBAx7fguaufpqwoWTmiAGNUc5Ywg",
+   "name": "PIPPIN DEV"
+  },
+  {
+   "address": "GDTMqe1pdWtKEavVExFdcGYgezmz7xaEJ23b7cbfSuE8",
+   "name": "og dev"
+  },
+  {
+   "address": "HyYNVYmnFmi87NsQqWzLJhUTPBKQUfgfhdbBa554nMFF",
+   "name": "FART DEV"
+  },
+  {
+   "address": "Gme4BGc1jeE9yxGkqoXRr6Nj6aAhLdei24WmTTwpAwNX",
+   "name": "mitch dev"
+  },
+  {
+   "address": "pkdZ6qRbKLVJ8qC9HSHAibacZk9JYfLs7w1ipqteYvg",
+   "name": "FC DEV 2"
+  },
+  {
+   "address": "EwTNPYTuwxMzrvL19nzBsSLXdAoEmVBKkisN87csKgtt",
+   "name": "GAKE INSIDER"
+  },
+  {
+   "address": "HTM87R4mgjDdiF6Yfn8duK9vbDmZxiPCTRbGvm7eCAJY",
+   "name": "ABSOL DEV"
+  },
+  {
+   "address": "EyVaGh2eyp6zFPWLAiXx8wzEjn98VktPaANra78vkAKm",
+   "name": "BUNDLE 1"
+  },
+  {
+   "address": "DAEdBmTPEKM6xkwfzC3d411QUe6coKpkND6UURa4CvHC",
+   "name": "shibe dev?"
+  },
+  {
+   "address": "5bvKKEVpC6m8JAccHuw6Cb4PT4KETttv7Q9HNHWsQyyZ",
+   "name": "clav dev"
+  },
+  {
+   "address": "sssssDdMNAWKingjpEojkTNdVuZrBe7FsJLaGtexe7d",
+   "name": "holy bundle"
+  }
+ ],
+ "survivors": [
+  {
+   "entity": "E0002",
+   "name": "frank",
+   "cluster": "frank",
+   "wallets": [
+    "GSWDonAU9r3qRMmX2YPkJ5gS5h3CUUEbkgFVNTDNvomk",
+    "EeNd3dv4TUYfNxUkYHCo7QYJdBnVdrkKjBTWB8Qytgyn",
+    "2CKNDipihLn6XhqLKEVyiKpvLpWLfbPAq9roFo4dBxSw",
+    "7JR6yU9GtRppGoU5kRRLjT9wWuSjHhZMEqqpNcTSwCCf",
+    "C5ZbERFzrVv1wNDC73y5DtbjcL5hoFhhRqqGVZydWGjz",
+    "G4uHQ85j65KBsypPH6qVqoiSYUBuH9YTAqRpuhjLRJBq",
+    "BpkZCqiMDDk4pCdBRQ97huoB6kccB5s6SEzDkNxxqzFc",
+    "2L9mhAGd4FiSbcKemb63WcHf8vvWfnXYmP1BJvjAJKWt",
+    "7qkHNctGRYg474mrPX1gFY1xPgvjRquRJZ5xSKr8sKfe",
+    "AMcHYqUj4HPUdkDkEatguugNSmKaQTdvxzexzqsXDU4r",
+    "815fk3tuo6gWBVq4Kr5oJFo1ZbW2LLTdu6vrCDdfjJnW",
+    "98qWYyAUGpMGXmMkAN6iapBzWbJWDBT9Y2jAmBZrzATN",
+    "HDPULyHhMqwfWh45z2fQoGzmdp6dcRihy57dxucmrScg",
+    "kWnn1BxytN3mvsUtMrjttHodTwsQctpPXyGHWBXZUQ5",
+    "2szwULvyaNRbZSEJ68hGFxvW6iH9bq3xqGffFUnpnhZK",
+    "5sLZWNYifAntSR7Wbn5nc8DS7HFU36yxvcrJYyAQgmPo",
+    "AaxB8NKHfZsE3DjYDiwJcPtXJUNG1DU46QSZoKdxT1oT",
+    "GJvzjpMw9B4k5J5HuPUBvVD7Ag9sa2zt5BwBiJKUKmw6",
+    "AgmLJBMDCqWynYnQiPCuj9ewsNNsBJXyzoUhD9LJzN51",
+    "498g1rVnFcnjBjpfw1xyqA1WvgQXUU8RWuELjxkjAayQ",
+    "DAejzMs5cUeCCENNvapy9KWFwzwegh7LvcgNkZ6hnf1y"
+   ]
+  },
+  {
+   "entity": "E0004",
+   "name": "multi",
+   "cluster": "multi",
+   "wallets": [
+    "3VjkDRH1M9mZ9gNfHWzTmSvydJ6CwXamsN74rndZrrpk",
+    "3tgpbmw99da6WFPfPh7uRPMLpEhSjuj8JMRXrPD2wiYA",
+    "9H8xpLFE9p7kHDJG3S2JLqigy1VuvuohgFfECnVJtUBj",
+    "6vsBsvsWEcBUbMozq1niqnEsZnvZBwjajUicqg9yiCVW",
+    "AizNunC6P79FBigQSwiH4e79g4JojJUhtJwWDeGo4GaL",
+    "9H692HgE1fM9MGmGcrQdVGDRK1tPe1bPtiGwnwkPJV6L",
+    "ApEGuiswTn6o6p79AUUbN574GzQaq3biq1is6Lddqq3",
+    "GkqnbJYmDKpMRxELdbRuGqMkGgPm1DbnFzLE1v5yLJ6E"
+   ]
+  },
+  {
+   "entity": "E0007",
+   "name": "paper",
+   "cluster": "paper",
+   "wallets": [
+    "4SGM7s1i8aiukR3vbLSibKJqxsgxWNoLUnkciS9j28Kp",
+    "8nqtxpFpuXwfXG4pBLsDkkuMMPK9FjSkBMCn542HiM3v",
+    "2Xjizmu5FwVX36JyVGcWMDaNoQN1VWU25tz1TFk24nd7",
+    "BprdjjAzFLoS2gVJqUVR1pdJpwCacNK4kctLTiMmcdSh",
+    "DSMMszFoe51bNs99kxhZqy9eKFiUH4Gd713wRZshq3bu",
+    "34Kq3jEpUxjr41CCE9ot6nSgdANgvqA44hLpYwuPHTB6"
+   ]
+  },
+  {
+   "entity": "E0012",
+   "name": "wtf",
+   "cluster": "wtf",
+   "wallets": [
+    "G7NvZKjoVqBDWciSYtWWgUPB7DA1iJavdvH5jty2FAmM",
+    "922M9fBTzwGfC4Gqu3WxB8S89WHaTfVAUZKwK5PNtZpk",
+    "BMkHjN2N8K2PdCqeC92YYjUovn9ecW4GvFpH6yDggXWJ",
+    "2sapuxSmfbKAziDJKTwJWtqfZoukBLKX5zeBCVdPDpz7",
+    "5xmXDNgbUH3UAqWhLtrb5aWGa1vwhqXHSR5WsSqBynf3"
+   ]
+  },
+  {
+   "entity": "E0016",
+   "name": "JACK 3",
+   "cluster": "jack",
+   "wallets": [
+    "6Eegkyd2qNzxSzZz3PH3jiDyqL5HFcHdcsb9zfMzWHKB",
+    "D7xK1ZLz8KQNWN8aU1jbzNAuT5xwqgFrCUUYodVU4G42",
+    "2KcgPBBK6cpRVNHVqboEacQxACnCKmoMTaUSNRFNt3su",
+    "BAr5csYtpWoNpwhUjixX7ZPHXkUciFZzjBp9uNxZXJPh"
+   ]
+  },
+  {
+   "entity": "E0017",
+   "name": "mill",
+   "cluster": "mill",
+   "wallets": [
+    "EeXvxkcGqMDZeTaVeawzxm9mbzZwqDUMmfG3bF7uzumH",
+    "AwJU7DSPTREnhU4sY4piw11JYCDkaa1LNsKo3EXFqmvB",
+    "7BNaxx6KdUYrjACNQZ9He26NBFoFxujQMAfNLnArLGH5",
+    "moanTeQ4d1c1wtZYENytCm1yZDXwUcUYTnSNpjpB4jF"
+   ]
+  },
+  {
+   "entity": "E0018",
+   "name": "POW",
+   "cluster": "pow",
+   "wallets": [
+    "7eNRALuXYUJkUWTvRj5tcB7tcT43kmT5SNdkfy9fKTto",
+    "3NbL2gNYoZ2fXnpsxNwMWdpHhw2f9tfbSxBR5JwcWpKY",
+    "DwtF6KdjB9xgzKhCvcxKQLGU1NezdFFdVo8tLzSb7C8W",
+    "8zFZHuSRuDpuAR7J6FzwyF3vKNx4CVW3DFHJerQhc7Zd"
+   ]
+  },
+  {
+   "entity": "E0025",
+   "name": "ghost",
+   "cluster": "ghost",
+   "wallets": [
+    "5WJ8vABvVHzNwutbtqKBAMPXWENa5Vin2i7FGKinPa9x",
+    "HodLXSGKApwv2ZYi1BTwo5DAwwxWV4zhMGa4Wz17URvd",
+    "CHANTbdY12r3sXmgi9cEPW3wNP2wc25rMrwLxBBPkJ5R"
+   ]
+  },
+  {
+   "entity": "E0027",
+   "name": "hmmm",
+   "cluster": "hmmm",
+   "wallets": [
+    "5235U3nC6LqbHWQQEacY9yrvTkRXfwkE8eHbde7UegCS",
+    "2i8Qwskicrr2SdhjZBvPuogpG6EskUWAkfFekSgKnWWY",
+    "49LsvaMuS4mbaKRDTr7hWfaFzUR9DRXhegDhLCTDqkdg"
+   ]
+  },
+  {
+   "entity": "E0030",
+   "name": "scharo",
+   "cluster": "scharo",
+   "wallets": [
+    "HzmYHesdF9CWwDQTNaegRzJ3ZZSK3FcgCRWrJ5gdzpPk",
+    "EoorMiPynd4mEioA7XvbYXCtFn8K9bzDbE3UHzXjrK8a",
+    "4sAUSQFdvWRBxR8UoLBYbw8CcXuwXWxnN8pXa4mtm5nU"
+   ]
+  },
+  {
+   "entity": "E0032",
+   "name": "SLINGOOR",
+   "cluster": "slingoor",
+   "wallets": [
+    "6mWEJG9LoRdto8TwTdZxmnJpkXpTsEerizcGiCNZvzXd",
+    "5YRgrP3mjGzrzirYYN5HAQH19cTYREYwGxW6XRJQUzij",
+    "H43C7PWeeYxKfQLMKpN1KQPPYiEb3bBjRp5WZwmPWXAy"
+   ]
+  },
+  {
+   "entity": "E0036",
+   "name": "www",
+   "cluster": "www",
+   "wallets": [
+    "9ecRdqNCBxwReiY2pxtnLeayeBzE1CrSSmKKJJGdmsaJ",
+    "5Drny4ZTPhg98nAL9f9E78dqUBvtDfe16HABKMmUT7f2",
+    "FKEi9ykcdNWxkW7w77d6qLdqhHaPRQAvrhJQDaeDFvhY"
+   ]
+  },
+  {
+   "entity": "E0044",
+   "name": "chairman",
+   "cluster": "chairman",
+   "wallets": [
+    "Be24Gbf5KisDk1LcWWZsBn8dvB816By7YzYF5zWZnRR6",
+    "2RFKTfaSHeqor2CUD3oAcqiU8JbaFTxo7uTgvAWhCDqi"
+   ]
+  },
+  {
+   "entity": "E0051",
+   "name": "EQ",
+   "cluster": "eq",
+   "wallets": [
+    "BBkvUJCaucfawrL9aDDtJEtoEm77yk6HGgd3h9eTEh15",
+    "CrCAvyQ78362N7ar7frofog2zyTphdMrUUXZerACnKtT"
+   ]
+  },
+  {
+   "entity": "E0052",
+   "name": "EURIS 2",
+   "cluster": "euris",
+   "wallets": [
+    "HetnuaUUbBjFCx5wFYoiQuTRmDFKbEwqj1z4MsEJ1jYf",
+    "DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj"
+   ]
+  },
+  {
+   "entity": "E0058",
+   "name": "INSENTOS",
+   "cluster": "insentos",
+   "wallets": [
+    "7SDs3PjT2mswKQ7Zo4FTucn9gJdtuW4jaacPA65BseHS",
+    "33vFB2rtG9FDpJReNaJrBF4RZgri5HTVo5gSxP1XfVCr"
+   ]
+  },
+  {
+   "entity": "E0064",
+   "name": "KOYLA",
+   "cluster": "koyla",
+   "wallets": [
+    "Bq5N5kQYFDT9ZNE3CaZL519oyYbS3TokSspouzqJvKjR",
+    "8sfbKCYFvKuzG6vE5dAyHrSVxEgRWgMrcjUEvfhYr4ng"
+   ]
+  },
+  {
+   "entity": "E0066",
+   "name": "layooo",
+   "cluster": "layooo",
+   "wallets": [
+    "nAqjrjb3MwahPaN8LqJYrEuCVHY4HyD4VcnW2cWuGkE",
+    "6sMDJBGpRwgZvcnvxtUjaubwNwQ2SHWQMSvdPonEvLKg"
+   ]
+  },
+  {
+   "entity": "E0067",
+   "name": "LJC",
+   "cluster": "ljc",
+   "wallets": [
+    "6HJetMbdHBuk3mLUainxAPpBpWzDgYbHGTS2TqDAUSX2",
+    "5HGyaM8APxzQRZzZKAWZY3Q931q5ExsksQUyTm42kCKR"
+   ]
+  },
+  {
+   "entity": "E0069",
+   "name": "NEEGY",
+   "cluster": "neegy",
+   "wallets": [
+    "DeTdKFovJDb9YXVCE8Ap6Lcc3XQh8JyKAV4rG2ASSKZf",
+    "EpzcEoamvD8Rwhzb2KGTcit2PeDh5ZrDMvCeeEiXveos"
+   ]
+  },
+  {
+   "entity": "E0072",
+   "name": "omar",
+   "cluster": "omar",
+   "wallets": [
+    "Dgehc8YMv6dHsiPJVoumvq4pSBkMVvrTgTUg7wdcYJPJ",
+    "2zvSYhoejqAdAsH52gmWHM1dm179yDmBGcFbFxatHf6x"
+   ]
+  },
+  {
+   "entity": "E0073",
+   "name": "ooooo",
+   "cluster": "ooooo",
+   "wallets": [
+    "MobS6L5HhVJtxpeafDgREsweWFh53xFoUeP9pgbaDSf",
+    "5MAF9acQCSxbenmTwaP1MrbUEjJp9HnbYvoCKxdwM2nC"
+   ]
+  },
+  {
+   "entity": "E0074",
+   "name": "ORANGIE 2",
+   "cluster": "orangie",
+   "wallets": [
+    "DuQabFqdC9eeBULVa7TTdZYxe8vK8ct5DZr4Xcf7docy",
+    "83b2LMf12aLec92kur3duRA8VvUkLaXUtML31aCcZNCM"
+   ]
+  },
+  {
+   "entity": "E0077",
+   "name": "panda",
+   "cluster": "panda",
+   "wallets": [
+    "6QbjsMqLVzpssK6ijwC3YMe7qGLco4L6d6ozkmJaZPEh",
+    "5RT3pEAJgn15osD4whsVWfH9UEyMcgAA2TYETiTMv3jM"
+   ]
+  },
+  {
+   "entity": "E0078",
+   "name": "PIONEER",
+   "cluster": "pioneer",
+   "wallets": [
+    "3h65MmPZksoKKyEpEjnWU2Yk2iYT5oZDNitGy5cTaxoE",
+    "H3en1XWQHfbNWjEDRnRFi6HKVkZG1P7twdAHTvnCnYE3"
+   ]
+  },
+  {
+   "entity": "E0080",
+   "name": "POPS",
+   "cluster": "pops",
+   "wallets": [
+    "5dd3zjBQQvQqtmWF67nR6XaRKe79cYu4fP6LFXZ1YRR9",
+    "GFrra49Go4bN7zKB5AjwrWXmwL6aFz5aena6KAEHNiej"
+   ]
+  },
+  {
+   "entity": "E0084",
+   "name": "risk?",
+   "cluster": "risk",
+   "wallets": [
+    "GCFjKNqHxZQ6UfGqw8RdjWCS3Wi3wgCY5HF9vbV36ARK",
+    "BHREKFkPQgAtDs8Vb1UfLkUpjG6ScidTjHaCWFuG2AtX"
+   ]
+  },
+  {
+   "entity": "E0094",
+   "name": "WHASHY 2",
+   "cluster": "whashy",
+   "wallets": [
+    "D9gQ6RhKEpnobPBUdWY5bPQt2p3zGk3iVz6ChpUi2ArA",
+    "GZVSEAajExLJEvACHHQcujBw7nJq98GWUEZtood9LM9b"
+   ]
+  },
+  {
+   "entity": "E0096",
+   "name": "wow",
+   "cluster": "wow",
+   "wallets": [
+    "9ryBR3SnxgGPhWsKvsfxuNHUCTt6tSpLe8wrKCShXLaq",
+    "D43UCxNzHMBLdzJqH5b8zzhYLMG2Ks1FG5tHRNDMTHv5"
+   ]
+  },
+  {
+   "entity": "E0099",
+   "name": "ABSOL",
+   "cluster": "absol",
+   "wallets": [
+    "BXNiM7pqt9Ld3b2Hc8iT3mA5bSwoe9CRrtkSUs15SLWN"
+   ]
+  },
+  {
+   "entity": "E0102",
+   "name": "700k",
+   "cluster": "E0102",
+   "wallets": [
+    "2n78p72RVYbyAiPtzZCNBYjMsEXKRiqfd5zArK8r2tgG"
+   ]
+  },
+  {
+   "entity": "E0104",
+   "name": "4",
+   "cluster": "E0104",
+   "wallets": [
+    "3L8RAxLkvwkz4CgHivaVRtq19741FAdGLk5DgjRfc1fW"
+   ]
+  },
+  {
+   "entity": "E0105",
+   "name": "47%",
+   "cluster": "E0105",
+   "wallets": [
+    "3SXty9M8FNLEVBTMpH2B8cv7CZvXVR7kNa8eMGjJdUW5"
+   ]
+  },
+  {
+   "entity": "E0106",
+   "name": "878787",
+   "cluster": "E0106",
+   "wallets": [
+    "3VUNtVtjjx5ckUojT7UocJ5fbuAJRsNUXNfTBnPte9vC"
+   ]
+  },
+  {
+   "entity": "E0109",
+   "name": "76k",
+   "cluster": "E0109",
+   "wallets": [
+    "4unTjmdcxPUq1L3CDvW69UCVvdZ46ZeSMrdtr2L2o8dR"
+   ]
+  },
+  {
+   "entity": "E0114",
+   "name": "86",
+   "cluster": "E0114",
+   "wallets": [
+    "5ZuV8eqkvzYFVEKbLvGBdexL2tFv7E5BCd2HZpjqbdg"
+   ]
+  },
+  {
+   "entity": "E0123",
+   "name": "666",
+   "cluster": "E0123",
+   "wallets": [
+    "7Mwof5tBvNPC6e1zwtHRQynqXcuDpqqbeY9vSZLW2Bv8"
+   ]
+  },
+  {
+   "entity": "E0125",
+   "name": "48%",
+   "cluster": "E0125",
+   "wallets": [
+    "7tQfpMCM8bPWgfLGaQ2G3RQ5gAgQneqHbtgAn4FdN2m1"
+   ]
+  },
+  {
+   "entity": "E0129",
+   "name": "58%",
+   "cluster": "E0129",
+   "wallets": [
+    "8g6ABtMuBdx2mm2UFixft2WNcLhYuYGKrrgnFEwi7Rxh"
+   ]
+  },
+  {
+   "entity": "E0131",
+   "name": "1.8",
+   "cluster": "E0131",
+   "wallets": [
+    "8zkgFGVZrDLieViwqiXFCydSX6WL5hsxmUu55yBdsNsZ"
+   ]
+  },
+  {
+   "entity": "E0139",
+   "name": "???",
+   "cluster": "E0139",
+   "wallets": [
+    "BUvQ1aNANRFUVNxskfiNyDG3MPfdhsjd8ePQMMYXXMS7"
+   ]
+  },
+  {
+   "entity": "E0141",
+   "name": "100k",
+   "cluster": "E0141",
+   "wallets": [
+    "C1HWvjfaA6Y33T59ULtGmrknjpmu4yaRALoL5tGF5fCS"
+   ]
+  },
+  {
+   "entity": "E0142",
+   "name": "740k",
+   "cluster": "E0142",
+   "wallets": [
+    "CFmr5rvSrHTeRYHvhiSsBjt5EE8rbxXeqDtCKZNLzepw"
+   ]
+  },
+  {
+   "entity": "E0145",
+   "name": "????",
+   "cluster": "E0145",
+   "wallets": [
+    "CY88tFMoUXiUab1pBhaa2FoqjSeWezwnehdy7LysAans"
+   ]
+  },
+  {
+   "entity": "E0146",
+   "name": "56",
+   "cluster": "E0146",
+   "wallets": [
+    "CaDD7hopTRnkthtUem6vusX8Z8t54kHGAvmQ5AqjZ6Bd"
+   ]
+  },
+  {
+   "entity": "E0151",
+   "name": "--",
+   "cluster": "E0151",
+   "wallets": [
+    "EQKeA12n4hvs4GhHmdcTMUSkUDF3aurw6zjLXogsw7Sk"
+   ]
+  },
+  {
+   "entity": "E0168",
+   "name": "????",
+   "cluster": "E0168",
+   "wallets": [
+    "HhWUnp8g49VmD15sznbUhfykAnkV2hsHqmUrcGqrLbnd"
+   ]
+  },
+  {
+   "entity": "E0176",
+   "name": "??",
+   "cluster": "E0176",
+   "wallets": [
+    "v2yNhm4KkC87MdBkvvYiMVP7UdSyNYLrfXrFte8A5a7"
+   ]
+  },
+  {
+   "entity": "E0179",
+   "name": "ahhh",
+   "cluster": "ahhh",
+   "wallets": [
+    "ASDFruxadgg2g7F7wqJCS3bCk8Lzxag7SFidpCDKJBKU"
+   ]
+  },
+  {
+   "entity": "E0180",
+   "name": "54% AI QUANT",
+   "cluster": "aiquant",
+   "wallets": [
+    "73Yoaz9LLso4vZWR8m7ZfZt4d1AgobM5ztzUjuhYiUwz"
+   ]
+  },
+  {
+   "entity": "E0184",
+   "name": "algordio",
+   "cluster": "algordio",
+   "wallets": [
+    "Bz34iJQodZF3NDXumZrJWuQwhnrLzkTM3gHVftZsCH2j"
+   ]
+  },
+  {
+   "entity": "E0188",
+   "name": "andy",
+   "cluster": "andy",
+   "wallets": [
+    "Cr1n5ZTc1W42zxHQ2LEAHUyvKPrm3ABAHKmFABMh9bKT"
+   ]
+  },
+  {
+   "entity": "E0189",
+   "name": "anger",
+   "cluster": "anger",
+   "wallets": [
+    "GgDAijkjPdaXNdiPQyqKZuTDE6DeTXSYxrfvCjBorZst"
+   ]
+  },
+  {
+   "entity": "E0193",
+   "name": "apeape",
+   "cluster": "apeape",
+   "wallets": [
+    "9qcHMAe2TD1JXzztJrQdCCCcRoPM3CmGsZuP7zGJ3sdS"
+   ]
+  },
+  {
+   "entity": "E0198",
+   "name": "bagwork",
+   "cluster": "bagwork",
+   "wallets": [
+    "87rRdssFiTJKY4MGARa4G5vQ31hmR7MxSmhzeaJ5AAxJ"
+   ]
+  },
+  {
+   "entity": "E0204",
+   "name": "BEAVER",
+   "cluster": "beaver",
+   "wallets": [
+    "GM7Hrz2bDq33ezMtL6KGidSWZXMWgZ6qBuugkb5H8NvN"
+   ]
+  },
+  {
+   "entity": "E0214",
+   "name": "blastoise",
+   "cluster": "blastoise",
+   "wallets": [
+    "ENkZtLj1onzQRGnEeRkQfFzBeeY2dCeiQMXDzh8XbQbj"
+   ]
+  },
+  {
+   "entity": "E0216",
+   "name": "blonde",
+   "cluster": "blonde",
+   "wallets": [
+    "9M6hk2gkAcQMbfNx6GZiB5Ss4EKgi2aNJ5FfFPdeDEFZ"
+   ]
+  },
+  {
+   "entity": "E0217",
+   "name": "bluey",
+   "cluster": "bluey",
+   "wallets": [
+    "6TAHDM5Tod7dBTZdYQxzgJZKxxPfiNV9udPHMiUNumyK"
+   ]
+  },
+  {
+   "entity": "E0220",
+   "name": "BOBBY",
+   "cluster": "bobby",
+   "wallets": [
+    "8oQoMhfBQnRspn7QtNAq2aPThRE4q94kLSTwaaFQvRgs"
+   ]
+  },
+  {
+   "entity": "E0221",
+   "name": "bobo 2",
+   "cluster": "bobo",
+   "wallets": [
+    "FiwwHe2obYsFoxprUXRWdAgHxMfKwK7ca9YB3g8bmX13"
+   ]
+  },
+  {
+   "entity": "E0223",
+   "name": "bong",
+   "cluster": "bong",
+   "wallets": [
+    "Cj84Z6EKfEXjwqR1nfPQ2xr9gikDgJYFVBrUFTmxPTUM"
+   ]
+  },
+  {
+   "entity": "E0228",
+   "name": "bradly",
+   "cluster": "bradly",
+   "wallets": [
+    "G8u4mJ4UnkR41ogiHEzmw1pcnHw7xZE6eyU7QNRQtirq"
+   ]
+  },
+  {
+   "entity": "E0229",
+   "name": "branch",
+   "cluster": "branch",
+   "wallets": [
+    "BRANCHVDL53igBiYuvrEfZazXJm24qKQJhyXBUm7z7V"
+   ]
+  },
+  {
+   "entity": "E0230",
+   "name": "brezscales",
+   "cluster": "brezscales",
+   "wallets": [
+    "Fvkc2thk1YcAASdR2gi8uf9n67JW9Dqqr9iRd99MDhoB"
+   ]
+  },
+  {
+   "entity": "E0231",
+   "name": "brian",
+   "cluster": "brian",
+   "wallets": [
+    "7pDhG6NqfzQzw5KvtGXJbVRUh4iTBgYAn68BSKjdMNC1"
+   ]
+  },
+  {
+   "entity": "E0234",
+   "name": "bsh",
+   "cluster": "bsh",
+   "wallets": [
+    "63eRjs7jeDsgCEsMr5tUT72WCgbn2Q6q6t6ynfg5Au9"
+   ]
+  },
+  {
+   "entity": "E0236",
+   "name": "bulli",
+   "cluster": "bulli",
+   "wallets": [
+    "GjXobpiEexQqqLkghB29AtcwyJRokbeGDSkz8Kn7GGr1"
+   ]
+  },
+  {
+   "entity": "E0240",
+   "name": "BWA",
+   "cluster": "bwa",
+   "wallets": [
+    "bwamJzztZsepfkteWRChggmXuiiCQvpLqPietdNfSXa"
+   ]
+  },
+  {
+   "entity": "E0248",
+   "name": "Chester",
+   "cluster": "chester",
+   "wallets": [
+    "PMJA8UQDyWTFw2Smhyp9jGA6aTaP7jKHR7BPudrgyYN"
+   ]
+  },
+  {
+   "entity": "E0254",
+   "name": "cinderella",
+   "cluster": "cinderella",
+   "wallets": [
+    "CVfyypa4rLTGqcv1Zabj7xqQmMRmPSTofdsfSi4taiSc"
+   ]
+  },
+  {
+   "entity": "E0257",
+   "name": "clark",
+   "cluster": "clark",
+   "wallets": [
+    "BSsyo5oh2tuaZBjjWq6V3NHS66BTHfmV1aJd6RDyknLQ"
+   ]
+  },
+  {
+   "entity": "E0259",
+   "name": "CLOWN",
+   "cluster": "clown",
+   "wallets": [
+    "EDXHdSFdadFbYFFjxPXBqMe1kCEDFqpPu552uvp48HR8"
+   ]
+  },
+  {
+   "entity": "E0268",
+   "name": "cottage",
+   "cluster": "cottage",
+   "wallets": [
+    "4UwK5AE6Djdf3MfwtPGE8pFYD47MhU9fiStDVmSHJVMB"
+   ]
+  },
+  {
+   "entity": "E0269",
+   "name": "cottonpicker",
+   "cluster": "cottonpicker",
+   "wallets": [
+    "66B95ED19CLsJtsVYPkTBQT3EZPPpEawCimCPruVucSX"
+   ]
+  },
+  {
+   "entity": "E0270",
+   "name": "coulda",
+   "cluster": "coulda",
+   "wallets": [
+    "BwPFmWgirMuf7RDyxxBg8eBHwFuqSTupSdtgG3DRNpDd"
+   ]
+  },
+  {
+   "entity": "E0272",
+   "name": "crayohla",
+   "cluster": "crayohla",
+   "wallets": [
+    "GDoG4tdbx8qkpECQKF5MebbEDpFJn6H739psqgoTG3aN"
+   ]
+  },
+  {
+   "entity": "E0274",
+   "name": "crispy",
+   "cluster": "crispy",
+   "wallets": [
+    "7QtDFgZhLycDiC5RspB2tPyoV6EkbLwetDSKCiWJxKLL"
+   ]
+  },
+  {
+   "entity": "E0276",
+   "name": "DANI",
+   "cluster": "dani",
+   "wallets": [
+    "AuPp4YTMTyqxYXQnHc5KUc6pUuCSsHQpBJhgnD45yqrf"
+   ]
+  },
+  {
+   "entity": "E0278",
+   "name": "DAVID",
+   "cluster": "david",
+   "wallets": [
+    "J485YzQjuJPLYoFEYjrjxd7NAoLHTiyUU63JwK7kLxRr"
+   ]
+  },
+  {
+   "entity": "E0287",
+   "name": "detweiler",
+   "cluster": "detweiler",
+   "wallets": [
+    "EC2f5DnHzuNRit1ExqghSifDbp1wgrzktsRRZCtU92MJ"
+   ]
+  },
+  {
+   "entity": "E0291",
+   "name": "dior",
+   "cluster": "dior",
+   "wallets": [
+    "FcfJmRr8wYRmE1rdrLeqvnzzJvXambDZxsjbjKyv6mCM"
+   ]
+  },
+  {
+   "entity": "E0293",
+   "name": "dns",
+   "cluster": "dns",
+   "wallets": [
+    "5NBhBhGe78Vonx1zJyV1wBjkZDtAAwLJzrFYaZmf2xLe"
+   ]
+  },
+  {
+   "entity": "E0295",
+   "name": "donchain",
+   "cluster": "donchain",
+   "wallets": [
+    "HRvzMSF8D9Kg1eXhBMsTJdZMeoxZQA9KCvzebGkPFetp"
+   ]
+  },
+  {
+   "entity": "E0296",
+   "name": "DONUT",
+   "cluster": "donut",
+   "wallets": [
+    "3wjyaSegfV7SZzjv9Ut1p6AcY5ZdoZjmu6i6QPCVvnmz"
+   ]
+  },
+  {
+   "entity": "E0311",
+   "name": "EEEEE",
+   "cluster": "eeeee",
+   "wallets": [
+    "HE367CvqiYGqpNH7y4ffLBBi4NKKShGQ7DhTv3MGZ6HF"
+   ]
+  },
+  {
+   "entity": "E0315",
+   "name": "erik stevens",
+   "cluster": "erikstevens",
+   "wallets": [
+    "72cCbFbLXhP3Ye4RYNZ1KLumBGvBD1QbKEL4ovC2gSUj"
+   ]
+  },
+  {
+   "entity": "E0316",
+   "name": "ESEE",
+   "cluster": "esee",
+   "wallets": [
+    "4uCT4g7YHH4xxfmfNfKUDenwGrRNGoZ9Ay1XFxfUGhQG"
+   ]
+  },
+  {
+   "entity": "E0318",
+   "name": "ethis",
+   "cluster": "ethis",
+   "wallets": [
+    "EvmZ6F9xzxCycRsh2qQfEk8gS5iERXTgcJULBU495hyT"
+   ]
+  },
+  {
+   "entity": "E0321",
+   "name": "EXOTIC ",
+   "cluster": "exotic",
+   "wallets": [
+    "Dwo2kj88YYhwcFJiybTjXezR9a6QjkMASz5xXD7kujXC"
+   ]
+  },
+  {
+   "entity": "E0325",
+   "name": "faggot",
+   "cluster": "faggot",
+   "wallets": [
+    "BRx8TP6HsD9srJ62rcYizjAHyZ5mt3cp8wPBEZioTsym"
+   ]
+  },
+  {
+   "entity": "E0326",
+   "name": "fake cupsey",
+   "cluster": "fakecupsey",
+   "wallets": [
+    "VVV4C8wbLVU5Yw2JmdF7SPmoG2ubmJmmcjzHAJcdHgH"
+   ]
+  },
+  {
+   "entity": "E0327",
+   "name": "FASHR",
+   "cluster": "fashr",
+   "wallets": [
+    "719sfKUjiMThumTt2u39VMGn612BZyCcwbM5Pe8SqFYz"
+   ]
+  },
+  {
+   "entity": "E0328",
+   "name": "fay",
+   "cluster": "fay",
+   "wallets": [
+    "7rqpaD7VUbQUsavXLZzQCK52WtdyvZAzAQkK9Q61yDKF"
+   ]
+  },
+  {
+   "entity": "E0329",
+   "name": "FaZeBlaze",
+   "cluster": "fazeblaze",
+   "wallets": [
+    "FhwFLN5EtYtuUHmetiVxNCBd1tEitFvWwQq1XyizaYMA"
+   ]
+  },
+  {
+   "entity": "E0330",
+   "name": "fbnc",
+   "cluster": "fbnc",
+   "wallets": [
+    "FhsbQzAJWVDNwaH61cTo6XkkfEsmSYMZKs9VJHH32bVG"
+   ]
+  },
+  {
+   "entity": "E0332",
+   "name": "feinix",
+   "cluster": "feinix",
+   "wallets": [
+    "Q4J6vefnKFmg5gAxGwnhthk5sewKDpnC8YNLD7Lv9ng"
+   ]
+  },
+  {
+   "entity": "E0334",
+   "name": "FIEND",
+   "cluster": "fiend",
+   "wallets": [
+    "6fYKJmera5QD9iYtezoSjTogHqPXESizy2ZbfN8pByQo"
+   ]
+  },
+  {
+   "entity": "E0345",
+   "name": "fomom",
+   "cluster": "fomom",
+   "wallets": [
+    "5G7Uqj81rWqwARJgrqCkLgN7gTQ9akBSintVv2xwWeBu"
+   ]
+  },
+  {
+   "entity": "E0347",
+   "name": "forigive",
+   "cluster": "forigive",
+   "wallets": [
+    "GxpWcYRz2nLcNxshch7yAhseZGtdgQz1nG8p5XxwQVdD"
+   ]
+  },
+  {
+   "entity": "E0349",
+   "name": "founder",
+   "cluster": "founder",
+   "wallets": [
+    "GYUmk9sa5B8FpzLSLUekRdJKwCvb39j76mzHNkx32cKn"
+   ]
+  },
+  {
+   "entity": "E0351",
+   "name": "frank funded?",
+   "cluster": "frankfunded",
+   "wallets": [
+    "FSw5bFig6KuCukczWYP9mmoEP1LMpn9Ab48db36BnzDg"
+   ]
+  },
+  {
+   "entity": "E0353",
+   "name": "fry",
+   "cluster": "fry",
+   "wallets": [
+    "97d7xsF12SfUPXMVsjrHe5hnvdCgibL5LG3LyJDUva5Q"
+   ]
+  },
+  {
+   "entity": "E0354",
+   "name": "fuck",
+   "cluster": "fuck",
+   "wallets": [
+    "DEVA1RTJX6mAXLy9HikaDG3SPRu8mrjXnkedoivGQMvZ"
+   ]
+  },
+  {
+   "entity": "E0360",
+   "name": "genetic",
+   "cluster": "genetic",
+   "wallets": [
+    "36EHKsf4ceNaPo2kjWp5GXVncVGgS4nwmbkfVrJCFpUs"
+   ]
+  },
+  {
+   "entity": "E0362",
+   "name": "gfree",
+   "cluster": "gfree",
+   "wallets": [
+    "4yo9CUuTBbds9NFhZd4MzPiZZkUvveXdTnAH8qMsE8ku"
+   ]
+  },
+  {
+   "entity": "E0364",
+   "name": "ggggg",
+   "cluster": "ggggg",
+   "wallets": [
+    "EqiFgyNw6kgrmYstWyrP8VjKhka7XEmKTZzHSmwpr1Zb"
+   ]
+  },
+  {
+   "entity": "E0367",
+   "name": "GHOSTEE",
+   "cluster": "ghostee",
+   "wallets": [
+    "2kv8X2a9bxnBM8NKLc6BBTX2z13GFNRL4oRotMUJRva9"
+   ]
+  },
+  {
+   "entity": "E0368",
+   "name": "GIANN",
+   "cluster": "giann",
+   "wallets": [
+    "GNrmKZCxYyNiSUsjduwwPJzhed3LATjciiKVuSGrsHEC"
+   ]
+  },
+  {
+   "entity": "E0370",
+   "name": "gooforit",
+   "cluster": "gooforit",
+   "wallets": [
+    "24L6uekgvsQRgT41DZRhahEAAVnkseTT7x4qyigC3HvH"
+   ]
+  },
+  {
+   "entity": "E0374",
+   "name": "GR3G",
+   "cluster": "grg",
+   "wallets": [
+    "J23qr98GjGJJqKq9CBEnyRhHbmkaVxtTJNNxKu597wsA"
+   ]
+  },
+  {
+   "entity": "E0375",
+   "name": "grubby",
+   "cluster": "grubby",
+   "wallets": [
+    "BPA2pUeSyPJDRYcXKozhMrBzfTaexckEphuGCuPoe5k3"
+   ]
+  },
+  {
+   "entity": "E0376",
+   "name": "g trader",
+   "cluster": "gtrader",
+   "wallets": [
+    "GirMhLT72MDkMYsvpDABLnV7g8q5bNCSSN5U2dri8CvG"
+   ]
+  },
+  {
+   "entity": "E0379",
+   "name": "GZSP",
+   "cluster": "gzsp",
+   "wallets": [
+    "xyzfhxfy8NhfeNG3Um3WaUvFXzNuHkrhrZMD8dsStB6"
+   ]
+  },
+  {
+   "entity": "E0383",
+   "name": "HE KNOWS",
+   "cluster": "heknows",
+   "wallets": [
+    "Ar2Y6o1QmrRAskjii1cRfijeKugHH13ycxW5cd7rro1x"
+   ]
+  },
+  {
+   "entity": "E0384",
+   "name": "HENN",
+   "cluster": "henn",
+   "wallets": [
+    "FRbUNvGxYNC1eFngpn7AD3f14aKKTJVC6zSMtvj2dyCS"
+   ]
+  },
+  {
+   "entity": "E0385",
+   "name": "herald deb",
+   "cluster": "heralddeb",
+   "wallets": [
+    "8ZN71XTdVo8yRovnGLmNgW3Tgniw6A4J3JGLvPD686FP"
+   ]
+  },
+  {
+   "entity": "E0386",
+   "name": "hero",
+   "cluster": "hero",
+   "wallets": [
+    "HUg1XNBfdJbFDLEaMBmc2VWf6SCrBkFe11E83ktXXz3f"
+   ]
+  },
+  {
+   "entity": "E0389",
+   "name": "HIDDEN",
+   "cluster": "hidden",
+   "wallets": [
+    "A6HB6QUWZva41EfQjrqAjBCzhSXdvk2AvD5B772t4Csg"
+   ]
+  },
+  {
+   "entity": "E0393",
+   "name": "hmmmm",
+   "cluster": "hmmmm",
+   "wallets": [
+    "GgbCFRHHAPv5i1fqt1D1buf8FPNA31oKrkZvXDyZymsT"
+   ]
+  },
+  {
+   "entity": "E0395",
+   "name": "hotdog",
+   "cluster": "hotdog",
+   "wallets": [
+    "G3fk9NykrzmcXr4YYmToftFayrC6Y6ACiuc6WCKq3f8B"
+   ]
+  },
+  {
+   "entity": "E0399",
+   "name": "iam",
+   "cluster": "iam",
+   "wallets": [
+    "BtDaZUqHr2mKH5EYQCztuerHBuBEfQNYdquTDtEZp2Ym"
+   ]
+  },
+  {
+   "entity": "E0405",
+   "name": "II",
+   "cluster": "ii",
+   "wallets": [
+    "6KqVAU5CW47JSKtH24vnGo5an3SAGJLZY2VQuhaD2igu"
+   ]
+  },
+  {
+   "entity": "E0408",
+   "name": "ika",
+   "cluster": "ika",
+   "wallets": [
+    "GmakXQTXMsbixGd5sjwgxtzgbDnSPDnqwK2bg7Pjz8GM"
+   ]
+  },
+  {
+   "entity": "E0412",
+   "name": "ioi",
+   "cluster": "ioi",
+   "wallets": [
+    "5qx7yV4Cwg67iEDSuszwMHYrQDJRnSCDF5DS6ZPAFvnV"
+   ]
+  },
+  {
+   "entity": "E0415",
+   "name": "j7777",
+   "cluster": "j",
+   "wallets": [
+    "4UrFSCrGxgoCtCUBAEZq7ZmPK3Pczkxx7PwYnkBMi1KR"
+   ]
+  },
+  {
+   "entity": "E0416",
+   "name": "jackson",
+   "cluster": "jackson",
+   "wallets": [
+    "5o786j42vqZuVG3Q6aQts98aUZqhpZ2P3qVMkBfyj6zm"
+   ]
+  },
+  {
+   "entity": "E0430",
+   "name": "jrus",
+   "cluster": "jrus",
+   "wallets": [
+    "951wq3qDowjKHaycrNaiRB5WpovYVKXnqhnrcKPh46zt"
+   ]
+  },
+  {
+   "entity": "E0435",
+   "name": "KEV",
+   "cluster": "kev",
+   "wallets": [
+    "BTf4A2exGK9BCVDNzy65b9dUzXgMqB4weVkvTMFQsadd"
+   ]
+  },
+  {
+   "entity": "E0436",
+   "name": "kimba",
+   "cluster": "kimba",
+   "wallets": [
+    "7mHqL9GzGnbsYLoHLDzB7FiHAZbND2CZCJYFvU9PU1d3"
+   ]
+  },
+  {
+   "entity": "E0437",
+   "name": "kimjung",
+   "cluster": "kimjung",
+   "wallets": [
+    "2djudVDwv7J1uzJb9HeaseMkRkd45Xde7TnsLRj4bWUw"
+   ]
+  },
+  {
+   "entity": "E0438",
+   "name": "kirk",
+   "cluster": "kirk",
+   "wallets": [
+    "BM4z8XWwCJNM7nkeLE7hjVe3sYhkaLqavLbaZxaiQ8Rm"
+   ]
+  },
+  {
+   "entity": "E0442",
+   "name": "KNOWS",
+   "cluster": "knows",
+   "wallets": [
+    "2h8z6cCfkFJLgJZ6hzRS5wQnUSvsKc5MDcBh9HFXqfhf"
+   ]
+  },
+  {
+   "entity": "E0445",
+   "name": "KOREAN QUANT",
+   "cluster": "koreanquant",
+   "wallets": [
+    "BtMBMPkoNbnLF9Xn552guQq528KKXcsNBNNBre3oaQtr"
+   ]
+  },
+  {
+   "entity": "E0452",
+   "name": "lacoste",
+   "cluster": "lacoste",
+   "wallets": [
+    "UqJTwYg6LtS1uUJrb3J8rzB5FxDivoYQ3fj1kGMs4wW"
+   ]
+  },
+  {
+   "entity": "E0453",
+   "name": "LATUCHE",
+   "cluster": "latuche",
+   "wallets": [
+    "GJA1HEbxGnqBhBifH9uQauzXSB53to5rhDrzmKxhSU65"
+   ]
+  },
+  {
+   "entity": "E0454",
+   "name": "layoo yxy",
+   "cluster": "layooyxy",
+   "wallets": [
+    "BMamSGpWG5xpxkxGrzBDAvsbK8yesE7jeFpkGePAQxuT"
+   ]
+  },
+  {
+   "entity": "E0456",
+   "name": "Leck",
+   "cluster": "leck",
+   "wallets": [
+    "98T65wcMEjoNLDTJszBHGZEX75QRe8QaANXokv4yw3Mp"
+   ]
+  },
+  {
+   "entity": "E0458",
+   "name": "LEGION",
+   "cluster": "legion",
+   "wallets": [
+    "9FNz4MjPUmnJqTf6yEDbL1D4SsHVh7uA8zRHhR5K138r"
+   ]
+  },
+  {
+   "entity": "E0460",
+   "name": "levi",
+   "cluster": "levi",
+   "wallets": [
+    "A2XqEiR18CMSk5CQwt6gsKwCnw1Xduyn4BDLnRmWZ18s"
+   ]
+  },
+  {
+   "entity": "E0462",
+   "name": "LEXAPRO",
+   "cluster": "lexapro",
+   "wallets": [
+    "8yJFWmVTQq69p6VJxGwpzW7ii7c5J9GRAtHCNMMQPydj"
+   ]
+  },
+  {
+   "entity": "E0465",
+   "name": "lil quant",
+   "cluster": "lilquant",
+   "wallets": [
+    "2g8hUof38PFsdVRYfwtCwbYWoEw4rvtfbX1nsaxRabPn"
+   ]
+  },
+  {
+   "entity": "E0466",
+   "name": "Log",
+   "cluster": "log",
+   "wallets": [
+    "2pUUZYtokRgDV2YzL6M5pjb1jyoHE367yU1sdQ7ac3ea"
+   ]
+  },
+  {
+   "entity": "E0475",
+   "name": "LUCAS",
+   "cluster": "lucas",
+   "wallets": [
+    "FkzekjMLgbXC8NuSQQ2u53rmdh3jhfAZr2psDouDYvfR"
+   ]
+  },
+  {
+   "entity": "E0478",
+   "name": "maison",
+   "cluster": "maison",
+   "wallets": [
+    "A4Ve8uXAdBCSddRDoqfTjCCajNi1ZgpEjbTXpC4jUgDP"
+   ]
+  },
+  {
+   "entity": "E0483",
+   "name": "marcell",
+   "cluster": "marcell",
+   "wallets": [
+    "6vbrTLsWy76TxDQAUKLqZrPohQuq6EVaJgfGzR82paFa"
+   ]
+  },
+  {
+   "entity": "E0485",
+   "name": "mario",
+   "cluster": "mario",
+   "wallets": [
+    "FjeaKDFAgexEPZbAFHwE4cL1MFvn1o6EL1qehcmVStCX"
+   ]
+  },
+  {
+   "entity": "E0487",
+   "name": "maxwin",
+   "cluster": "maxwin",
+   "wallets": [
+    "9WxfAxmxxn238LN4GvUDc2Xqe2mM2ubaFV7xwzV4ybVi"
+   ]
+  },
+  {
+   "entity": "E0488",
+   "name": "maybe",
+   "cluster": "maybe",
+   "wallets": [
+    "7XQyoTSoEmZYJQHxtERJ8S7QjJkyaTpgagzHykQyukJi"
+   ]
+  },
+  {
+   "entity": "E0504",
+   "name": "mvmvmmv",
+   "cluster": "mvmvmmv",
+   "wallets": [
+    "24ATE6AQw7G3GHJJtWJCk3GofPjdNysqeQj46KgVRosU"
+   ]
+  },
+  {
+   "entity": "E0505",
+   "name": "n/a",
+   "cluster": "na",
+   "wallets": [
+    "8msMsY7zoXKr6pQm3vg772FHXxbBxvkBmhiCiZ8T1xUe"
+   ]
+  },
+  {
+   "entity": "E0507",
+   "name": "NACH FNF",
+   "cluster": "nachfnf",
+   "wallets": [
+    "9jyqFiLnruggwNn4EQwBNFXwpbLM9hrA4hV59ytyAVVz"
+   ]
+  },
+  {
+   "entity": "E0508",
+   "name": "nari",
+   "cluster": "nari",
+   "wallets": [
+    "6SDgnCsiJc7Yyww5oY1wnvmJsS3ikQ8kFdJUYJ2PZVu4"
+   ]
+  },
+  {
+   "entity": "E0510",
+   "name": "neiro",
+   "cluster": "neiro",
+   "wallets": [
+    "741TyxhtrGgdtHJDmygqtjXyxmSLYGEucu42Bguj1tbg"
+   ]
+  },
+  {
+   "entity": "E0511",
+   "name": "newegy",
+   "cluster": "newegy",
+   "wallets": [
+    "AJSHSeUUh69FNKKVTJpf4zPwFKPYDRKYzKT62WED4Ts"
+   ]
+  },
+  {
+   "entity": "E0514",
+   "name": "nilla",
+   "cluster": "nilla",
+   "wallets": [
+    "j38fhfqWsJyt8hzym48P8QMsXWx1FfLUxQwuor7Ti4o"
+   ]
+  },
+  {
+   "entity": "E0515",
+   "name": "nnbnnbbn",
+   "cluster": "nnbnnbbn",
+   "wallets": [
+    "S2XVoysKgsZ8ZPaUApxMCdYMjW2SFt8MjLCPwghb5VT"
+   ]
+  },
+  {
+   "entity": "E0517",
+   "name": "NO",
+   "cluster": "no",
+   "wallets": [
+    "Di75xbVUg3u1qcmZci3NcZ8rjFMj7tsnYEoFdEMjS4ow"
+   ]
+  },
+  {
+   "entity": "E0518",
+   "name": "nobrain",
+   "cluster": "nobrain",
+   "wallets": [
+    "6TkTCyQTqvTqAHLzghbFByNZFp8dxXnQ2trjE1QoHmUi"
+   ]
+  },
+  {
+   "entity": "E0519",
+   "name": "Noir",
+   "cluster": "noir",
+   "wallets": [
+    "GdRSPexhxbQz5H2zFQrNN2BAZUqEjAULBigTPvQ6oDMP"
+   ]
+  },
+  {
+   "entity": "E0523",
+   "name": "NUDLE",
+   "cluster": "nudle",
+   "wallets": [
+    "FyBNUiSMobWJhqEtgou4RNgypF9tRWAEHfQNPqE4F2j6"
+   ]
+  },
+  {
+   "entity": "E0525",
+   "name": "odl",
+   "cluster": "odl",
+   "wallets": [
+    "G7c65icc4wG6wEvxDBGThWwkTAbm7yK9eVafim3Jzp8B"
+   ]
+  },
+  {
+   "entity": "E0530",
+   "name": "old whale",
+   "cluster": "oldwhale",
+   "wallets": [
+    "9fR8gerfvGSycFGbK2VY1PFrPuU9jS6QM47S974yTUHC"
+   ]
+  },
+  {
+   "entity": "E0535",
+   "name": "ore quant",
+   "cluster": "orequant",
+   "wallets": [
+    "7LfVG4MNxTenrhw4xczt3ToFL6jd3KUXSzKBMpxambtM"
+   ]
+  },
+  {
+   "entity": "E0536",
+   "name": "OTTA",
+   "cluster": "otta",
+   "wallets": [
+    "As7HjL7dzzvbRbaD3WCun47robib2kmAKRXMvjHkSMB5"
+   ]
+  },
+  {
+   "entity": "E0539",
+   "name": "pal",
+   "cluster": "pal",
+   "wallets": [
+    "GvmgmxkE7ed9b74YigRuNeAS6rSnpCAUbjtK4Wc8ed4S"
+   ]
+  },
+  {
+   "entity": "E0540",
+   "name": "PANDORA",
+   "cluster": "pandora",
+   "wallets": [
+    "UxuuMeyX2pZPHmGZ2w3Q8MysvExCAquMtvEfqp2etvm"
+   ]
+  },
+  {
+   "entity": "E0551",
+   "name": "point farm capital \ud83c\udf55,\ud83c\udf55",
+   "cluster": "pointfarmcapital",
+   "wallets": [
+    "Beqv6dzTcjV2eodo8RRXCiCcnSYrS1vkQKhfqwHXqeit"
+   ]
+  },
+  {
+   "entity": "E0558",
+   "name": "PROFITS",
+   "cluster": "profits",
+   "wallets": [
+    "DdM1tyCdoEyoxYYmGMjdf5rRPcpmj3UzZTpE7ScuTf7d"
+   ]
+  },
+  {
+   "entity": "E0561",
+   "name": "PROSPER",
+   "cluster": "prosper",
+   "wallets": [
+    "sAdNbe1cKNMDqDsa4npB3TfL62T14uAo2MsUQfLvzLT"
+   ]
+  },
+  {
+   "entity": "E0566",
+   "name": "pyro",
+   "cluster": "pyro",
+   "wallets": [
+    "6F91X5t8af1yRHALkwf8EStEn6mKYvsW8zpLiVpfYr38"
+   ]
+  },
+  {
+   "entity": "E0567",
+   "name": "qb",
+   "cluster": "qb",
+   "wallets": [
+    "H87Hk58orfNgTc7st5nxcJmMfLPpLpRHRxK4cnJk8wBY"
+   ]
+  },
+  {
+   "entity": "E0568",
+   "name": "qqq",
+   "cluster": "qqq",
+   "wallets": [
+    "2k7Mnf2K3GhpB7hEVN1CFFeV4oNzzuCS5Q6SmcfAoLHd"
+   ]
+  },
+  {
+   "entity": "E0570",
+   "name": "qqqqqqqqqqq",
+   "cluster": "qqqqqqqqqqq",
+   "wallets": [
+    "Ds4SNt8tBu6JHfhbFJSb9bZdBvNzuzFz1VEpTzZhyRn5"
+   ]
+  },
+  {
+   "entity": "E0575",
+   "name": "RAMBO",
+   "cluster": "rambo",
+   "wallets": [
+    "2net6etAtTe3Rbq2gKECmQwnzcKVXRaLcHy2Zy1iCiWz"
+   ]
+  },
+  {
+   "entity": "E0578",
+   "name": "rawdog",
+   "cluster": "rawdog",
+   "wallets": [
+    "64U9MukooWV5ziNXx2PCmZNmktBzQoKXnKsDBLvgCQ5g"
+   ]
+  },
+  {
+   "entity": "E0579",
+   "name": "RAYAN",
+   "cluster": "rayan",
+   "wallets": [
+    "BNahnx13rLru9zxuWNGBD7vVv1pGQXB11Q7qeTyupdWf"
+   ]
+  },
+  {
+   "entity": "E0581",
+   "name": "REALIST",
+   "cluster": "realist",
+   "wallets": [
+    "C8rLpLSU7uoLvFjBeEYgR6Q4FGxJTTPMmdwsf7mEjFAL"
+   ]
+  },
+  {
+   "entity": "E0585",
+   "name": "rere",
+   "cluster": "rere",
+   "wallets": [
+    "FsTD5usSSfut1dcSufZAbWfBcj6dxAN1SXRmiH6tT8gx"
+   ]
+  },
+  {
+   "entity": "E0589",
+   "name": "rise",
+   "cluster": "rise",
+   "wallets": [
+    "AUEQxhkAVz71w2WBa9BYSoZrydhYNJaKmfNomoNs9E4t"
+   ]
+  },
+  {
+   "entity": "E0590",
+   "name": "rookiexbt",
+   "cluster": "rookiexbt",
+   "wallets": [
+    "H61fn1qiMi7esgnRe7FDxp5CRmafSafyABkuxwVdSV3t"
+   ]
+  },
+  {
+   "entity": "E0600",
+   "name": "SAM",
+   "cluster": "sam",
+   "wallets": [
+    "2wfUsQLJ7QCm5bF28M7iMyp9Y1WfKDbChCmiVSQi1rHz"
+   ]
+  },
+  {
+   "entity": "E0605",
+   "name": "SEZER",
+   "cluster": "sezer",
+   "wallets": [
+    "HNDvc1WrU8N7YkWDzW9xuvNnsLjhZoViAGZp9nY8tEci"
+   ]
+  },
+  {
+   "entity": "E0608",
+   "name": "SHEEP",
+   "cluster": "sheep",
+   "wallets": [
+    "78N177fzNJpp8pG49xDv1efYcTMSzo9tPTKEA9mAVkh2"
+   ]
+  },
+  {
+   "entity": "E0609",
+   "name": "shill pill",
+   "cluster": "shillpill",
+   "wallets": [
+    "Fsf6kwdXGqqHAGGRLkdAokBsuZVK2VoqyzHju1ffqqgV"
+   ]
+  },
+  {
+   "entity": "E0611",
+   "name": "shoulda",
+   "cluster": "shoulda",
+   "wallets": [
+    "8NVkytV1CtoNBXGFtwXwh4KQdbgVcA6hFmym1gMuRHru"
+   ]
+  },
+  {
+   "entity": "E0620",
+   "name": "slurp",
+   "cluster": "slurp",
+   "wallets": [
+    "555NCk2uGgz1PU1cTiVUufTa2RnPftJR5pAht6U6cART"
+   ]
+  },
+  {
+   "entity": "E0622",
+   "name": "SMEX",
+   "cluster": "smex",
+   "wallets": [
+    "3hrYmGuSV9J3p1hrQDwgsW6Ln3LfhPoizRBispNYtvr3"
+   ]
+  },
+  {
+   "entity": "E0624",
+   "name": "smol",
+   "cluster": "smol",
+   "wallets": [
+    "mDR91ufq4S2uSHa9E2PYL7xg4LwcQXaQFP7YK864a1z"
+   ]
+  },
+  {
+   "entity": "E0634",
+   "name": "somebody",
+   "cluster": "somebody",
+   "wallets": [
+    "GZetT3iRmhuzuT1gkSk69MXMe8hRJZJGz1PPdKW1J2vq"
+   ]
+  },
+  {
+   "entity": "E0637",
+   "name": "spike",
+   "cluster": "spike",
+   "wallets": [
+    "GXDZ1GDLsb9X5wApUo2pH6GPMCMAecLo92vBhDSS1ed"
+   ]
+  },
+  {
+   "entity": "E0640",
+   "name": "STATICS",
+   "cluster": "statics",
+   "wallets": [
+    "4XMPyWFsYdNcCN4FG8geyytyTeUNacn4QundBzMqbGGT"
+   ]
+  },
+  {
+   "entity": "E0644",
+   "name": "stxrboy",
+   "cluster": "stxrboy",
+   "wallets": [
+    "CW6XezzEftYw4aALKo96x6oudqBZ3sfVXrfF23hAezdX"
+   ]
+  },
+  {
+   "entity": "E0650",
+   "name": "t 2",
+   "cluster": "t",
+   "wallets": [
+    "4TS24wgLBMucbZt7zqhM3KakXwdNTT2ECxDXEpsn5AhZ"
+   ]
+  },
+  {
+   "entity": "E0652",
+   "name": "tatsu",
+   "cluster": "tatsu",
+   "wallets": [
+    "3PFEFjRtEJydqiXSWbiMnaqMPwtUMdNwSfbwVZxtMrr9"
+   ]
+  },
+  {
+   "entity": "E0656",
+   "name": "Teddy",
+   "cluster": "teddy",
+   "wallets": [
+    "teddyYXw7aiNpDuQCeLb2YiBJhqthBid4C54BuWcPxm"
+   ]
+  },
+  {
+   "entity": "E0659",
+   "name": "TERP",
+   "cluster": "terp",
+   "wallets": [
+    "HkFt55P3PhRWHXoTFeuvkKEE4ab26xZ1bk6UmXV88Pwz"
+   ]
+  },
+  {
+   "entity": "E0662",
+   "name": "thirty",
+   "cluster": "thirty",
+   "wallets": [
+    "5xpb4js5WjjT3NQaj3MFDZVy2k7VS5RHW1C1DA4PXJcQ"
+   ]
+  },
+  {
+   "entity": "E0663",
+   "name": "thommie",
+   "cluster": "thommie",
+   "wallets": [
+    "7cmjac2qNRQDjursDgkNbpsNAmW13warVghYpp2CCGk7"
+   ]
+  },
+  {
+   "entity": "E0665",
+   "name": "tiktok",
+   "cluster": "tiktok",
+   "wallets": [
+    "a9Cct2wpjn4vWSR4rsytxm1URyk6vTXo4RTqXFpjyvD"
+   ]
+  },
+  {
+   "entity": "E0668",
+   "name": "tinks",
+   "cluster": "tinks",
+   "wallets": [
+    "3KoHEp26QVvQCJm7f6qfi8C35cG9a5omA6SVctzPemJp"
+   ]
+  },
+  {
+   "entity": "E0669",
+   "name": "tititiitit",
+   "cluster": "tititiitit",
+   "wallets": [
+    "5bTK5U7KVunxVHTANxqQLtZ1NVfAgH89kMRJ7GMkjesM"
+   ]
+  },
+  {
+   "entity": "E0672",
+   "name": "toad top trader",
+   "cluster": "toadtoptrader",
+   "wallets": [
+    "D5toXLMPn4FejmUsaFhQaynZ1Tdg3siPENtN7xz1qZRP"
+   ]
+  },
+  {
+   "entity": "E0673",
+   "name": "top gta",
+   "cluster": "topgta",
+   "wallets": [
+    "EYdSDB1KzhRUqWvdF546FxBFoZUcxHiEDRxqv3csCt7T"
+   ]
+  },
+  {
+   "entity": "E0678",
+   "name": "travis",
+   "cluster": "travis",
+   "wallets": [
+    "HTwsvwPaNHZ965uGJapW4a7qu2qLw9omTPHv8NFEnJ9Y"
+   ]
+  },
+  {
+   "entity": "E0681",
+   "name": "TROLL",
+   "cluster": "troll",
+   "wallets": [
+    "ETwAcPeN87KmFm8xPBsSiQCuqnyLgLdU9qevbf5t8KLn"
+   ]
+  },
+  {
+   "entity": "E0682",
+   "name": "troopet",
+   "cluster": "troopet",
+   "wallets": [
+    "25e2rBhTaV6N9zMtzD6bKD7bqNpnk7cYAdBjWVufAQ7Q"
+   ]
+  },
+  {
+   "entity": "E0686",
+   "name": "tutuut",
+   "cluster": "tutuut",
+   "wallets": [
+    "13VK7ZrRrx1uZ4Frm2TjacNsbipun21qqifE8wibPVys"
+   ]
+  },
+  {
+   "entity": "E0690",
+   "name": "umbra",
+   "cluster": "umbra",
+   "wallets": [
+    "3eGj9qx6D4CADVzunDN8MLcGsP3BXQabZ8xReEdgML6a"
+   ]
+  },
+  {
+   "entity": "E0703",
+   "name": "vine",
+   "cluster": "vine",
+   "wallets": [
+    "bpCadLdpFdia31jr1ny7NoBynPjHLQcQSD4HW4HA6Ku"
+   ]
+  },
+  {
+   "entity": "E0704",
+   "name": "WAITERG",
+   "cluster": "waiterg",
+   "wallets": [
+    "4cXnf2z85UiZ5cyKsPMEULq1yufAtpkatmX4j4DBZqj2"
+   ]
+  },
+  {
+   "entity": "E0705",
+   "name": "wannos",
+   "cluster": "wannos",
+   "wallets": [
+    "CAmNcBJ82xr1tzXrwZ6tZKwEFs26TG8kT6dJeR1bxjW9"
+   ]
+  },
+  {
+   "entity": "E0710",
+   "name": "WEST",
+   "cluster": "west",
+   "wallets": [
+    "JDd3hy3gQn2V982mi1zqhNqUw1GfV2UL6g76STojCJPN"
+   ]
+  },
+  {
+   "entity": "E0713",
+   "name": "what is this",
+   "cluster": "whatisthis",
+   "wallets": [
+    "2zBWFYhhi28vSbhPpSjJpQYaceTKxiCL2j6zLq8ockTn"
+   ]
+  },
+  {
+   "entity": "E0714",
+   "name": "whoooo",
+   "cluster": "whoooo",
+   "wallets": [
+    "BA36AnwpTfKeqNhExVUFFbzUAQTyKYvJrEokKJqVCTPi"
+   ]
+  },
+  {
+   "entity": "E0715",
+   "name": "willy",
+   "cluster": "willy",
+   "wallets": [
+    "777NtBUTG9tVu8Zp1YuuF3T2Hxi9cJzbbG67cHWi1aZ5"
+   ]
+  },
+  {
+   "entity": "E0719",
+   "name": "world fomo",
+   "cluster": "worldfomo",
+   "wallets": [
+    "6bQSN4d6anoTwnE6XDPGLA9RV8cqZPeNJro4iQUsWmso"
+   ]
+  },
+  {
+   "entity": "E0723",
+   "name": "wtfff",
+   "cluster": "wtfff",
+   "wallets": [
+    "6xX7LudE5AqnTUc8dJJfzuarkSc6WMw7qRHgQXUdWauJ"
+   ]
+  },
+  {
+   "entity": "E0727",
+   "name": "WWWWW",
+   "cluster": "wwwww",
+   "wallets": [
+    "F3eYgpRsnYn82DyWzk58W4Uipdq2w4Rq5GrrBW1gpJeU"
+   ]
+  },
+  {
+   "entity": "E0730",
+   "name": "0XF",
+   "cluster": "xf",
+   "wallets": [
+    "RFSqPtn1JfavGiUD4HJsZyYXvZsycxf31hnYfbyG6iB"
+   ]
+  },
+  {
+   "entity": "E0732",
+   "name": "0xstrategy",
+   "cluster": "xstrategy",
+   "wallets": [
+    "gVDXhoGbePACvSqN7CZBtQXFW9eyJwsgudPEwSydAkx"
+   ]
+  },
+  {
+   "entity": "E0736",
+   "name": "yahooze",
+   "cluster": "yahooze",
+   "wallets": [
+    "8FUmdjqsbS2HAiYBg6yJwwT2BNZfAKa5P2GuHYcPFNXZ"
+   ]
+  },
+  {
+   "entity": "E0738",
+   "name": "YENNI",
+   "cluster": "yenni",
+   "wallets": [
+    "5B52w1ZW9tuwUduueP5J7HXz5AcGfruGoX6YoAudvyxG"
+   ]
+  },
+  {
+   "entity": "E0752",
+   "name": "ZGOD",
+   "cluster": "zgod",
+   "wallets": [
+    "9vXjRRVfmw3cHJFrxirog5oEZrMg7CChs4Hst668wCUM"
+   ]
+  },
+  {
+   "entity": "E0754",
+   "name": "zil",
+   "cluster": "zil",
+   "wallets": [
+    "Aw5mXdCAWB2GiGL3mtmWWHpXYnqmKXQC9d4HvSiBRhyw"
+   ]
+  }
+ ]
+}

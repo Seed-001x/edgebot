@@ -226,6 +226,13 @@ export function startServer(bot, port) {
       const pg = paging(u);
       return json(res, 200, bot.shadowTrades.page(pg || {}));
     }
+    if (req.method === 'GET' && u.pathname === '/devwatch') {
+      // Wallet-task shadow detectors (record-only): dev launches + survivor
+      // confluence — per-dev aggregates with qualification FLAGS (promotion is
+      // the user's call), the confluence stream aggregate, recent events.
+      if (!bot.walletWatch) return json(res, 200, { enabled: false, devs: [], confluence: null, recent: [] });
+      return json(res, 200, bot.walletWatch.snapshot());
+    }
     if (req.method === 'GET' && u.pathname === '/reports') {
       return json(res, 200, (bot.journal.tradeReports || []).slice().reverse());
     }

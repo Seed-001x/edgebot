@@ -23,6 +23,7 @@ import { snapshotFeatures, externalExit } from './learn.js';
 
 import { PostExitTracker, PairedShadowExits } from './postExit.js';
 import { ShadowTrades } from './shadowTrades.js';
+import { WalletWatch } from './walletWatch.js';
 import { buildTradeReport } from './reports.js';
 import { configStamp } from './stamp.js';
 
@@ -42,6 +43,12 @@ export class Bot {
     this.postExit = new PostExitTracker(cfg.dataDir, this.now); // 5-min post-exit price tracker (observer only)
     this.paired = new PairedShadowExits(cfg.dataDir, this.now); // D1: virtual would-be exits paired to manual exits (observer only)
     this.shadowTrades = new ShadowTrades(cfg.dataDir, this.now, { txFeeSol: cfg.txFeeSol }); // trade-grade shadow (record-only): virtual positions for gate-passing shadow signals, run through the real exit stack
+    this.walletWatch = new WalletWatch({ // wallet-task shadow detectors (record-only): dev launches + survivor confluence over the Phase 1–3 sets
+      cfg, dir: cfg.dataDir, now: this.now,
+      fetchViews: deps.fetchViews,
+      shadowGates: (v, setup) => this.shadowGateRecord(v, { setup, metrics: {} }, this.now()),
+      noteMint: (m, s) => this.noteMint(m, s),
+    });
     this.cfgStamp = configStamp(cfg); // D1: config version stamp carried by entries + closes (record-only)
     this.lastSolUsd = null; // last SOL/USD the position loop saw (feeds observer marks)
     this.watch = new Map();      // mint -> { ts, source }
@@ -571,7 +578,7 @@ export class Bot {
     try {
       this.evictBlacklisted(); // marked coins never even get priced, let alone signal
       const mints = [...new Set([...this.watch.keys(), ...this.positions.map(p => p.mint)])];
-      if (!mints.length) { try { await this.outcomeTick(this.now()); } catch { /* observer only */ } try { await this._flowRetryTick(this.now()); } catch { /* record-only retry */ } return; }
+      if (!mints.length) { try { await this.outcomeTick(this.now()); } catch { /* observer only */ } try { await this._flowRetryTick(this.now()); } catch { /* record-only retry */ } try { await this.walletWatch.finalizeTick(this.now()); } catch { /* shadow outcomes */ } return; }
       const views = await this.d.fetchViews(mints);
       const n = this.now();
       // D4 (user 2026-10-13): market breadth — the share of sampled coins green on the hour —
@@ -632,6 +639,7 @@ export class Bot {
       // so checkpoints stop depending on watchlist residence.
       try { await this.outcomeTick(n); } catch { /* observer only */ }
       try { await this._flowRetryTick(n); } catch { /* record-only retry */ }
+      try { await this.walletWatch.finalizeTick(n); } catch { /* shadow outcomes */ }
       candidates.sort((a, b) => b.sig.strength - a.sig.strength);
       for (const c of candidates.slice(0, this.cfg.maxSignalsPerTick)) {
         this.lastSignal.set(c.v.address, this.now());

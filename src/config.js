@@ -177,6 +177,22 @@ export function loadConfig(env = process.env) {
     flowWalletsConfl: num(env, 'FLOW_WALLETS_CONFL', 2),  // …or this many distinct wallets buying the same mint…
     flowWindowMin: num(env, 'FLOW_WINDOW_MIN', 15),       // …inside this window (any size above the 0.1 SOL dust floor)
 
+    // ---- wallet task shadow detectors (user brief 2026-10-14, Phases 4–6; go given 2026-10-15) ----
+    // LOG-ONLY observers over the Phase 1–3 wallet sets (src/walletSets.json): the 23
+    // hand-tagged devs (dev-launch detector) and the 225 surviving trader entities /
+    // 297 wallets (confluence detector: >= CONFL_MIN_CLUSTERS distinct entities buy the
+    // same mint within CONFL_WINDOW_MIN). Events are gate-judged in shadow and
+    // outcome-tracked against the taken-pop baseline; promotion is a FLAG the user
+    // acts on — nothing here trades, gates live entries, or self-promotes.
+    walletWatchEnabled: num(env, 'WALLET_WATCH', 1) === 1,
+    devPollSec: num(env, 'DEV_POLL_SEC', 60),             // dev wallet signature poll cadence
+    conflPollSec: num(env, 'CONFL_POLL_SEC', 300),        // survivor wallet signature poll cadence
+    conflWindowMin: num(env, 'CONFL_WINDOW_MIN', 5),      // confluence window (on-chain buy times)
+    conflMinClusters: num(env, 'CONFL_MIN_CLUSTERS', 2),  // distinct entities required for a confluence event
+    devEarlyMin: num(env, 'DEV_EARLY_MIN', 60),           // a dev buy within this many minutes of coin creation counts as a launch (early-buy)
+    devQualN: num(env, 'DEV_QUAL_N', 10),                 // finalized launches per dev before qualification is judged (rolling window)
+    conflQualN: num(env, 'CONFL_QUAL_N', 30),             // finalized confluence events before qualification is judged
+
     // ---- 'graduation watch' (user 2026-10-14: "do that every 2 minutes then not 3hrs") ----
     // Post-graduation runners were structurally invisible: Plois graduated and ran +41%
     // in 5m while the bot had never seen the mint — the /reallists graduated list arrives
@@ -409,6 +425,12 @@ export function validateConfig(cfg) {
   if (cfg.flowMinSol < 0) errs.push('FLOW_MIN_SOL must be >= 0');
   if (cfg.flowWalletsConfl < 1 || cfg.flowWalletsConfl > 20) errs.push('FLOW_WALLETS_CONFL must be between 1 and 20');
   if (cfg.flowWindowMin < 1 || cfg.flowWindowMin > 240) errs.push('FLOW_WINDOW_MIN must be between 1 and 240');
+  if (cfg.devPollSec < 10 || cfg.devPollSec > 3600) errs.push('DEV_POLL_SEC must be between 10 and 3600');
+  if (cfg.conflPollSec < 30 || cfg.conflPollSec > 3600) errs.push('CONFL_POLL_SEC must be between 30 and 3600');
+  if (cfg.conflWindowMin < 1 || cfg.conflWindowMin > 60) errs.push('CONFL_WINDOW_MIN must be between 1 and 60');
+  if (cfg.conflMinClusters < 2 || cfg.conflMinClusters > 10) errs.push('CONFL_MIN_CLUSTERS must be between 2 and 10');
+  if (cfg.devQualN < 3 || cfg.devQualN > 100) errs.push('DEV_QUAL_N must be between 3 and 100');
+  if (cfg.conflQualN < 5 || cfg.conflQualN > 500) errs.push('CONFL_QUAL_N must be between 5 and 500');
   if (cfg.gradPollSec < 30 || cfg.gradPollSec > 3600) errs.push('GRAD_POLL_SEC must be between 30 and 3600');
   if (cfg.gradFreshMin < 1 || cfg.gradFreshMin > 1440) errs.push('GRAD_FRESH_MIN must be between 1 and 1440');
   if (cfg.gradBackfillMax < 0) errs.push('GRAD_BACKFILL_MAX must be >= 0 (0 = backfill off)');

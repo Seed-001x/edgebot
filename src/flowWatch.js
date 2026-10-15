@@ -27,7 +27,7 @@ export const FLOW_DUST_SOL = 0.1;
 const keyStr = (k) => (typeof k === 'string' ? k : (k && k.pubkey) || '');
 export const shortAddr = (a) => `${String(a).slice(0, 4)}…${String(a).slice(-4)}`;
 
-async function rpc(rpcUrls, method, params, timeout = 12000) {
+export async function flowRpc(rpcUrls, method, params, timeout = 12000) {
   let last;
   for (const url of rpcUrls || []) {
     try {
@@ -66,6 +66,33 @@ export function parseWalletBuys(tx, wallet) {
   return buys;
 }
 
+/**
+ * Pure: the sells `wallet` made in one parsed transaction — mirror of
+ * parseWalletBuys: the wallet's token balance of a mint FELL in a tx where SOL
+ * (native + WSOL) net-ENTERED the wallet. Returns [{ mint, sol }] with sol =
+ * the SOL that net-entered (total proceeds attributed per mint, as buys do).
+ */
+export function parseWalletSells(tx, wallet) {
+  if (!tx || !tx.meta || tx.meta.err) return [];
+  const meta = tx.meta;
+  const tokSum = (list, mint) => (list || []).filter(b => b && b.mint === mint && b.owner === wallet)
+    .reduce((a, b) => a + (Number(b.uiTokenAmount && b.uiTokenAmount.uiAmount) || 0), 0);
+  const keys = (tx.transaction && tx.transaction.message && tx.transaction.message.accountKeys || []).map(keyStr);
+  const idx = keys.indexOf(wallet);
+  let solDelta = idx >= 0 ? (Number(meta.postBalances[idx]) - Number(meta.preBalances[idx])) / LAMPORTS : 0;
+  solDelta += tokSum(meta.postTokenBalances, SOL_MINT) - tokSum(meta.preTokenBalances, SOL_MINT);
+  if (!(solDelta > 0)) return []; // SOL didn't net-enter the wallet — not a sell tx
+  const got = solDelta;
+  const mints = new Set();
+  for (const b of [...(meta.preTokenBalances || []), ...(meta.postTokenBalances || [])]) if (b && b.mint && b.mint !== SOL_MINT) mints.add(b.mint);
+  const sells = [];
+  for (const mint of mints) {
+    const d = tokSum(meta.preTokenBalances, mint) - tokSum(meta.postTokenBalances, mint);
+    if (d > 0) sells.push({ mint, sol: got });
+  }
+  return sells;
+}
+
 export class FlowWatch {
   /**
    * deps: { cfg, onTrigger(mint, agg), now, rpcFn(method, params), log }
@@ -76,7 +103,7 @@ export class FlowWatch {
     this.onTrigger = onTrigger || (() => {});
     this.now = now;
     this.log = log;
-    this.rpcFn = rpcFn || ((m, p) => rpc(cfg.rpcUrls, m, p));
+    this.rpcFn = rpcFn || ((m, p) => flowRpc(cfg.rpcUrls, m, p));
     this.wallets = [...new Set([...(cfg.flowWallets || []), ...(cfg.flowSoloWallets || [])])];
     this.solo = new Set(cfg.flowSoloWallets || []);
     this.lastSig = new Map();  // wallet -> newest signature already seen (watermark)
