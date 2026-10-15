@@ -307,6 +307,181 @@ export function freshHistoryCheck(samples, view, now, { maxChgM5 = 25, smallMc =
   return { pass: true, judged: false, reason: 'thin history, but aggregates are not extended' };
 }
 
+// 7h. Ran-rebuy block (user 2026-10-15, "for tonight" — knobbed so it lifts
+//     without a code change): if the bot has ALREADY TRADED a mint and the coin
+//     has since printed >= RAN_REBUY_MULT x that trade's entry price at ANY
+//     point from the entry onward — including after the bot sold — a rebuy of
+//     that mint is blocked until RAN_REBUY_HOURS after that trade's close.
+//     Tonight's exhibit is BOOT: ridden 2026-10-14 (+64.69% via the ladder),
+//     then re-bought the next night after its run was already over. The anchor
+//     is the MOST RECENT prior closed trade in the mint (mint-exact; names are
+//     never judged here). Once the wait expires the rebuy is allowed again
+//     regardless of the run; a coin that never printed the multiple is never
+//     blocked by this rule (the ordinary cooldowns still apply as always).
+//     The peak is measured on GeckoTerminal minute candles over the mint's top
+//     pool (the wallet detectors' / callout scorer's pool discipline: GT top
+//     pool, DexScreener-deepest fallback). GT candle prices are USD per token
+//     (verified 2026-10-15 against DexScreener priceUsd on the same pool),
+//     which is what makes the division unit-consistent: the journal's entry
+//     price is entryFillUsd — the actual per-token fill in USD, carried on the
+//     open record and filled onto the close record by ensureClose — with the
+//     close record's entry snapshot price (the signal-time DexScreener USD
+//     price) as fallback for records that predate the fill fields.
+//     FAIL-OPEN by contract: a failed/unmeasurable peak passes the candidate
+//     and reports lookupFailed — a GeckoTerminal hiccup must never become an
+//     entry blocker. One exception: a peak >= the multiple found in a PARTIAL
+//     candle window (the series doesn't reach back to the entry) is a true
+//     positive — those candles are all since-entry — and still blocks.
+const GT_RAN = 'https://api.geckoterminal.com/api/v2';
+export const RAN_REBUY_TTL_MS = 300000; // per-mint peak-measurement cache (5 min); failures are NOT cached
+const ranPeakCache = new Map(); // mint -> { ts, peakRatio, covered }
+
+const fmtX = (x) => `${Number.isInteger(x) ? String(x) : (+x.toFixed(2)).toString()}x`;
+const fmtUntil = (ts) => `${new Date(ts).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'America/New_York' })} ET`;
+
+/**
+ * Pure: fold journal trade records (the same open/close pairs /trades serves)
+ * into the most recent CLOSED trade per mint: { mint, id, symbol, entryTs,
+ * closeTs, entryPriceUsd }. Open/close pair by position id; the entry price
+ * resolves open.entryFillUsd -> close.entryFillUsd -> close.entry.price (the
+ * entry snapshot's signal-time USD price), else null (the check then fails
+ * open on that prior). A close with no surviving open still anchors the wait
+ * (entryTs null — unmeasurable, fail-open at check time).
+ */
+export function foldLastTrades(trades) {
+  const opens = new Map();
+  const last = new Map();
+  for (const t of trades || []) {
+    if (!t || !t.mint) continue;
+    if (t.type === 'open') { if (t.id) opens.set(t.id, t); continue; }
+    if (t.type !== 'close') continue;
+    const closeTs = Number(t.ts);
+    if (!Number.isFinite(closeTs) || closeTs <= 0) continue;
+    const o = t.id ? opens.get(t.id) : null;
+    let entryPriceUsd = null;
+    for (const cand of [o && o.entryFillUsd, t.entryFillUsd, t.entry && t.entry.price]) {
+      const p = Number(cand);
+      if (Number.isFinite(p) && p > 0) { entryPriceUsd = p; break; }
+    }
+    const prev = last.get(t.mint);
+    if (!prev || closeTs >= prev.closeTs) {
+      last.set(t.mint, {
+        mint: t.mint, id: t.id || null, symbol: t.symbol || (o && o.symbol) || null,
+        entryTs: o && Number(o.ts) > 0 ? Number(o.ts) : null, closeTs, entryPriceUsd,
+      });
+    }
+  }
+  return last;
+}
+
+/**
+ * Pure: the peak since entry from ascending GT minute candles
+ * [[tsSec, o, h, l, c, v], ...] against the prior trade's entry price (USD —
+ * the candles' own denomination). A candle counts when its minute ends after
+ * the entry (the entry minute's own high included, the house candle
+ * convention — cf. walletWatch computeOutcome). `covered` is true when the
+ * fetched series reaches back to the entry minute; a series that starts later
+ * (pool migration, GT history limits) still yields true positives but cannot
+ * prove a negative. Returns null when nothing usable overlaps the window or
+ * the entry price is unusable.
+ */
+export function judgeRanPeak(candles, entryTs, entryPriceUsd) {
+  const entry = Number(entryPriceUsd);
+  if (!(entry > 0) || !Number.isFinite(entryTs) || !(entryTs > 0)) return null;
+  let peak = 0, firstStart = null;
+  for (const c of candles || []) {
+    if (!c || !Number.isFinite(c[0]) || !Number.isFinite(c[2])) continue;
+    const start = c[0] * 1000;
+    if (start + 60000 <= entryTs) continue; // the minute ended before the entry — not since-entry
+    if (firstStart == null) firstStart = start;
+    if (c[2] > peak) peak = c[2];
+  }
+  if (!(peak > 0) || firstStart == null) return null;
+  return { peakRatio: peak / entry, covered: firstStart <= entryTs + 60000 };
+}
+
+async function resolveRanPool(mint) {
+  // GT top pool first (the wallet detectors'/callout scorer's discipline);
+  // DexScreener's deepest pair as the fallback for mints GT hasn't ranked.
+  try {
+    const j = await fetchJson(`${GT_RAN}/networks/solana/tokens/${mint}`, { timeout: 12000 });
+    const pools = j && j.data && j.data.relationships && j.data.relationships.top_pools && j.data.relationships.top_pools.data;
+    if (pools && pools.length) {
+      const id = String(pools[0].id || '');
+      const p = id.startsWith('solana_') ? id.slice('solana_'.length) : id;
+      if (p) return p;
+    }
+  } catch { /* fall through to DexScreener */ }
+  try {
+    const j = await fetchJson(`https://api.dexscreener.com/latest/dex/tokens/${mint}`, { timeout: 12000 });
+    const pairs = ((j && j.pairs) || []).filter(p => p && p.chainId === 'solana' && p.pairAddress);
+    pairs.sort((a, b) => ((b.liquidity && b.liquidity.usd) || 0) - ((a.liquidity && a.liquidity.usd) || 0));
+    if (pairs.length) return pairs[0].pairAddress;
+  } catch { /* no pool anywhere */ }
+  return null;
+}
+
+/** Default candle source: the mint's minute candles from its entry to now
+ *  (paged backwards from now, the callout scorer's fetch shape). Returns
+ *  ascending rows, or null on any failure. */
+async function defaultRanCandles(mint, entryTs, now) {
+  const pool = await resolveRanPool(mint);
+  if (!pool) return null;
+  const byTs = new Map();
+  let before = Math.floor(now / 1000) + 60;
+  for (let page = 0; page < 4; page++) {
+    const j = await fetchJson(`${GT_RAN}/networks/solana/pools/${pool}/ohlcv/minute?limit=1000&before_timestamp=${before}`, { timeout: 15000 });
+    const list = j && j.data && j.data.attributes && j.data.attributes.ohlcv_list;
+    if (!list || !list.length) break;
+    let oldest = Infinity;
+    for (const row of list) { byTs.set(row[0], row); if (row[0] < oldest) oldest = row[0]; }
+    if (oldest * 1000 <= entryTs || list.length < 1000) break;
+    before = oldest - 1;
+  }
+  if (!byTs.size) return null;
+  return [...byTs.values()].sort((a, b) => a[0] - b[0]);
+}
+
+/**
+ * The gate verdict for one candidate whose mint has a prior closed trade
+ * (`prior` from foldLastTrades, or null). Window discipline: a prior whose
+ * close is already RAN_REBUY_HOURS old can't block, and the candle fetch is
+ * skipped entirely in that case — the measurement only happens inside the
+ * window. Successful measurements are cached per mint for RAN_REBUY_TTL_MS
+ * in `cache` (module-level by default); failures are never cached. NEVER
+ * throws — every failure path resolves to a fail-open pass with
+ * lookupFailed set.
+ */
+export async function ranRebuyCheck(prior, { mult = 5, hours = 3, now = Date.now(), candlesImpl = null, cache = null } = {}) {
+  const base = { peakRatio: null, blockedUntil: prior ? prior.closeTs + hours * 3600000 : null, priorCloseTs: prior ? prior.closeTs : null };
+  if (!prior) return { ...base, pass: true, lookupFailed: false, reason: 'no prior trade in this mint' };
+  if (!(now < base.blockedUntil)) return { ...base, pass: true, lookupFailed: false, reason: `prior close is outside the ${hours}h rebuy window` };
+  if (!(prior.entryTs > 0)) return { ...base, pass: true, lookupFailed: true, reason: 'prior entry time missing — passed open (fail-open)' };
+  if (!(prior.entryPriceUsd > 0)) return { ...base, pass: true, lookupFailed: true, reason: 'prior entry price missing — passed open (fail-open)' };
+  const store = cache || ranPeakCache;
+  let meas = null;
+  const hit = store.get(prior.mint);
+  if (hit && now - hit.ts < RAN_REBUY_TTL_MS) meas = hit;
+  else {
+    let judged = null;
+    try {
+      const candles = candlesImpl ? await candlesImpl(prior.mint, prior.entryTs, now) : await defaultRanCandles(prior.mint, prior.entryTs, now);
+      if (candles) judged = judgeRanPeak(candles, prior.entryTs, prior.entryPriceUsd);
+    } catch { judged = null; }
+    if (!judged) return { ...base, pass: true, lookupFailed: true, reason: 'peak since our entry could not be measured — passed open (fail-open)' };
+    meas = { ts: now, peakRatio: judged.peakRatio, covered: judged.covered };
+    store.set(prior.mint, meas);
+  }
+  const peakTxt = `${meas.peakRatio.toFixed(1)}x`;
+  if (meas.peakRatio >= mult) {
+    return { ...base, pass: false, lookupFailed: false, peakRatio: +meas.peakRatio.toFixed(3), reason: `already ran ${fmtX(mult)}+ since our entry (peak ${peakTxt}), rebuy blocked until ${fmtUntil(base.blockedUntil)}` };
+  }
+  if (!meas.covered) {
+    return { ...base, pass: true, lookupFailed: true, peakRatio: +meas.peakRatio.toFixed(3), reason: `peak since our entry only partly measurable (candles start after the entry; saw ${peakTxt}) — passed open (fail-open)` };
+  }
+  return { ...base, pass: true, lookupFailed: false, peakRatio: +meas.peakRatio.toFixed(3), reason: `peaked ${peakTxt} since our entry — under the ${fmtX(mult)} ran line` };
+}
+
 // One-go dump simulation: ALL linked supply (creator + linked networks) sold into the pool at once.
 // drain = share of the pool's SOL they could pull.
 export function linkedDumpCheck({ creatorUi, networks, dec, poolBaseUi, poolQuoteUi }, maxDrain = 0.35) {

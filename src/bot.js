@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { History } from './history.js';
 import { detect, detectChurn, detectLiftoff, eligible, fastPop } from './detect.js';
-import { runGates, hasHardFail, tempRuleViolation, blockedNameWord, extensionCheck, freshHistoryCheck, shallowDipCheck, summarizeGateChecks, holderSamples } from './gate.js';
+import { runGates, hasHardFail, tempRuleViolation, blockedNameWord, extensionCheck, freshHistoryCheck, shallowDipCheck, summarizeGateChecks, holderSamples, foldLastTrades } from './gate.js';
 import { computeSignalFields } from './signalFields.js';
 import { evaluateExit } from './exits.js';
 import { ShadowFlow, ratchetArmed, ratchetShadowFire } from './ratchetShadow.js';
@@ -47,6 +47,7 @@ export class Bot {
     this.risk = new Risk(cfg, { dir: cfg.dataDir, now: this.now });
     this.closedIds = new Set(this.journal.trades.filter(t => t.type === 'close').map(t => t.id)); // journaling guarantee (ensureClose)
     for (const t of this.journal.trades) if (t.type === 'close' && t.mint) this.risk.seedClosed(t.mint, t.ts); // re-entry block survives restarts/deploys
+    this.lastTrades = foldLastTrades(this.journal.trades); // ran-rebuy block: most recent closed trade per mint, rebuilt from the journal so trades closed before this deploy (e.g. BOOT, 2026-10-14) anchor the rule on its first boot; ensureClose keeps it current
     this.postExit = new PostExitTracker(cfg.dataDir, this.now); // 5-min post-exit price tracker (observer only)
     this.paired = new PairedShadowExits(cfg.dataDir, this.now); // D1: virtual would-be exits paired to manual exits (observer only)
     this.streamEvalAt = new Map(); // mint -> ts of last stream-judge evaluation (v2 throttle, mirrors fastEvalAt)
@@ -246,6 +247,20 @@ export class Bot {
       if (full.pnlPct === undefined) full.pnlPct = full.pnlSol != null && full.entrySol > 0 ? +(full.pnlSol / full.entrySol * 100).toFixed(2) : null;
     } catch { /* record enrichment must never disturb the close itself */ }
     this.journal.trade(full);
+    // Ran-rebuy block (user 2026-10-15): keep the most-recent-closed-trade map
+    // current in-process (boot rebuilds it from the journal; this is the seam
+    // every close passes through exactly once). entryFillUsd was just resolved
+    // by the enrichment above; the position's signal-time USD price is the
+    // fallback, mirroring foldLastTrades' resolution order.
+    try {
+      if (pos.mint) {
+        const closeTs = full.ts || this.now();
+        const prev = this.lastTrades.get(pos.mint);
+        if (!prev || closeTs >= prev.closeTs) {
+          this.lastTrades.set(pos.mint, { mint: pos.mint, id: pos.id, symbol: pos.symbol || null, entryTs: pos.entryTs ?? null, closeTs, entryPriceUsd: full.entryFillUsd != null && full.entryFillUsd > 0 ? full.entryFillUsd : (pos.entryPrice > 0 ? pos.entryPrice : null) });
+        }
+      }
+    } catch { /* bookkeeping must never disturb the close itself */ }
     try {
       const v = this.latest.get(pos.mint);
       this.postExit.watch({ id: pos.id, mint: pos.mint, symbol: pos.symbol, setup: pos.setup, exitTs: full.ts || this.now(), exitPriceUsd: v && v.price > 0 ? v.price : (pos.entryPrice || null), reason: full.reason || null, manual: !!full.manual, pnlSol: full.pnlSol ?? null });
@@ -1036,6 +1051,24 @@ export class Bot {
     }
   }
 
+  // Ran-rebuy verdict (user 2026-10-15): the already-ran rebuy check from
+  // gate.js, reached through the optional ranRebuyCheck dep (wired in
+  // index.js; absent in unit rigs → no verdict and the gate simply doesn't
+  // run). Only mints with a prior closed trade are judged at all — a mint the
+  // bot never traded returns null here (no stamp, no candle lookup spent).
+  // Never throws: a dep error reads as a failed lookup, which the check
+  // treats as fail-open. Returns the verdict object or null.
+  async _ranRebuyVerdict(v, n) {
+    if (!this.cfg.ranRebuy || !this.d.ranRebuyCheck) return null;
+    const prior = this.lastTrades ? this.lastTrades.get(v.address) : null;
+    if (!prior) return null;
+    try {
+      return await this.d.ranRebuyCheck(prior, { mult: this.cfg.ranRebuyMult, hours: this.cfg.ranRebuyHours, now: n });
+    } catch {
+      return { pass: true, lookupFailed: true, peakRatio: null, blockedUntil: null, priorCloseTs: prior.closeTs, reason: 'ran-peak lookup failed — passed open (fail-open)' };
+    }
+  }
+
   // D1 (record-only): for a shadow signal, evaluate the same pre-checks and gate
   // stack a live signal would face — purely so the shadow RECORD carries the
   // per-gate results. The outcome is never branched on: the caller journals
@@ -1055,6 +1088,14 @@ export class Bot {
           checks.shallowDip = { pass: !!sd.pass, reason: sd.reason || null };
         }
       }
+      // Ran-rebuy verdict for the record (user 2026-10-15): the same
+      // already-ran check the gate path runs — journaled here so shadow
+      // records and the scans.jsonl verdicts (walletWatch's shadowGates dep
+      // lands here) carry it too. Record-only, never branched on; the peak
+      // measurement is cached 5 min per mint, so a mint the live path just
+      // judged costs no second lookup.
+      const rrRec = await this._ranRebuyVerdict(v, n);
+      if (rrRec) checks.ranRebuy = { pass: !!rrRec.pass, reason: rrRec.reason || null, peakRatio: rrRec.peakRatio ?? null, blockedUntil: rrRec.blockedUntil ?? null };
       const [rug, curve] = await Promise.all([
         this.d.fetchRug(v.address).catch(() => null),
         this.d.fetchCurve ? this.d.fetchCurve(v.address).catch(() => null) : null,
@@ -1221,6 +1262,33 @@ export class Bot {
       console.log(`[nameblock] skip: "${v.name}" contains blocked word "${blockedWord}"`);
       checks.nameblock = { pass: false, reason: `name "${v.name || v.symbol}" contains blocked word "${blockedWord}"` };
       return this.skip(v, sig, [`nameblock: name "${v.name || v.symbol}" contains blocked word "${blockedWord}"`], [], checks);
+    }
+    // Ran-rebuy block (user 2026-10-15, "for tonight" — RAN_REBUY lifts it):
+    // a mint the bot already traded whose coin already printed >= RAN_REBUY_MULT x
+    // that trade's entry price (at any point since the entry, the exit
+    // included — BOOT was ridden 2026-10-14 and re-bought the next night after
+    // its run was over) cannot be re-bought until RAN_REBUY_HOURS after that
+    // trade's close. Mint-exact, anchored on the most recent prior close,
+    // judged on GeckoTerminal minute candles vs the journaled entry fill.
+    // Sits with the other user-ruling vetoes before runGates, so no pace
+    // boost, mandatory-ape forcing or contested-gate override can push a
+    // re-run through; the wait's expiry re-allows the rebuy regardless of the
+    // run. Fail-open: an unmeasurable peak passes the candidate (counted in
+    // stats.ranRebuy).
+    {
+      const rr = await this._ranRebuyVerdict(v, n);
+      if (rr) {
+        this.stats.ranRebuy = this.stats.ranRebuy || { blocked: 0, lookupFailed: 0 };
+        if (rr.lookupFailed) this.stats.ranRebuy.lookupFailed++;
+        checks.ranRebuy = { pass: !!rr.pass, reason: rr.reason || null, peakRatio: rr.peakRatio ?? null, blockedUntil: rr.blockedUntil ?? null };
+        if (!rr.pass) {
+          this.stats.ranRebuy.blocked++;
+          sig.metrics = sig.metrics || {};
+          sig.metrics.ranRebuy = { peakRatio: rr.peakRatio ?? null, priorCloseTs: rr.priorCloseTs ?? null, blockedUntil: rr.blockedUntil ?? null };
+          console.log(`[ranrebuy] skip: ${v.symbol} — ${rr.reason}`);
+          return this.skip(v, sig, [`ranRebuy: ${rr.reason}`], [], checks);
+        }
+      }
     }
     // Shadow-only setups (user 2026-10-14, forward plan step 1b): a shadowed setup's
     // signal is journaled with decision 'shadow' — journal.signal registers it for the

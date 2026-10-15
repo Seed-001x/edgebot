@@ -286,6 +286,18 @@ export function loadConfig(env = process.env) {
     // bring the stale veto back.
     shallowDipMaxPct: num(env, 'SHALLOW_DIP_MAX_PCT', 0.10), // 0 = off
     shallowDipWindowMin: num(env, 'SHALLOW_DIP_WINDOW_MIN', 60),
+    // ran-rebuy block (user 2026-10-15, "for tonight" — RAN_REBUY=0 lifts it with no
+    // code change): a mint the bot already traded whose coin has printed >=
+    // RAN_REBUY_MULT x that trade's entry price at ANY point since the entry
+    // (including after the exit — measured on GeckoTerminal minute candles over
+    // the mint's top pool, peak high vs the journaled entry fill in USD) cannot
+    // be re-bought until RAN_REBUY_HOURS after that trade's close. Mint-exact,
+    // anchored on the most recent prior close; the wait's expiry re-allows the
+    // rebuy regardless of the run, and a coin that never printed the multiple
+    // is never blocked. Fail-open on any unmeasurable peak (counted in stats).
+    ranRebuy: num(env, 'RAN_REBUY', 1),                    // 1 = on, 0 = off
+    ranRebuyMult: num(env, 'RAN_REBUY_MULT', 5),          // "already ran" = printed >= this x the prior entry
+    ranRebuyHours: num(env, 'RAN_REBUY_HOURS', 3),        // rebuy wait after the prior close, hours
 
     // ---- exits (judged on REALIZABLE value = Jupiter sell quote, not screen price) ----
     stopLoss: num(env, 'STOP_LOSS', 0.15),                // grace-stop ARM line on realizable value (user 2026-10-13: 0.10 live via env)
@@ -406,6 +418,9 @@ export function validateConfig(cfg) {
   if (cfg.freshBypassMinBuyRatio < 0 || cfg.freshBypassMinBuyRatio > 1) errs.push('FRESH_BYPASS_MIN_BUY_RATIO must be between 0 and 1');
   if (cfg.shallowDipMaxPct < 0 || cfg.shallowDipMaxPct > 0.9) errs.push('SHALLOW_DIP_MAX_PCT must be between 0 and 0.9 (0 = off)');
   if (cfg.shallowDipWindowMin < 1 || cfg.shallowDipWindowMin > 720) errs.push('SHALLOW_DIP_WINDOW_MIN must be between 1 and 720');
+  if (cfg.ranRebuy < 0 || cfg.ranRebuy > 1) errs.push('RAN_REBUY must be 0 or 1');
+  if (cfg.ranRebuyMult < 1 || cfg.ranRebuyMult > 1000) errs.push('RAN_REBUY_MULT must be between 1 and 1000');
+  if (cfg.ranRebuyHours <= 0 || cfg.ranRebuyHours > 168) errs.push('RAN_REBUY_HOURS must be > 0 and <= 168');
   if (cfg.maxBuyRatioM5 < 0 || cfg.maxBuyRatioM5 > 1) errs.push('MAX_BUY_RATIO_M5 must be between 0 and 1 (0 = off)');
   if (cfg.churnMinDropPct < 0 || cfg.churnMinDropPct > 100) errs.push('CHURN_MIN_DROP_PCT must be between 0 and 100');
   if (cfg.churnLowBandPct < 0 || cfg.churnLowBandPct > 100) errs.push('CHURN_LOW_BAND_PCT must be between 0 and 100');
