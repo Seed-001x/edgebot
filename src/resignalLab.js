@@ -121,6 +121,7 @@ export function buildResignalCard(records, outcomeOf) {
   }
   const byVerdict = {};
   for (const [k, arr] of groups) byVerdict[k] = agg(arr);
+  const all = agg(joined); // pooled over every verdict — medians cannot be pooled dashboard-side, so the card's 'All' tab reads this
   const recent = joined.slice(-12).reverse().map(({ r, out }) => ({
     ts: r.ts, mint: r.mint, symbol: r.symbol || null, verdict: r.verdict || null, good: r.good ?? null,
     notePresent: !!r.notePresent, note: r.note ?? null,
@@ -128,5 +129,5 @@ export function buildResignalCard(records, outcomeOf) {
     resignalMc: r.resignalMc ?? null, resignalSetup: r.resignalSetup || null, resignalDecision: r.resignalDecision || null,
     out: out ? { done: !!out.done, r5: out.r5 ?? null, r15: out.r15 ?? null, r60: out.r60 ?? null, maxRet: out.maxRet ?? null, minRet: out.minRet ?? null, partial: !!out.partial } : null,
   }));
-  return { byVerdict, recent, baseline: { ...RESIGNAL_BASELINE } };
+  return { byVerdict, all, recent, baseline: { ...RESIGNAL_BASELINE } };
 }

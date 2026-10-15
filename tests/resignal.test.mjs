@@ -168,6 +168,9 @@ test('resignals: card joins outcomes at read time and aggregates per verdict', (
   assert.equal(v.medianR60, 0.1);
   assert.equal(v.sharePeak50, 0.5);
   assert.equal(v.sharePosR60, 0.5);
+  assert.equal(card.all.n, 2);
+  assert.equal(card.all.medianPeak, 0.75);
+  assert.equal(card.all.sharePosR60, 0.5);
   assert.equal(card.recent.length, 2);
   assert.equal(card.recent[0].out.done, true);
   assert.equal(card.recent[0].out.maxRet, 0.3); // newest first
