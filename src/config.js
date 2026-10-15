@@ -286,19 +286,6 @@ export function loadConfig(env = process.env) {
     // bring the stale veto back.
     shallowDipMaxPct: num(env, 'SHALLOW_DIP_MAX_PCT', 0.10), // 0 = off
     shallowDipWindowMin: num(env, 'SHALLOW_DIP_WINDOW_MIN', 60),
-    // clone-field gate (user 2026-10-15, the Nihilism swarm): once a token NAME has a
-    // decided winner — an older same-name token that is established (≥ CLONE_FIELD_MIN_LIQ
-    // liquidity, OR graduated to PumpSwap, OR ≥ CLONE_FIELD_MIN_WINNER_MC market cap) and
-    // outweighs the candidate — follower clones of that name are skipped at the gate: the
-    // name's attention already belongs to the incumbent and the vamps die in minutes
-    // (two fresh Nihilism clones bought under the $422k original, both dead fast). The
-    // name group's biggest token (the winner itself) passes untouched. Judged on the
-    // LIVE field (one DexScreener name search, cached 180s per name), never on the bot's
-    // own history — the clone protections removed 2026-10-14 judged past buys and stay
-    // removed. Fail-open: a failed lookup passes the candidate (counted in stats).
-    cloneField: num(env, 'CLONE_FIELD', 1),               // 1 = on, 0 = off
-    cloneFieldMinLiq: num(env, 'CLONE_FIELD_MIN_LIQ', 15000), // winner's liquidity leg (USD)
-    cloneFieldMinWinnerMc: num(env, 'CLONE_FIELD_MIN_WINNER_MC', 150000), // winner's market-cap leg (USD)
 
     // ---- exits (judged on REALIZABLE value = Jupiter sell quote, not screen price) ----
     stopLoss: num(env, 'STOP_LOSS', 0.15),                // grace-stop ARM line on realizable value (user 2026-10-13: 0.10 live via env)
@@ -419,9 +406,6 @@ export function validateConfig(cfg) {
   if (cfg.freshBypassMinBuyRatio < 0 || cfg.freshBypassMinBuyRatio > 1) errs.push('FRESH_BYPASS_MIN_BUY_RATIO must be between 0 and 1');
   if (cfg.shallowDipMaxPct < 0 || cfg.shallowDipMaxPct > 0.9) errs.push('SHALLOW_DIP_MAX_PCT must be between 0 and 0.9 (0 = off)');
   if (cfg.shallowDipWindowMin < 1 || cfg.shallowDipWindowMin > 720) errs.push('SHALLOW_DIP_WINDOW_MIN must be between 1 and 720');
-  if (cfg.cloneField < 0 || cfg.cloneField > 1) errs.push('CLONE_FIELD must be 0 or 1');
-  if (cfg.cloneFieldMinLiq < 0) errs.push('CLONE_FIELD_MIN_LIQ must be >= 0');
-  if (cfg.cloneFieldMinWinnerMc < 0) errs.push('CLONE_FIELD_MIN_WINNER_MC must be >= 0');
   if (cfg.maxBuyRatioM5 < 0 || cfg.maxBuyRatioM5 > 1) errs.push('MAX_BUY_RATIO_M5 must be between 0 and 1 (0 = off)');
   if (cfg.churnMinDropPct < 0 || cfg.churnMinDropPct > 100) errs.push('CHURN_MIN_DROP_PCT must be between 0 and 100');
   if (cfg.churnLowBandPct < 0 || cfg.churnLowBandPct > 100) errs.push('CHURN_LOW_BAND_PCT must be between 0 and 100');

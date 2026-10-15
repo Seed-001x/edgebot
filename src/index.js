@@ -3,14 +3,14 @@ import { Executor } from './exec.js';
 import { Bot } from './bot.js';
 import { startServer } from './server.js';
 import { discover, fetchViews, fetchSolUsd, fetchCurve } from './sources.js';
-import { fetchRug, fetchHolderCount, cloneFieldCheck } from './gate.js';
+import { fetchRug, fetchHolderCount } from './gate.js';
 
 const cfg = loadConfig();
 const errs = validateConfig(cfg);
 if (errs.length) { console.error('Config errors:\n - ' + errs.join('\n - ')); process.exit(1); }
 
 const exec = new Executor(cfg);
-const bot = new Bot(cfg, { discover, fetchViews, fetchSolUsd, fetchRug, fetchCurve: (mint) => fetchCurve(mint, cfg), fetchHolderCount: (mint) => fetchHolderCount(mint, { rpcUrls: cfg.rpcUrls }), cloneFieldCheck, exec });
+const bot = new Bot(cfg, { discover, fetchViews, fetchSolUsd, fetchRug, fetchCurve: (mint) => fetchCurve(mint, cfg), fetchHolderCount: (mint) => fetchHolderCount(mint, { rpcUrls: cfg.rpcUrls }), exec });
 
 console.log(`[edgebot] mode=${cfg.realMode ? 'REAL' : 'SHADOW'}${cfg.modeWarning ? '  (' + cfg.modeWarning + ')' : ''}`);
 console.log(`[edgebot] limits: ${cfg.tradeSol} SOL/trade, ${cfg.maxPositions} positions, daily loss cap ${cfg.dailyLossSol} SOL, kill at <${cfg.killEquityFrac * 100}% equity`);

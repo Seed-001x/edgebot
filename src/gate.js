@@ -7,7 +7,7 @@
 // Policy: any single hard fail blocks entry. A missing RugCheck report blocks young coins (they are
 // where rigging lives) and only warns for older, high-volume ones.
 
-import { fetchJson, normName } from './util.js';
+import { fetchJson } from './util.js';
 import { rpc } from './curveChain.js';
 
 const RC = 'https://api.rugcheck.xyz/v1';
@@ -305,118 +305,6 @@ export function freshHistoryCheck(samples, view, now, { maxChgM5 = 25, smallMc =
     return { pass: true, judged: false, bypass, reason: `fresh coin already +${Math.round(chgM5)}% in 5m (cap +${Math.round(maxChgM5)}%) — flow bypass: $${Math.round(volM5)} 5m volume, ${Math.round(buyRatioM5 * 100)}% buys — heavy flow, buyers dominating` };
   }
   return { pass: true, judged: false, reason: 'thin history, but aggregates are not extended' };
-}
-
-// 7g. Clone field (user 2026-10-15, the Nihilism swarm): once a token NAME has a
-//     decided winner, the follower clones of that name ("vamps") die within
-//     minutes — the name's attention and liquidity already belong to the
-//     incumbent. The original Nihilism graduated and ran to a $422k cap while a
-//     swarm of same-name clones spawned; the bot bought two fresh clones
-//     (05:21 / 05:24 EDT) and both died fast. This check judges the LIVE
-//     same-name field at gate time (one DexScreener name search, cached per
-//     name) — NOT the bot's own buy history: the clone protections removed
-//     2026-10-14 judged past buys and are NOT resurrected here.
-//     A WINNER is a rival token (same normalized name, different mint) that is
-//     OLDER than the candidate (its earliest pair predates the candidate's
-//     pair — unknown timestamps never qualify a rival), ESTABLISHED (liquidity
-//     >= minLiq, OR graduated to a PumpSwap pair, OR market cap >=
-//     minWinnerMc), and BIGGER than the candidate (market cap above the
-//     candidate's). A winner blocks every smaller follower; the name group's
-//     biggest token — the winner itself — passes untouched.
-//     FAIL-OPEN by contract: any search/network/parse failure passes the
-//     candidate and reports lookupFailed — a DexScreener hiccup must never
-//     become an entry blocker.
-const DS_SEARCH = 'https://api.dexscreener.com/latest/dex/search';
-export const CLONE_FIELD_TTL_MS = 180000; // per-name search cache; failures are NOT cached
-const cloneFieldCache = new Map(); // normalized name -> { ts, pairs }
-
-/** The name the field is judged on: the view's token name, falling back to the
- *  symbol when the view carries no name (sources.js writes 'Unknown' as its
- *  no-name placeholder — that placeholder is "no name", not a token name). */
-export function cloneFieldNameOf(view) {
-  if (!view) return null;
-  const nm = view.name != null ? String(view.name).trim() : '';
-  if (nm && nm.toLowerCase() !== 'unknown') return nm;
-  const sym = view.symbol != null ? String(view.symbol).trim() : '';
-  return sym || null;
-}
-
-/**
- * Pure: judge the candidate against the same-name field of one DexScreener
- * search (the raw `pairs` array). Only solana pairs whose baseToken name
- * normalizes (lowercase, alphanumerics only) to the candidate's name count,
- * and never the candidate's own mint. Each rival TOKEN is summarized by its
- * deepest-liquidity pair (market cap / dex / liquidity) and its EARLIEST pair
- * creation (its age). Returns { rivals, winner, biggest } — winner is the
- * strongest qualifying rival as { mint, mc, dex, liq } or null; biggest is
- * true when no rival outweighs the candidate.
- */
-export function judgeCloneField(view, pairs, { minLiq = 15000, minWinnerMc = 150000 } = {}) {
-  const target = normName(cloneFieldNameOf(view));
-  const candMc = num(view && view.mc);
-  const candAt = view && Number.isFinite(view.createdAt) && view.createdAt > 0 ? view.createdAt : null;
-  const byMint = new Map();
-  for (const p of pairs || []) {
-    if (!target || !p || p.chainId !== 'solana' || !p.baseToken || !p.baseToken.address) continue;
-    if (p.baseToken.address === (view && view.address)) continue;
-    if (normName(p.baseToken.name) !== target) continue;
-    let t = byMint.get(p.baseToken.address);
-    if (!t) { t = { mint: p.baseToken.address, liq: -1, dex: null, mc: null, at: null }; byMint.set(p.baseToken.address, t); }
-    const liq = num(p.liquidity && p.liquidity.usd);
-    if (liq > t.liq) {
-      t.liq = liq; t.dex = p.dexId || null;
-      const mc = Number(p.marketCap) || Number(p.fdv);
-      t.mc = Number.isFinite(mc) && mc > 0 ? mc : null;
-    }
-    const at = Number(p.pairCreatedAt);
-    if (Number.isFinite(at) && at > 0 && (t.at == null || at < t.at)) t.at = at;
-  }
-  const rivals = [...byMint.values()];
-  let winner = null;
-  for (const t of rivals) {
-    const established = t.liq >= minLiq || t.dex === 'pumpswap' || (t.mc != null && t.mc >= minWinnerMc);
-    const older = t.at != null && candAt != null && t.at < candAt;
-    const bigger = t.mc != null && candMc > 0 && t.mc > candMc;
-    if (established && older && bigger && (!winner || t.mc > winner.mc)) winner = { mint: t.mint, mc: t.mc, dex: t.dex, liq: t.liq };
-  }
-  const biggest = candMc > 0 && rivals.every(t => t.mc == null || t.mc <= candMc);
-  return { rivals: rivals.length, winner, biggest };
-}
-
-/**
- * The gate verdict for one candidate view. `searchImpl(name)` returns the
- * parsed DexScreener search body (or null / throws on failure); it defaults
- * to the live search. Successful searches are cached per normalized name for
- * CLONE_FIELD_TTL_MS in `cache` (module-level by default); failures are never
- * cached. NEVER throws — every failure path resolves to a fail-open pass with
- * lookupFailed set.
- */
-export async function cloneFieldCheck(view, { minLiq = 15000, minWinnerMc = 150000, now = Date.now(), searchImpl = null, cache = null } = {}) {
-  const rawName = cloneFieldNameOf(view);
-  const key = normName(rawName);
-  if (!rawName || !key) return { pass: true, lookupFailed: false, rivals: null, winnerMint: null, winnerMc: null, reason: 'no token name to judge' };
-  const store = cache || cloneFieldCache;
-  let pairs = null;
-  const hit = store.get(key);
-  if (hit && now - hit.ts < CLONE_FIELD_TTL_MS) pairs = hit.pairs;
-  else {
-    let body = null;
-    try { body = searchImpl ? await searchImpl(rawName) : await fetchJson(`${DS_SEARCH}?q=${encodeURIComponent(rawName)}`, { timeout: 8000 }); }
-    catch { body = null; }
-    if (body && Array.isArray(body.pairs)) { pairs = body.pairs; store.set(key, { ts: now, pairs }); }
-  }
-  if (!pairs) return { pass: true, lookupFailed: true, rivals: null, winnerMint: null, winnerMc: null, reason: 'same-name field lookup failed — passed open (fail-open)' };
-  const { rivals, winner, biggest } = judgeCloneField(view, pairs, { minLiq, minWinnerMc });
-  if (winner) {
-    return {
-      pass: false, lookupFailed: false, rivals, winnerMint: winner.mint, winnerMc: winner.mc,
-      reason: `clone of decided name "${rawName}" — winner ${winner.mint} at $${Math.round(winner.mc).toLocaleString('en-US')} mc vs this coin $${Math.round(num(view.mc)).toLocaleString('en-US')}`,
-    };
-  }
-  const reason = rivals === 0 ? 'no same-name rivals in the live field'
-    : biggest ? `biggest token of its name group (${rivals} rival(s)) — it is the winner`
-    : `no decided winner among ${rivals} same-name rival(s)`;
-  return { pass: true, lookupFailed: false, rivals, winnerMint: null, winnerMc: null, reason };
 }
 
 // One-go dump simulation: ALL linked supply (creator + linked networks) sold into the pool at once.
