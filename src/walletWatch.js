@@ -375,7 +375,7 @@ export class WalletWatch {
     const all = [...this.events.values()].sort((a, b) => a.ts - b.ts);
     const devEvents = all.filter(e => e.kind === 'dev');
     const cnfEvents = all.filter(e => e.kind === 'confluence');
-    const slim = (e) => ({ id: e.id, kind: e.kind, sub: e.sub || null, ts: e.ts, symbol: e.symbol, mint: e.mint, devName: e.devName || null, names: e.names || null, buySol: e.buySol || null, maxSol: e.maxSol || null, mc: e.mc, gatePass: e.gatePass, firstBlocker: e.firstBlocker, entryTs: e.entryTs, out: e.out, devSell: e.devSell || null });
+    const slim = (e) => ({ id: e.id, kind: e.kind, sub: e.sub || null, ts: e.ts, symbol: e.symbol, mint: e.mint, devName: e.devName || null, names: e.names || null, buySol: e.buySol || null, buyTs: e.buyTs || null, maxSol: e.maxSol || null, mc: e.mc, gatePass: e.gatePass, firstBlocker: e.firstBlocker, entryTs: e.entryTs, out: e.out, devSell: e.devSell || null });
     return {
       enabled: !!this.cfg.walletWatchEnabled,
       baseline: this.baseline,
