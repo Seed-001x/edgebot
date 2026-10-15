@@ -51,7 +51,7 @@ export class Journal {
   constructor(dir, { now = Date.now } = {}) {
     this.now = now;
     this.dir = dir;
-    this.f = { sig: path.join(dir, 'signals.jsonl'), out: path.join(dir, 'outcomes.jsonl'), trades: path.join(dir, 'trades.jsonl'), fb: path.join(dir, 'feedback.jsonl'), ticks: path.join(dir, 'ticks.jsonl'), manual: path.join(dir, 'manual_exits.jsonl'), reports: path.join(dir, 'trade_reports.jsonl'), rshadow: path.join(dir, 'ratchet_shadow.jsonl'), pend: path.join(dir, 'outcome_pending.json'), scan: path.join(dir, 'scans.jsonl'), cshadow: path.join(dir, 'callout_shadow.jsonl'), rsig: path.join(dir, 'resignal_shadow.jsonl') };
+    this.f = { sig: path.join(dir, 'signals.jsonl'), out: path.join(dir, 'outcomes.jsonl'), trades: path.join(dir, 'trades.jsonl'), fb: path.join(dir, 'feedback.jsonl'), ticks: path.join(dir, 'ticks.jsonl'), manual: path.join(dir, 'manual_exits.jsonl'), reports: path.join(dir, 'trade_reports.jsonl'), rshadow: path.join(dir, 'ratchet_shadow.jsonl'), pend: path.join(dir, 'outcome_pending.json'), scan: path.join(dir, 'scans.jsonl'), cshadow: path.join(dir, 'callout_shadow.jsonl'), rsig: path.join(dir, 'resignal_shadow.jsonl'), fexit: path.join(dir, 'flow_exits.jsonl') };
     this._pendDirty = false;   // outcome-tracking progress changed since the last save
     this._pendSavedAt = 0;
     try { fs.mkdirSync(dir, { recursive: true }); } catch { /* ignore */ }
@@ -172,6 +172,8 @@ export class Journal {
    *  already answered signaled again. Writing the record CLAIMS the mark key
    *  in the fired set — that claim is the dedupe (one record per mint+mark). */
   resignal(rec) { if (rec.markKey) this.resignalFired.add(rec.markKey); this.append(this.f.rsig, rec); return rec; }
+  /** Flow-exit watcher record (start / trim / exit / final) — append-only, observer only (see flowExits.js). Like the callout lab: NO in-memory tail; the watcher folds the full file itself. */
+  flowExit(rec) { this.append(this.f.fexit, rec); return rec; }
 
   /** The resignal matcher, run on every freshly journaled signal (fail-silent
    *  at the call site): if the mint carries a user mark on an EARLIER signal

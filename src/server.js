@@ -257,6 +257,15 @@ export function startServer(bot, port) {
       if (!bot.resignalCard) return json(res, 200, { enabled: false });
       return json(res, 200, bot.resignalCard());
     }
+    if (req.method === 'GET' && u.pathname === '/flowexits') {
+      // Flow-Exit Watcher (record-only): for flow-triggered entries, whether
+      // the wallet that took the bot in exited first, how long it held, what
+      // the bot made in those races, and the counterfactual delta of having
+      // exited with the wallet — aggregates over the full flow_exits.jsonl
+      // plus the newest trim/exit events (finals joined at read time).
+      if (!bot.flowExitsCard) return json(res, 200, { enabled: false });
+      return json(res, 200, bot.flowExitsCard());
+    }
     if (req.method === 'GET' && u.pathname === '/reports') {
       return json(res, 200, (bot.journal.tradeReports || []).slice().reverse());
     }

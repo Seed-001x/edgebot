@@ -20,6 +20,7 @@ import { Journal } from './journal.js';
 import { Risk } from './risk.js';
 import { postCallout } from './callout.js';
 import { CalloutLab } from './calloutLab.js';
+import { FlowExits } from './flowExits.js';
 import { snapshotFeatures, externalExit } from './learn.js';
 
 import { PostExitTracker, PairedShadowExits } from './postExit.js';
@@ -39,6 +40,7 @@ export class Bot {
     this.history = new History();
     this.journal = new Journal(cfg.dataDir, { now: this.now });
     this.calloutLab = new CalloutLab({ cfg, journal: this.journal, now: this.now }); // Callout Shadow Lab (record-only): journals would-calls + scores them as a follower would have fared; can never post, sign, or trade
+    this.flowExits = new FlowExits({ cfg, journal: this.journal, now: this.now, positionState: (id) => this._flowExitPosState(id), log: console.log }); // Flow-Exit Watcher (record-only): polls the wallet that triggered a flow entry for its trim/exit and scores the race at close; no decision reads it
     this.risk = new Risk(cfg, { dir: cfg.dataDir, now: this.now });
     this.closedIds = new Set(this.journal.trades.filter(t => t.type === 'close').map(t => t.id)); // journaling guarantee (ensureClose)
     for (const t of this.journal.trades) if (t.type === 'close' && t.mint) this.risk.seedClosed(t.mint, t.ts); // re-entry block survives restarts/deploys
@@ -83,6 +85,10 @@ export class Bot {
     this.enteredMints = this.loadEnteredMints();
     this.loadStats();
     this._syncShadowStats(); // the tracker owns its cumulative totals (persisted with its pending state) — stats mirrors them
+    // Flow-Exit Watcher: re-establish watches for flow positions that were
+    // open across this restart (their start records carry the attribution;
+    // fired trims/exits are rebuilt from the journal and never re-fire).
+    try { this.flowExits.restore(this.positions); } catch { /* observer only */ }
   }
 
   // Trade-grade shadow report card for /state (record-only): maintained from
@@ -272,6 +278,12 @@ export class Bot {
         this.calloutLab.record({ trigger: 'tp3', ts: rec.ts || this.now(), mint: pos.mint, symbol: pos.symbol, v: lv || { address: pos.mint, symbol: pos.symbol, name: pos.symbol, mc: pos.entryMc ?? null }, mc: lv ? lv.mc : (pos.entryMc ?? null), liquidity: lv ? lv.liq : null, setup: pos.setup, source: 'position', holding: false, linkId: pos.id }).catch(() => {});
       }
     } catch { /* observer only — never disturb trading */ }
+    // Flow-Exit Watcher (record-only): the close funnel is the single seam
+    // every close passes through exactly once, so the watch finalizes here —
+    // one last balance read classifies whether the trigger wallet beat the
+    // bot out, held through, or can't be known. Fire-and-forget; no-op for
+    // positions that were never watched.
+    try { if (this.flowExits) this.flowExits.finalize(pos, full).catch(() => {}); } catch { /* observer only — never disturb trading */ }
     return true;
   }
 
@@ -632,6 +644,35 @@ export class Bot {
     try { return this.journal.resignalCard(); } catch { return { enabled: false }; }
   }
 
+  /** Flow-Exit Watcher feed (record-only): the position's own mark state in
+   *  the same measure the exit stack judges — the realizable move of the
+   *  remaining position vs its entry round-trip, off the last live sell-quote
+   *  mark (pos.lastValueSol, refreshed by every managePosition). Nulls when
+   *  the position has never been marked. */
+  _flowExitPosState(id) {
+    const pos = this.positions.find(p => p.id === id);
+    if (!pos) return { open: false };
+    const basis = pos.entrySol * (pos.remainingFrac || 0);
+    let movePct = null, markSol = null;
+    if (pos.lastValueSol != null && basis > 0) {
+      const base = pos.entryRoundTrip > 0 ? pos.entryRoundTrip : 1;
+      movePct = +(((pos.lastValueSol / basis) / base - 1) * 100).toFixed(2);
+      markSol = +pos.lastValueSol.toFixed(6);
+    }
+    return {
+      open: true, movePct, markSol,
+      peakPct: pos.peakMove != null ? +((pos.peakMove - 1) * 100).toFixed(2) : null,
+      bankedSol: pos.realizedSol || 0,
+      botRemainingFrac: pos.remainingFrac != null ? pos.remainingFrac : null,
+    };
+  }
+
+  /** Read-only /flowexits payload — the Flow-Exit Watcher scorecard over the
+   *  FULL flow_exits.jsonl (see flowExits.js; ~60s cached there). */
+  flowExitsCard() {
+    try { return this.flowExits.scorecard(); } catch { return { enabled: false }; }
+  }
+
   /**
    * Read-only /ratchetshadow payload (record-only, like the layer itself):
    * counters off stats, aggregates over the journal's in-memory ratchet tail
@@ -851,7 +892,7 @@ export class Bot {
     try {
       this.evictBlacklisted(); // marked coins never even get priced, let alone signal
       const mints = [...new Set([...this.watch.keys(), ...this.positions.map(p => p.mint)])];
-      if (!mints.length) { try { await this.outcomeTick(this.now()); } catch { /* observer only */ } try { await this._flowRetryTick(this.now()); } catch { /* record-only retry */ } try { await this.walletWatch.finalizeTick(this.now()); } catch { /* shadow outcomes */ } try { await this.calloutLab.tick(this.now()); } catch { /* shadow callouts */ } return; }
+      if (!mints.length) { try { await this.outcomeTick(this.now()); } catch { /* observer only */ } try { await this._flowRetryTick(this.now()); } catch { /* record-only retry */ } try { await this.walletWatch.finalizeTick(this.now()); } catch { /* shadow outcomes */ } try { await this.calloutLab.tick(this.now()); } catch { /* shadow callouts */ } try { await this.flowExits.tick(this.now()); } catch { /* shadow flow exits */ } return; }
       const views = await this.d.fetchViews(mints);
       const n = this.now();
       // D4 (user 2026-10-13): market breadth — the share of sampled coins green on the hour —
@@ -914,6 +955,7 @@ export class Bot {
       try { await this._flowRetryTick(n); } catch { /* record-only retry */ }
       try { await this.walletWatch.finalizeTick(n); } catch { /* shadow outcomes */ }
       try { await this.calloutLab.tick(n); } catch { /* shadow callouts */ }
+      try { await this.flowExits.tick(n); } catch { /* shadow flow exits */ }
       candidates.sort((a, b) => b.sig.strength - a.sig.strength);
       for (const c of candidates.slice(0, this.cfg.maxSignalsPerTick)) {
         this.lastSignal.set(c.v.address, this.now());
@@ -1079,7 +1121,7 @@ export class Bot {
     if (this.flowPending) this.flowPending.delete(mint);
     this.latest.set(mint, v); this.latestAt.set(mint, n); this.history.record(v, n);
     this.noteMint(mint, 'flow'); // keep sampling it so classic/churn detectors can judge it too
-    const metrics = { wallets: agg.wallets || [], maxSol: agg.maxSol || 0, count: agg.count || 0, kind: agg.kind || null };
+    const metrics = { wallets: agg.wallets || [], maxSol: agg.maxSol || 0, count: agg.count || 0, kind: agg.kind || null, wallet: agg.wallet || null, walletSol: agg.walletSol != null ? agg.walletSol : null, buyTs: agg.buyTs || null }; // wallet/walletSol/buyTs: the firing wallet's attribution (flow-exit watcher, record-only)
     // User (2026-10-15): a tracked wallet's buy must LAND on the signals feed
     // whether or not the coin passes parameters — the guards below used to
     // swallow triggers whole (no record at all, so the buy was invisible and
@@ -1378,6 +1420,11 @@ export class Bot {
     }
     this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'taken', reasons: [], price: v.price, mc: v.mc, metrics: { ...sig.metrics, roundTrip: +rt.ratio.toFixed(3), sizeSol: size }, warnings: g.warnings, label: sig.label || null, gates: checks, gatePass: g.pass, fields: this._signalFields(v) });
     this.journal.trade({ type: 'open', id: pos.id, mint: pos.mint, symbol: pos.symbol, setup: pos.setup, entrySol: pos.entrySol, sig: fill.sig, simulated: fill.simulated, ts: n, stamp: pos.stamp, tokensRaw: fill.tokensRaw, entryFillSol: pos.entryFillSol, entryFillUsd: pos.entryFillSol != null && solUsd > 0 ? +(pos.entryFillSol * solUsd).toFixed(10) : null });
+    // Flow-Exit Watcher (record-only): a flow-triggered entry starts a watch
+    // on the wallet whose buy nominated it — its trim/exit get journaled and
+    // scored against this position's own close in ensureClose. No-op for
+    // every other setup and whenever the trigger wallet is unresolvable.
+    try { if (this.flowExits) this.flowExits.start(pos, sig); } catch { /* observer only — never disturb trading */ }
     // one-trade rules are spent the moment an entry executes
     if (this.stats.tempRules) { console.log(`[temp] one-trade rules spent on ${pos.symbol} — cleared`); this.stats.tempRules = null; this.saveStats(); }
   }

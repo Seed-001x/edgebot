@@ -187,12 +187,19 @@ export class FlowWatch {
     const wallets = [...new Set(recent.map(b => b.wallet))];
     const maxSol = Math.max(...recent.map(b => b.sol));
     const base = { wallets, maxSol, count: wallets.length };
+    // Firing-wallet attribution (2026-10-15, for the flow-exit watcher): the
+    // specific wallet whose buy this trigger is — the qualifying buy for
+    // solo/size; for confluence, the DECIDING buy (the most recent one in
+    // the window: evaluate() runs right after recordBuy appends it, so the
+    // newest buy is the one that completed the set).
+    const stamp = (b) => ({ wallet: b.wallet, walletSol: b.sol, buyTs: b.ts || null });
     const soloBuy = recent.filter(b => this.solo.has(b.wallet)).sort((a, b) => b.sol - a.sol)[0];
-    if (soloBuy) return { ...base, kind: 'solo', label: `flow: ${this.nameFor(soloBuy.wallet)} bought ${soloBuy.sol.toFixed(2)} SOL` };
+    if (soloBuy) return { ...base, kind: 'solo', ...stamp(soloBuy), label: `flow: ${this.nameFor(soloBuy.wallet)} bought ${soloBuy.sol.toFixed(2)} SOL` };
     const big = recent.filter(b => b.sol >= this.cfg.flowMinSol).sort((a, b) => b.sol - a.sol)[0];
-    if (big) return { ...base, kind: 'size', label: `flow: ${this.nameFor(big.wallet)} bought ${big.sol.toFixed(2)} SOL` };
+    if (big) return { ...base, kind: 'size', ...stamp(big), label: `flow: ${this.nameFor(big.wallet)} bought ${big.sol.toFixed(2)} SOL` };
     if (wallets.length >= this.cfg.flowWalletsConfl) {
-      return { ...base, kind: 'confluence', label: `flow: ${wallets.length} tracked wallets bought within ${this.cfg.flowWindowMin}m (max ${maxSol.toFixed(2)} SOL)` };
+      const deciding = recent.reduce((a, b) => ((b.ts || 0) >= (a.ts || 0) ? b : a));
+      return { ...base, kind: 'confluence', ...stamp(deciding), label: `flow: ${wallets.length} tracked wallets bought within ${this.cfg.flowWindowMin}m (max ${maxSol.toFixed(2)} SOL)` };
     }
     return null;
   }
