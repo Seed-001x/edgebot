@@ -39,7 +39,7 @@ export function startServer(bot, port) {
   // ADMIN_KEY set (local/tests), everything behaves as before.
   const ADMIN_KEY = process.env.ADMIN_KEY || '';
   if (!ADMIN_KEY) console.log('[server] ADMIN_KEY not set — write endpoints are OPEN');
-  const GUARDED = new Set(['/feedback', '/feedback/clear', '/exittag', '/temprules', '/positions/clear', '/positions/notp', '/halt', '/resume', '/risk/reset']);
+  const GUARDED = new Set(['/feedback', '/feedback/clear', '/feedback/note', '/exittag', '/temprules', '/positions/clear', '/positions/notp', '/halt', '/resume', '/risk/reset']);
   const srv = http.createServer((req, res) => {
     const u = new URL(req.url, 'http://x');
     // CORS preflight
@@ -68,6 +68,25 @@ export function startServer(bot, port) {
         } catch (e) {
           return json(res, 400, { error: 'invalid JSON' });
         }
+      });
+      return;
+    }
+    // GET /feedback — the user's answered signals with notes + joined outcomes (Answers tab)
+    if (req.method === 'GET' && u.pathname === '/feedback') {
+      return json(res, 200, { feedback: bot.journal.feedbackList() });
+    }
+    // POST /feedback/note {key, note} — attach the user's "why I answered that way" to one mark (label only; cannot trade)
+    if (req.method === 'POST' && u.pathname === '/feedback/note') {
+      let body = '';
+      req.on('data', c => { body += c; if (body.length > 5000) req.destroy(); });
+      req.on('end', () => {
+        try {
+          const { key, note } = JSON.parse(body);
+          if (!key || typeof key !== 'string') return json(res, 400, { error: 'key required' });
+          if (typeof note !== 'string') return json(res, 400, { error: 'note must be a string' });
+          const rec = bot.journal.setFeedbackNote(key, note);
+          return rec ? json(res, 200, { ok: true, feedback: rec }) : json(res, 404, { error: 'no such feedback mark' });
+        } catch { return json(res, 400, { error: 'invalid JSON' }); }
       });
       return;
     }

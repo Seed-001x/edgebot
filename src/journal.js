@@ -37,6 +37,15 @@ function readTail(file, n) {
   } catch { return []; }
 }
 
+// Stable identity for one human feedback mark, used to attach the user's
+// free-text note (2026-10-15) to the exact mark it belongs to. Marks made from
+// a signal card carry that signal's id; anything older falls back to
+// mint+timestamp, which is unique in practice (one mark per tap).
+export function feedbackKeyOf(rec) {
+  if (!rec) return null;
+  return rec.signalId ? `sid:${rec.signalId}` : `mt:${rec.mint}:${rec.ts}`;
+}
+
 export class Journal {
   constructor(dir, { now = Date.now } = {}) {
     this.now = now;
@@ -63,7 +72,14 @@ export class Journal {
     for (const o of readTail(this.f.out, KEEP * 2)) { const s = this.byId.get(o.id); if (s) s.out = o; }
     this.trades = readTail(this.f.trades, KEEP);
     this.tradeReports = readTail(this.f.reports, 100);
-    this.feedback = readTail(this.f.fb, KEEP);
+    this.feedback = [];
+    for (const r of readTail(this.f.fb, KEEP)) {
+      // Note lines (type 'note', appended by setFeedbackNote) are NOT marks:
+      // they annotate the mark their key names and must never be counted as
+      // feedback by the learn aggregates that scan this array.
+      if (r.type === 'note') { const f = this.feedback.find(x => feedbackKeyOf(x) === r.key); if (f) { if (r.note) f.note = r.note; else delete f.note; } }
+      else this.feedback.push(r);
+    }
     for (const r of readTail(this.f.manual, KEEP)) {
       if (r.type === 'tag') { const m = this.manual.find(x => x.id === r.id); if (m) m.reason = r.reason; }
       else this.manual.push(r);
@@ -158,10 +174,53 @@ export class Journal {
   /** Human feedback: user marks a skipped signal as good (shouldn't have been skipped) or bad (correctly skipped). */
   recordFeedback({ mint, symbol, good, signalId = null }) {
     const rec = { ts: this.now(), mint, symbol, good: !!good, signalId };
+    rec.key = feedbackKeyOf(rec);
     this.feedback.push(rec);
     if (this.feedback.length > KEEP) this.feedback.shift();
     this.append(this.f.fb, rec);
     return rec;
+  }
+
+  /** Attach (or clear, with an empty note) the user's free-text reason on one
+   *  feedback mark — the "why I answered that way" the user asked for on
+   *  2026-10-15 (e.g. "great coin, signal came too late"). Record-only data:
+   *  nothing in the trading path reads notes. Persisted as an appended note
+   *  line in feedback.jsonl and re-applied at boot (see boot()). */
+  setFeedbackNote(key, note) {
+    const f = this.feedback.find(x => feedbackKeyOf(x) === key);
+    if (!f) return null;
+    const clean = typeof note === 'string' ? note.trim().slice(0, 500) : '';
+    if (clean) f.note = clean; else delete f.note;
+    this.append(this.f.fb, { type: 'note', key, note: clean || null, ts: this.now() });
+    return f;
+  }
+
+  /** The user's answered signals, newest first, each joined to its signal
+   *  record (by signal id, else the latest signal for that mint at or before
+   *  the mark) so the dashboard's Answers tab can show what the mark was on
+   *  and how the coin actually did. Read-only view; notes included. */
+  feedbackList() {
+    const out = [];
+    for (let i = this.feedback.length - 1; i >= 0; i--) {
+      const f = this.feedback[i];
+      let sig = f.signalId ? this.byId.get(f.signalId) : null;
+      if (!sig) {
+        for (let j = this.signals.length - 1; j >= 0; j--) {
+          const s = this.signals[j];
+          if (s.mint === f.mint && s.ts <= f.ts) { sig = s; break; }
+        }
+      }
+      out.push({
+        key: feedbackKeyOf(f), ts: f.ts, mint: f.mint, symbol: f.symbol, good: f.good, signalId: f.signalId || null, note: f.note || null,
+        signal: sig ? {
+          id: sig.id, ts: sig.ts, symbol: sig.symbol, setup: sig.setup, decision: sig.decision, mc: sig.mc, price: sig.price,
+          out: sig.out && sig.out.done
+            ? { done: true, r5: sig.out.r5 ?? null, r15: sig.out.r15 ?? null, r60: sig.out.r60 ?? null, maxRet: sig.out.maxRet ?? null, minRet: sig.out.minRet ?? null, partial: !!sig.out.partial }
+            : { done: false },
+        } : null,
+      });
+    }
+    return out;
   }
 
   /** Returns Set of setup names the user has marked as bad on TAKEN trades (minBad+ times). 0 disables. */
