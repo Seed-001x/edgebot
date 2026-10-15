@@ -308,3 +308,26 @@ export function fastPop(samples, cfg, now) {
   }
   return null;
 }
+
+// ---- FAST POP FLOORS (user 2026-10-15) ----
+// Qualification floors judged in bot._evalFastPop AFTER the detector fires:
+// the fire's USD volume figure (metrics.volM5) and the raw burst size
+// (metrics.streamVolSol) must each clear a floor, or the burst was dust —
+// tonight's fast losers (NEXA $511 / 5 SOL, BISCUIT $1,121 / 11 SOL,
+// H2O $1,432 / 14 SOL) all fired on flow the classic pop's volume floor
+// would never have let through. Fail-closed: a missing value does not clear
+// its floor, and the verdict says so distinctly. Each knob at 0 = floor off.
+export function fastPopFloors({ volM5Usd = null, streamVolSol = null } = {}, cfg) {
+  const reasons = [];
+  let missing = false;
+  const usd = (x) => '$' + Math.round(x).toLocaleString('en-US');
+  if (cfg.fastPopMinVolM5 > 0) {
+    if (volM5Usd == null || !Number.isFinite(volM5Usd)) { missing = true; reasons.push(`5m volume missing — cannot verify the ${usd(cfg.fastPopMinVolM5)} floor`); }
+    else if (volM5Usd < cfg.fastPopMinVolM5) reasons.push(`5m volume ${usd(volM5Usd)} under ${usd(cfg.fastPopMinVolM5)} floor`);
+  }
+  if (cfg.fastPopMinStreamVolSol > 0) {
+    if (streamVolSol == null || !Number.isFinite(streamVolSol)) { missing = true; reasons.push(`burst volume missing — cannot verify the ${cfg.fastPopMinStreamVolSol} SOL floor`); }
+    else if (streamVolSol < cfg.fastPopMinStreamVolSol) reasons.push(`burst ${streamVolSol} SOL under ${cfg.fastPopMinStreamVolSol} SOL floor`);
+  }
+  return { pass: reasons.length === 0, missing, reasons };
+}

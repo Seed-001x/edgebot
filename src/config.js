@@ -88,6 +88,8 @@ export function loadConfig(env = process.env) {
     fastPopGainPct: num(env, 'FAST_POP_GAIN_PCT', 30),       // price gain from the window low, %
     fastPopMaxGainPct: num(env, 'FAST_POP_MAX_GAIN_PCT', 0), // entry-fixes A4 knob, shipped OFF: a ceiling here kills the OSPREY shape fast pop was built for — a V-recovery reads +91% off the 90s window low and is a catch, not a chase (the window low is 90 seconds old, not a 5m base). Set FAST_POP_MAX_GAIN_PCT=75 to apply the classic cap here too.
     fastPopMinVolSol: num(env, 'FAST_POP_MIN_VOL_SOL', 2.5), // total SOL traded inside the window
+    fastPopMinVolM5: num(env, 'FAST_POP_MIN_VOL_M5', 5000),  // qualification floor (user 2026-10-15): the fire's USD volume figure (metrics.volM5) must clear this too — the 90s burst alone fired on dust (NEXA journaled $511 on a 5 SOL burst); 0 = off
+    fastPopMinStreamVolSol: num(env, 'FAST_POP_MIN_STREAM_VOL_SOL', 20), // qualification floor (user 2026-10-15): the burst itself must carry real size — total SOL traded inside the window; 0 = off
     fastPopMinBuys: num(env, 'FAST_POP_MIN_BUYS', 8),        // distinct buy trades inside the window
     fastPopMinBuyShare: num(env, 'FAST_POP_MIN_BUY_SHARE', 0.60), // buys / (buys + sells), live flow (0.55 → 0.60, entry-fixes A5)
     fastPopMaxBuyShare: num(env, 'FAST_POP_MAX_BUY_SHARE', 0.85), // D1 band top for the stream share — same bundle-bait logic as MAX_BUY_RATIO_M5; 0 = off
@@ -459,6 +461,8 @@ export function validateConfig(cfg) {
   if (cfg.streakHeatSustainMin < 0 || cfg.streakHeatSustainMin > 240) errs.push('STREAK_HEAT_SUSTAIN_MIN must be between 0 and 240');
   if (cfg.streakHeatMinCoins < 0 || cfg.streakHeatMinCoins > 10000) errs.push('STREAK_HEAT_MIN_COINS must be between 0 and 10000');
   if (cfg.fastPopMaxBuyShare < 0 || cfg.fastPopMaxBuyShare > 1) errs.push('FAST_POP_MAX_BUY_SHARE must be between 0 and 1 (0 = off)');
+  if (cfg.fastPopMinVolM5 < 0) errs.push('FAST_POP_MIN_VOL_M5 must be >= 0 (0 = off)');
+  if (cfg.fastPopMinStreamVolSol < 0) errs.push('FAST_POP_MIN_STREAM_VOL_SOL must be >= 0 (0 = off)');
   if (cfg.dipStopPct < 0 || cfg.dipStopPct >= 1) errs.push('DIP_STOP_PCT must be between 0 and 1 (0 = off)');
   if (cfg.stallSec < 0) errs.push('STALL_SEC must be >= 0 (0 = off)');
   if (cfg.lockKeep < 0 || cfg.lockKeep >= 1) errs.push('PROFIT_LOCK_KEEP must be between 0 and 1 (0 = off)');

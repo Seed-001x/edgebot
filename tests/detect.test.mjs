@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { detect, eligible, fastPop } from '../src/detect.js';
+import { detect, eligible, fastPop, fastPopFloors } from '../src/detect.js';
 import { testCfg, view, sample } from './helpers.mjs';
 
 const cfg = testCfg();
@@ -205,6 +205,34 @@ test('D1: fast pop share at 0.90 is blocked; the OSPREY 0.60 share still fires',
   }));
   assert.equal(fastPop(mk(18), cfg, NOW), null); // share 0.90
   assert.ok(fastPop(mk(12), cfg, NOW)); // share 0.60
+});
+
+// ---- fast pop floors (user 2026-10-15): the burst must carry real size on BOTH volume measures ----
+test('fastpop floors: tonight\'s dust bursts fail both floors; the one real burst passes', () => {
+  assert.equal(fastPopFloors({ volM5Usd: 5828, streamVolSol: 57 }, cfg).pass, true); // H20 rebuy — the only fast fire with real size
+  const nexa = fastPopFloors({ volM5Usd: 511, streamVolSol: 5 }, cfg); // NEXA: $511 / 5 SOL — straight down ~-50% after
+  assert.equal(nexa.pass, false); assert.equal(nexa.missing, false); assert.equal(nexa.reasons.length, 2);
+  assert.equal(fastPopFloors({ volM5Usd: 1121, streamVolSol: 11 }, cfg).pass, false); // BISCUIT
+  assert.equal(fastPopFloors({ volM5Usd: 1432, streamVolSol: 14 }, cfg).pass, false); // H2O
+});
+test('fastpop floors: KINK shape (real burst, thin USD volume) fails the 5m-volume floor only', () => {
+  const kink = fastPopFloors({ volM5Usd: 3476, streamVolSol: 34 }, cfg);
+  assert.equal(kink.pass, false);
+  assert.equal(kink.reasons.length, 1);
+  assert.match(kink.reasons[0], /5m volume \$3,476 under \$5,000 floor/);
+});
+test('fastpop floors: missing data fails closed and the reason says what was missing', () => {
+  const noUsd = fastPopFloors({ volM5Usd: null, streamVolSol: 57 }, cfg); // SOL/USD conversion failed upstream
+  assert.equal(noUsd.pass, false); assert.equal(noUsd.missing, true);
+  assert.match(noUsd.reasons[0], /5m volume missing/);
+  const noBurst = fastPopFloors({ volM5Usd: 9000, streamVolSol: null }, cfg);
+  assert.equal(noBurst.pass, false); assert.equal(noBurst.missing, true);
+  assert.match(noBurst.reasons[0], /burst volume missing/);
+});
+test('fastpop floors: both knobs at 0 = floors off, even for dust or missing data', () => {
+  const off = testCfg({ fastPopMinVolM5: 0, fastPopMinStreamVolSol: 0 });
+  assert.equal(fastPopFloors({ volM5Usd: 1, streamVolSol: 1 }, off).pass, true);
+  assert.equal(fastPopFloors({}, off).pass, true);
 });
 
 // ---- trend freshness = 5m VOLUME (user 2026-10-14, UNTXED) ----

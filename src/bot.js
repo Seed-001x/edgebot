@@ -10,7 +10,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { History } from './history.js';
-import { detect, detectChurn, detectLiftoff, eligible, fastPop } from './detect.js';
+import { detect, detectChurn, detectLiftoff, eligible, fastPop, fastPopFloors } from './detect.js';
 import { runGates, hasHardFail, tempRuleViolation, blockedNameWord, extensionCheck, freshHistoryCheck, shallowDipCheck, summarizeGateChecks, holderSamples, foldLastTrades } from './gate.js';
 import { computeSignalFields } from './signalFields.js';
 import { evaluateExit } from './exits.js';
@@ -805,6 +805,19 @@ export class Bot {
     this.stats.fastPop = this.stats.fastPop || { fires: 0 };
     this.stats.fastPop.fires++;
     console.log(`[fastpop] ${v.symbol} fired from the trade stream: +${sig.metrics.gainPct}% in ${sig.metrics.windowSec}s, ${sig.metrics.trades} trades, buy share ${sig.metrics.buyRatioM5}`);
+    // Fast-pop floors (user 2026-10-15): the burst must carry real size on
+    // BOTH volume measures or the fire is journaled as a skip with the reason
+    // — never silently swallowed, never taken. Fail-closed on missing data:
+    // if the SOL/USD conversion failed, the USD figure is unknown (null
+    // here) and cannot clear its floor.
+    const floors = fastPopFloors({ volM5Usd: solUsd ? sig.metrics.volM5 : null, streamVolSol }, this.cfg);
+    if (!floors.pass) {
+      this.stats.fastPopFloors = this.stats.fastPopFloors || { blocked: 0, missing: 0 };
+      this.stats.fastPopFloors.blocked++;
+      if (floors.missing) this.stats.fastPopFloors.missing++;
+      console.log(`[fastpop] skip: ${v.symbol} — ${floors.reasons.join('; ')}`);
+      return this.skip(v, sig, floors.reasons.map(r => `fastPop: ${r}`), [], { fastPop: { pass: false, reason: floors.reasons.join('; ') } });
+    }
     await this.onSignal(v, sig);
   }
 

@@ -34,6 +34,17 @@ test('entry fixes 2026-10-13: safer defaults — mandatory ape off, pace relax o
   assert.equal(validateConfig(c).length, 0);
 });
 
+test('fast pop floors 2026-10-15: defaults $5,000 / 20 SOL, env overrides land, 0 = off valid, negatives rejected', () => {
+  const c = loadConfig({});
+  assert.equal(c.fastPopMinVolM5, 5000);
+  assert.equal(c.fastPopMinStreamVolSol, 20);
+  assert.equal(loadConfig({ FAST_POP_MIN_VOL_M5: '7500' }).fastPopMinVolM5, 7500);
+  assert.equal(loadConfig({ FAST_POP_MIN_STREAM_VOL_SOL: '35' }).fastPopMinStreamVolSol, 35);
+  assert.equal(validateConfig(loadConfig({ FAST_POP_MIN_VOL_M5: '0', FAST_POP_MIN_STREAM_VOL_SOL: '0' })).length, 0);
+  assert.ok(validateConfig(loadConfig({ FAST_POP_MIN_VOL_M5: '-1' })).some(e => e.includes('FAST_POP_MIN_VOL_M5')));
+  assert.ok(validateConfig(loadConfig({ FAST_POP_MIN_STREAM_VOL_SOL: '-1' })).some(e => e.includes('FAST_POP_MIN_STREAM_VOL_SOL')));
+});
+
 test('shallow-dip veto 2026-10-14: defaults 0.10 / 60 min, 0 = off accepted, bad values rejected', () => {
   const c = loadConfig({});
   assert.equal(c.shallowDipMaxPct, 0.10);
