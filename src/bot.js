@@ -42,7 +42,13 @@ export class Bot {
     for (const t of this.journal.trades) if (t.type === 'close' && t.mint) this.risk.seedClosed(t.mint, t.ts); // re-entry block survives restarts/deploys
     this.postExit = new PostExitTracker(cfg.dataDir, this.now); // 5-min post-exit price tracker (observer only)
     this.paired = new PairedShadowExits(cfg.dataDir, this.now); // D1: virtual would-be exits paired to manual exits (observer only)
-    this.shadowTrades = new ShadowTrades(cfg.dataDir, this.now, { txFeeSol: cfg.txFeeSol }); // trade-grade shadow (record-only): virtual positions for gate-passing shadow signals, run through the real exit stack
+    this.streamEvalAt = new Map(); // mint -> ts of last stream-judge evaluation (v2 throttle, mirrors fastEvalAt)
+    this.shadowStreamState = new Map(); // shadow virtual id -> stream-judge state (kept Bot-side: the virtual's own serialized state stays untouched)
+    this.shadowTrades = new ShadowTrades(cfg.dataDir, this.now, { // trade-grade shadow (record-only): virtual positions for gate-passing shadow signals, run through the real exit stack
+      txFeeSol: cfg.txFeeSol,
+      onTick: (s, move, ts) => this._onShadowVirtualTick(s, move, ts),   // stream judge fire-quality probes (record-only)
+      onClose: (s, rec) => this._onShadowVirtualClose(s, rec),          // stream judge completion records (record-only)
+    });
     this.walletWatch = new WalletWatch({ // wallet-task shadow detectors (record-only): dev launches + survivor confluence over the Phase 1–3 sets
       cfg, dir: cfg.dataDir, now: this.now,
       fetchViews: deps.fetchViews,
@@ -81,6 +87,52 @@ export class Bot {
   // journal point, and both tick paths call this after ticking the tracker).
   _syncShadowStats() {
     try { if (this.shadowTrades) this.stats.shadowTrades = this.shadowTrades.totalsView(); } catch { /* observer only */ }
+  }
+
+  /** Stream-judge state for one shadow virtual (get-or-create). Lives Bot-side
+   *  keyed by virtual id so ShadowTrades' persisted state shape is untouched. */
+  _shadowStreamStateFor(id) {
+    let st = this.shadowStreamState.get(id);
+    if (!st) { st = { streamPeakMove: null, streamArmed: false, streamFired: false, streamFireTs: null, streamTrades: 0, entryPriceSol: null, mint: null, probe30: false, probe60: false }; this.shadowStreamState.set(id, st); }
+    return st;
+  }
+
+  /**
+   * ShadowTrades tick hook (record-only): fire-quality probes for a virtual
+   * the stream judge would-fired — what did its mark move do at the first
+   * ticks >= 30s / >= 60s after the fire? Same shape as the real positions'
+   * probes in judgeRatchetShadow, on the virtual's own view-mark move.
+   */
+  _onShadowVirtualTick(s, move, ts) {
+    try {
+      const st = this.shadowStreamState.get(s.id);
+      if (!st || !st.streamFired || !st.streamFireTs || move == null) return;
+      for (const atSec of [30, 60]) {
+        const key = atSec === 30 ? 'probe30' : 'probe60';
+        if (st[key] || ts - st.streamFireTs < atSec * 1000) continue;
+        st[key] = true;
+        this.journal.ratchetShadow({ kind: 'fire-quality', source: 'shadow', id: s.id, ts, mint: s.mint, symbol: s.symbol, atSec, jupMove: +move.toFixed(4) });
+      }
+    } catch { /* observer only */ }
+  }
+
+  /**
+   * ShadowTrades close hook (record-only): the stream judge's completion
+   * record for a virtual it ever saw armed — the shadow-book mirror of the
+   * real positions' ensureClose record, journaled separately (source
+   * 'shadow') and never pooled with the real sample. tickFireTs/leadSec are
+   * null by construction: a virtual has no tick judge — its own exit-stack
+   * close (exitReason/pnlSol on the record) is what a stream fire is scored
+   * against.
+   */
+  _onShadowVirtualClose(s, rec) {
+    try {
+      const st = this.shadowStreamState.get(s.id);
+      if (st) this.shadowStreamState.delete(s.id);
+      if (!this.cfg.ratchetShadow || !st || !(st.streamArmed || st.streamFired)) return;
+      this.journal.ratchetShadow({ kind: 'closed', outcome: 'closed', source: 'shadow', id: s.id, ts: rec.exitTs || this.now(), mint: s.mint, symbol: s.symbol, setup: s.setup, exitReason: rec.exitReason ?? null, pnlSol: rec.pnlSol ?? null, streamWouldFire: !!st.streamFired, streamFireTs: st.streamFireTs ?? null, tickFireTs: null, leadSec: null, jupArmed: null, tickArmed: null, streamArmed: !!st.streamArmed, streamCovered: (st.streamTrades || 0) > 0, streamTrades: st.streamTrades || 0 });
+      if (this.shadowFlow && !this.positions.some(p => p.mint === s.mint) && !(this.shadowTrades && this.shadowTrades.openVirtual(s.mint))) this.shadowFlow.drop(s.mint);
+    } catch { /* observer only */ }
   }
 
   loadStats() {
@@ -190,16 +242,20 @@ export class Bot {
       this.stats.closesSinceReport = (this.stats.closesSinceReport || 0) + 1;
       if (this.stats.closesSinceReport >= (this.cfg.reportEveryTrades || 10)) this.makeTradeReport();
     } catch { /* reporting must never disturb trading */ }
-    // shadow ratchet judge completion (record-only): every close of a position the
-    // judge ever saw armed gets its comparison record — what actually closed it,
-    // whether the live ratchet was the one that fired, and the move at exit — so a
-    // would-fire can be scored against what the price trigger really did.
+    // shadow ratchet judge completion (record-only): every close of a position
+    // either judge ever saw armed gets its comparison record — what actually
+    // closed it, whether the live ratchet was the one that fired, and the move
+    // at exit — so a would-fire can be scored against what the price trigger
+    // really did. v2: a STREAM-armed/fired position lands the record even if
+    // the tick judge never armed, carrying both fire timestamps (leadSec =
+    // how much earlier the stream fired, only when both did) and the stream
+    // coverage, so an uncovered mint reads as uncovered instead of absent.
     try {
-      if (this.cfg.ratchetShadow && pos.ratchetShadowArmed) {
+      if (this.cfg.ratchetShadow && (pos.ratchetShadowArmed || pos.streamArmed || pos.streamFired)) {
         this.stats.ratchetShadow = this.stats.ratchetShadow || { wouldFire: 0, completed: 0 };
         this.stats.ratchetShadow.completed++;
-        this.journal.ratchetShadow({ kind: 'closed', outcome: 'closed', id: pos.id, ts: rec.ts || this.now(), mint: pos.mint, symbol: pos.symbol, setup: pos.setup, exitReason: rec.reason || null, pnlSol: rec.pnlSol ?? null, ratchetFired: /^break-even ratchet/.test(rec.reason || ''), wouldFire: !!pos.ratchetShadowFired, actualExitMove: pos.ratchetShadowMove != null ? +pos.ratchetShadowMove.toFixed(4) : null });
-        if (!this.positions.some(p => p.id !== pos.id && p.mint === pos.mint)) this.shadowFlow.drop(pos.mint);
+        this.journal.ratchetShadow({ kind: 'closed', outcome: 'closed', source: 'real', id: pos.id, ts: rec.ts || this.now(), mint: pos.mint, symbol: pos.symbol, setup: pos.setup, exitReason: rec.reason || null, pnlSol: rec.pnlSol ?? null, ratchetFired: /^break-even ratchet/.test(rec.reason || ''), wouldFire: !!pos.ratchetShadowFired, actualExitMove: pos.ratchetShadowMove != null ? +pos.ratchetShadowMove.toFixed(4) : null, streamWouldFire: !!pos.streamFired, streamFireTs: pos.streamFireTs ?? null, tickFireTs: pos.ratchetShadowFireTs ?? null, leadSec: (pos.streamFireTs != null && pos.ratchetShadowFireTs != null) ? +((pos.ratchetShadowFireTs - pos.streamFireTs) / 1000).toFixed(2) : null, tickArmed: !!pos.ratchetShadowArmed, streamArmed: !!pos.streamArmed, streamCovered: (pos.streamTrades || 0) > 0, streamTrades: pos.streamTrades || 0 });
+        if (!this.positions.some(p => p.id !== pos.id && p.mint === pos.mint) && !(this.shadowTrades && this.shadowTrades.openVirtual(pos.mint))) this.shadowFlow.drop(pos.mint);
       }
     } catch { /* observer only — never disturb trading */ }
     return true;
@@ -382,12 +438,15 @@ export class Bot {
   /** Mints whose trades the live feed should stream: freshest watch entries + open positions.
    *  Open positions always come first — a held mint keeps its subscription for the life of
    *  the position, ahead of the capped fresh-watch slice. With fast pop off, held mints are
-   *  still streamed while the shadow ratchet judge (record-only) is on: it reads their flow. */
+   *  still streamed while the shadow ratchet judge (record-only) is on: it reads their flow.
+   *  Open SHADOW positions' mints ride along (after held) while the judge is on — the
+   *  stream judge's shadow-book sample (v2) reads the same feed. */
   tradeWatchMints() {
     const held = this.positions.map(p => p.mint);
-    if (!this.cfg.fastPop) return this.cfg.ratchetShadow ? [...new Set(held)] : [];
+    const shadow = this.cfg.ratchetShadow && this.shadowTrades ? this.shadowTrades.pendingMints().map(x => x.mint) : [];
+    if (!this.cfg.fastPop) return this.cfg.ratchetShadow ? [...new Set([...held, ...shadow])] : [];
     const fresh = [...this.watch.entries()].sort((a, b) => b[1].ts - a[1].ts).slice(0, this.cfg.fastPopMaxSubs).map(([m]) => m);
-    return [...new Set([...held, ...fresh])];
+    return [...new Set([...held, ...shadow, ...fresh])];
   }
 
   /**
@@ -398,7 +457,7 @@ export class Bot {
    * the stream is an accelerator, never a dependency.
    */
   noteTrade(mint, trade) {
-    // shadow ratchet judge feed (record-only): held mints' trades, independent of fast pop
+    // shadow ratchet judge feed (record-only): held + shadow-book mints' trades, independent of fast pop
     if (this.cfg.ratchetShadow) this.noteShadowTrade(mint, trade);
     if (!this.cfg.fastPop || !trade || !(trade.price > 0)) return;
     let buf = this.streamBuf.get(mint);
@@ -413,11 +472,155 @@ export class Bot {
     this._evalFastPop(mint, buf, n).catch(e => this.err('fastPop', e));
   }
 
-  /** Buffer a streamed trade for the shadow ratchet judge — held mints only, everything else ignored. */
+  /** Buffer a streamed trade for the shadow ratchet judges — held mints and open
+   *  shadow positions' mints only, everything else ignored (buffered once when a
+   *  mint is both). Each target's stream-trade count is its coverage record.
+   *  After buffering, the STREAM judge (v2) evaluates on the trade path itself,
+   *  throttled per mint exactly like the fast-pop evaluation above. */
   noteShadowTrade(mint, trade) {
     if (!trade || !(trade.sol > 0)) return;
-    if (!this.positions.some(p => p.mint === mint)) return;
+    const pos = this.positions.find(p => p.mint === mint) || null;
+    const virt = this.shadowTrades ? this.shadowTrades.openVirtual(mint) : null;
+    if (!pos && !virt) return;
     this.shadowFlow.note(mint, trade);
+    if (pos) pos.streamTrades = (pos.streamTrades || 0) + 1;
+    let st = null;
+    if (virt) { st = this._shadowStreamStateFor(virt.id); st.mint = mint; st.streamTrades = (st.streamTrades || 0) + 1; }
+    const n = trade.ts || this.now();
+    if (n - (this.streamEvalAt.get(mint) || 0) < this.cfg.ratchetStreamEvalMs) return;
+    this.streamEvalAt.set(mint, n);
+    try { this._judgeRatchetStream(mint, pos, virt, st, n); } catch { /* observer only — the stream path must never disturb the feed */ }
+  }
+
+  /**
+   * One stream-judge step against a state holder (a real position, or a shadow
+   * virtual's Bot-side state): given the stream VWAP move off the entry price,
+   * track the STREAM's own peak, arm off it, and run the unchanged pure fire
+   * test. Returns { fire, move, peakMove } on the position's first stream
+   * would-fire, else null. A holder with no usable entry price has no opinion.
+   */
+  _streamJudgeStep(holder, entryPrice, tp1Done, vwPrice, flow) {
+    if (!(entryPrice > 0)) return null;
+    const move = vwPrice / entryPrice;
+    if (holder.streamPeakMove == null || move > holder.streamPeakMove) holder.streamPeakMove = move;
+    if (ratchetArmed(holder.streamPeakMove, tp1Done, this.cfg)) holder.streamArmed = true;
+    if (holder.streamFired) return null; // at most one stream would-fire per position: the first
+    const fire = ratchetShadowFire({ peakMove: holder.streamPeakMove, tp1Done, move, flow, cfg: this.cfg });
+    if (!fire) return null;
+    holder.streamFired = true;
+    return { fire, move, peakMove: holder.streamPeakMove };
+  }
+
+  /**
+   * STREAM ratchet judge (user 2026-10-15, RECORD-ONLY — this can never sell).
+   * The tick judge (judgeRatchetShadow) asks its question on 4s quote polls;
+   * this one asks the SAME question as the trades themselves land: is the
+   * flow an exit wave while the stream VWAP comes off the stream's own peak?
+   * The price basis differs by design (stream prints off the actual entry
+   * fill, not the realizable quote), so every record cross-tags the other
+   * judge's state (jupArmed, and jupMove sampled fresh at fire time) and the
+   * completion records carry both fire timestamps — lead time is only ever
+   * read where both judges armed. Runs for held positions (source 'real')
+   * and open shadow-book virtuals (source 'shadow', counted separately).
+   * A VWAP window holding fewer than 2 prints is no opinion at all: neither
+   * a peak update nor a fire evaluation, so one dust print decides nothing.
+   */
+  _judgeRatchetStream(mint, pos, virt, st, n) {
+    const vw = this.shadowFlow.vwap(mint, n, this.cfg.ratchetStreamVwapSec);
+    if (!vw || vw.prints < 2) return;
+    const flow = this.shadowFlow.window(mint, n, this.cfg.ratchetFlowWindowSec);
+    if (pos) {
+      const hit = this._streamJudgeStep(pos, pos.entryFillSol, pos.tp1Done, vw.price, flow);
+      if (hit) {
+        pos.streamFireTs = n;
+        this.stats.ratchetShadow = this.stats.ratchetShadow || { wouldFire: 0, completed: 0 };
+        this.stats.ratchetShadow.streamWouldFire = (this.stats.ratchetShadow.streamWouldFire || 0) + 1;
+        const jupArmed = ratchetArmed(pos.peakMove, pos.tp1Done, this.cfg); // was the QUOTE judge armed at this same moment?
+        this._journalStreamFireReal(pos, hit, jupArmed, n).catch(() => { /* observer only */ });
+        console.log(`[ratchet-shadow] ${pos.symbol}: STREAM WOULD FIRE — sells ${Math.round(hit.fire.sellShare * 100)}% of last ${this.cfg.ratchetFlowWindowSec}s flow (${hit.fire.sellSol.toFixed(2)} SOL), stream move ${hit.move.toFixed(3)} off stream peak ${hit.peakMove.toFixed(3)} (record only)`);
+      }
+    }
+    if (virt && st) {
+      // A virtual restored across a restart never got the open-time SOL basis:
+      // resolve it lazily off the current rate (open-time capture is preferred
+      // and already set for virtuals opened by this process).
+      if (st.entryPriceSol == null && virt.entryPrice > 0 && this.lastSolUsd > 0) st.entryPriceSol = virt.entryPrice / this.lastSolUsd;
+      const hit = this._streamJudgeStep(st, st.entryPriceSol, virt.tp1Done, vw.price, flow);
+      if (hit) {
+        st.streamFireTs = n;
+        this.stats.ratchetShadow = this.stats.ratchetShadow || { wouldFire: 0, completed: 0 };
+        this.stats.ratchetShadow.streamShadowWouldFire = (this.stats.ratchetShadow.streamShadowWouldFire || 0) + 1;
+        const markMove = virt.entrySol > 0 && virt.remainingFrac > 0 ? (virt.lastValueSol / (virt.entrySol * virt.remainingFrac)) / (virt.entryRoundTrip > 0 ? virt.entryRoundTrip : 1) : null;
+        this.journal.ratchetShadow({ kind: 'would-fire-stream', source: 'shadow', id: virt.id, ts: n, mint, symbol: virt.symbol, setup: virt.setup, streamMove: +hit.move.toFixed(4), streamPeakMove: +hit.peakMove.toFixed(4), sellShare: +hit.fire.sellShare.toFixed(3), sellSol: +hit.fire.sellSol.toFixed(4), buySol: +hit.fire.buySol.toFixed(4), windowSec: this.cfg.ratchetFlowWindowSec, jupArmed: ratchetArmed(virt.peakMove, virt.tp1Done, this.cfg), jupMove: markMove != null && Number.isFinite(markMove) ? +markMove.toFixed(4) : null });
+        console.log(`[ratchet-shadow] ${virt.symbol}: STREAM WOULD FIRE (shadow book) — sells ${Math.round(hit.fire.sellShare * 100)}% of last ${this.cfg.ratchetFlowWindowSec}s flow (${hit.fire.sellSol.toFixed(2)} SOL), stream move ${hit.move.toFixed(3)} off stream peak ${hit.peakMove.toFixed(3)} (record only)`);
+      }
+    }
+  }
+
+  /**
+   * Journal a real position's stream would-fire. jupMove is a FRESH Jupiter
+   * mark sampled at fire time (fires are rare; one quote is cheap and exact),
+   * converted to a move exactly as positionTick computes it — fail-silent to
+   * the last tick's move when the quote fails or the exec layer can't quote.
+   * Async by necessity; the caller has already latched the fire state.
+   */
+  async _journalStreamFireReal(pos, hit, jupArmed, n) {
+    let jupMove = pos.ratchetShadowMove != null ? pos.ratchetShadowMove : null;
+    try {
+      if (this.exec && typeof this.exec.markValue === 'function') {
+        const valueSol = await this.exec.markValue(pos.mint, pos.tokensRaw);
+        const basis = pos.entrySol * pos.remainingFrac;
+        const base = pos.entryRoundTrip > 0 ? pos.entryRoundTrip : 1;
+        if (valueSol != null && basis > 0) jupMove = (valueSol / basis) / base;
+      }
+    } catch { /* quote failed — the last tick move stands */ }
+    this.journal.ratchetShadow({ kind: 'would-fire-stream', source: 'real', id: pos.id, ts: n, mint: pos.mint, symbol: pos.symbol, setup: pos.setup, streamMove: +hit.move.toFixed(4), streamPeakMove: +hit.peakMove.toFixed(4), sellShare: +hit.fire.sellShare.toFixed(3), sellSol: +hit.fire.sellSol.toFixed(4), buySol: +hit.fire.buySol.toFixed(4), windowSec: this.cfg.ratchetFlowWindowSec, jupArmed, jupMove: jupMove != null ? +jupMove.toFixed(4) : null });
+  }
+
+  /**
+   * Read-only /ratchetshadow payload (record-only, like the layer itself):
+   * counters off stats, aggregates over the journal's in-memory ratchet tail
+   * (the last 500 records — months of this journal's traffic). The arm
+   * comparison reads REAL completions only: a shadow virtual has no tick
+   * judge, so its tickArmed is null and it can never pollute the pairing.
+   * bothArmed counts completions where BOTH judges fired (leadSec != null
+   * is exactly that set); lead time is never averaged over anything else.
+   */
+  ratchetShadowView() {
+    const cfg = this.cfg || {};
+    const st = this.stats.ratchetShadow || {};
+    const recs = (this.journal && this.journal.ratchet) || [];
+    const byKind = { wouldFire: 0, streamReal: 0, streamShadow: 0, fireQuality: 0, closedReal: 0, closedShadow: 0 };
+    const leads = [];
+    let closedN = 0, covered = 0, streamOnlyArms = 0, tickOnlyArms = 0;
+    for (const r of recs) {
+      if (!r) continue;
+      if (r.kind === 'would-fire') byKind.wouldFire++;
+      else if (r.kind === 'would-fire-stream') { if (r.source === 'shadow') byKind.streamShadow++; else byKind.streamReal++; }
+      else if (r.kind === 'fire-quality') byKind.fireQuality++;
+      else if (r.kind === 'closed') {
+        closedN++;
+        if (r.source === 'shadow') byKind.closedShadow++; else byKind.closedReal++;
+        if (r.streamCovered) covered++;
+        if (r.leadSec != null) leads.push(r.leadSec);
+        if (typeof r.tickArmed === 'boolean') {
+          if (r.streamArmed && !r.tickArmed) streamOnlyArms++;
+          else if (r.tickArmed && !r.streamArmed) tickOnlyArms++;
+        }
+      }
+    }
+    leads.sort((a, b) => a - b);
+    const medianLeadSec = leads.length ? +(leads.length % 2 ? leads[(leads.length - 1) / 2] : (leads[leads.length / 2 - 1] + leads[leads.length / 2]) / 2).toFixed(2) : null;
+    return {
+      enabled: !!cfg.ratchetShadow,
+      knobs: { evalMs: cfg.ratchetStreamEvalMs, vwapSec: cfg.ratchetStreamVwapSec, flowWindowSec: cfg.ratchetFlowWindowSec, flowSellShare: cfg.ratchetFlowSellShare, flowMinSellSol: cfg.ratchetFlowMinSellSol, beArmPct: cfg.beArmPct, beTriggerPct: cfg.beTriggerPct },
+      counters: { wouldFire: st.wouldFire || 0, completed: st.completed || 0, streamWouldFire: st.streamWouldFire || 0, streamShadowWouldFire: st.streamShadowWouldFire || 0 },
+      journalRecords: recs.length,
+      byKind,
+      bothArmed: { n: leads.length, medianLeadSec, streamOnlyArms, tickOnlyArms },
+      coverage: { closed: closedN, covered },
+      recent: recs.slice(-15).reverse(),
+    };
   }
 
   /**
@@ -433,15 +636,30 @@ export class Bot {
   judgeRatchetShadow(pos, move, n) {
     if (!this.cfg.ratchetShadow) return;
     pos.ratchetShadowMove = move; // the close record's exit move, whichever exit ends it
+    // fire-quality probes (record-only, v2): if the STREAM judge already
+    // would-fired this position, what did the realizable move do at the first
+    // ticks >= 30s / >= 60s after its fire? An early fire is only a good fire
+    // if the price kept falling — a probe back at the peak exposes a shakeout.
+    try {
+      if (pos.streamFired && pos.streamFireTs) {
+        for (const atSec of [30, 60]) {
+          const key = atSec === 30 ? 'streamProbe30' : 'streamProbe60';
+          if (pos[key] || n - pos.streamFireTs < atSec * 1000) continue;
+          pos[key] = true;
+          this.journal.ratchetShadow({ kind: 'fire-quality', source: 'real', id: pos.id, ts: n, mint: pos.mint, symbol: pos.symbol, atSec, jupMove: +move.toFixed(4) });
+        }
+      }
+    } catch { /* observer only */ }
     if (ratchetArmed(pos.peakMove, pos.tp1Done, this.cfg)) pos.ratchetShadowArmed = true;
     if (pos.ratchetShadowFired) return; // at most one would-fire per position: the first
     const flow = this.shadowFlow.window(pos.mint, n, this.cfg.ratchetFlowWindowSec);
     const fire = ratchetShadowFire({ peakMove: pos.peakMove, tp1Done: pos.tp1Done, move, flow, cfg: this.cfg });
     if (!fire) return;
     pos.ratchetShadowFired = true;
+    pos.ratchetShadowFireTs = n; // the completion record pairs this with streamFireTs for lead time
     this.stats.ratchetShadow = this.stats.ratchetShadow || { wouldFire: 0, completed: 0 };
     this.stats.ratchetShadow.wouldFire++;
-    this.journal.ratchetShadow({ kind: 'would-fire', id: pos.id, ts: n, mint: pos.mint, symbol: pos.symbol, setup: pos.setup, moveAtFire: +move.toFixed(4), peakMove: +pos.peakMove.toFixed(4), sellShare: +fire.sellShare.toFixed(3), sellSol: +fire.sellSol.toFixed(4), buySol: +fire.buySol.toFixed(4), windowSec: this.cfg.ratchetFlowWindowSec });
+    this.journal.ratchetShadow({ kind: 'would-fire', id: pos.id, ts: n, mint: pos.mint, symbol: pos.symbol, setup: pos.setup, moveAtFire: +move.toFixed(4), peakMove: +pos.peakMove.toFixed(4), sellShare: +fire.sellShare.toFixed(3), sellSol: +fire.sellSol.toFixed(4), buySol: +fire.buySol.toFixed(4), windowSec: this.cfg.ratchetFlowWindowSec, streamArmed: !!pos.streamArmed, streamFireTs: pos.streamFireTs ?? null });
     console.log(`[ratchet-shadow] ${pos.symbol}: WOULD FIRE — sells ${Math.round(fire.sellShare * 100)}% of last ${this.cfg.ratchetFlowWindowSec}s flow (${fire.sellSol.toFixed(2)} SOL), move ${move.toFixed(3)} off peak ${pos.peakMove.toFixed(3)} (record only)`);
   }
 
@@ -697,7 +915,15 @@ export class Bot {
     // the tracker. Gate-failed shadow signals open nothing.
     if (gatePass === true) {
       try {
-        if (this.shadowTrades.open({ id: sigId, mint: v.address, symbol: v.symbol, setup: sig.setup, price: v.price, mc: v.mc, ts: this.now(), sizeSol: this.cfg.tradeSol, volH1: v.volH1 || 0 })) this._syncShadowStats();
+        if (this.shadowTrades.open({ id: sigId, mint: v.address, symbol: v.symbol, setup: sig.setup, price: v.price, mc: v.mc, ts: this.now(), sizeSol: this.cfg.tradeSol, volH1: v.volH1 || 0 })) {
+          this._syncShadowStats();
+          // stream judge (record-only): the virtual's entry price in SOL/token,
+          // captured at open from the same SOL/USD the bot just saw — the stream
+          // judge measures its move off this, never off a later rate.
+          const st = this._shadowStreamStateFor(sigId);
+          st.mint = v.address;
+          st.entryPriceSol = this.lastSolUsd > 0 ? v.price / this.lastSolUsd : null;
+        }
       } catch { /* observer only — never disturb the signal path */ }
     }
   }

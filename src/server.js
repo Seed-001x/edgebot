@@ -233,6 +233,13 @@ export function startServer(bot, port) {
       if (!bot.walletWatch) return json(res, 200, { enabled: false, devs: [], confluence: null, recent: [] });
       return json(res, 200, bot.walletWatch.snapshot());
     }
+    if (req.method === 'GET' && u.pathname === '/ratchetshadow') {
+      // Shadow ratchet judges (record-only): tick judge vs stream judge —
+      // counters, per-kind journal tallies, the both-armed lead-time pairing,
+      // stream coverage, and the newest records for the LAB card.
+      if (!bot.ratchetShadowView) return json(res, 200, { enabled: false });
+      return json(res, 200, bot.ratchetShadowView());
+    }
     if (req.method === 'GET' && u.pathname === '/reports') {
       return json(res, 200, (bot.journal.tradeReports || []).slice().reverse());
     }

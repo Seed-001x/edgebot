@@ -64,6 +64,8 @@ export class Journal {
     this.seq = 0;
     this.scans = [];     // one compact record per discovery cycle (freeze work 1b)
     for (const sc of readTail(this.f.scan, 200)) this.scans.push(sc);
+    this.ratchet = [];   // ratchet_shadow.jsonl tail for the read-only /ratchetshadow endpoint (records are rare — a 500 tail spans months)
+    for (const r of readTail(this.f.rshadow, 500)) this.ratchet.push(r);
     this.boot();
   }
 
@@ -154,8 +156,8 @@ export class Journal {
   tick(t) { this.append(this.f.ticks, t); }
   /** a position the human closed outside the bot */
   manualExit(rec) { this.manual.push(rec); if (this.manual.length > KEEP) this.manual.shift(); this.append(this.f.manual, rec); return rec; }
-  /** shadow ratchet flow judge record (would-fire / close completion) — observer only, append-only */
-  ratchetShadow(rec) { this.append(this.f.rshadow, rec); return rec; }
+  /** shadow ratchet flow judge record (would-fire / would-fire-stream / fire-quality / close completion) — observer only, append-only; the capped in-memory tail feeds the /ratchetshadow aggregates */
+  ratchetShadow(rec) { this.ratchet.push(rec); if (this.ratchet.length > 500) this.ratchet.shift(); this.append(this.f.rshadow, rec); return rec; }
   /** attach the reason the human gave (see learn.js EXIT_REASONS) */
   tagExit(id, reason, note) {
     let m = this.manual.find(x => x.id === id);

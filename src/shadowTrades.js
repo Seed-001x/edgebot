@@ -42,6 +42,13 @@ export class ShadowTrades {
     this.pendFile = path.join(dir, 'virtual_pending.json');
     this.now = now;
     this.feeHint = opts.txFeeSol > 0 ? opts.txFeeSol : 0; // boot-time finalize fallback; tick() gets the live cfg
+    // Optional observer hooks (record-only consumers, e.g. the stream ratchet
+    // judge's fire-quality probes + completion records): onTick(s, move, ts)
+    // fires per virtual per tick with its mark move, onClose(s, rec) at every
+    // finalize. Both are invoked fail-silent — an observer can never disturb
+    // the book. Set before the boot-restore below, which may finalize.
+    this.onTick = typeof opts.onTick === 'function' ? opts.onTick : null;
+    this.onClose = typeof opts.onClose === 'function' ? opts.onClose : null;
     this.pending = new Map(); // virtual id -> exit-stack state
     this.done = [];
     this.totals = { opened: 0, completed: 0, wins: 0, netPnlSol: 0 };
@@ -101,6 +108,13 @@ export class ShadowTrades {
     } catch { return false; /* observer must never throw into the signal path */ }
   }
 
+  /** The open virtual on a mint, or null — one runs per mint by construction.
+   *  Bot's stream ratchet judge keys its per-mint lookup on this. */
+  openVirtual(mint) {
+    for (const s of this.pending.values()) if (s.mint === mint) return s;
+    return null;
+  }
+
   /** Mints with a virtual in flight, oldest entry first — Bot.outcomeTick
    *  merges these into its fetch set so marks never depend on the watchlist. */
   pendingMints() {
@@ -132,6 +146,10 @@ export class ShadowTrades {
         s.flowHist.push({ ts: nowTs, buys: v.buysM5 ?? null, sells: v.sellsM5 ?? null, tx: (v.buysM5 != null || v.sellsM5 != null) ? (v.buysM5 || 0) + (v.sellsM5 || 0) : null });
         if (s.flowHist.length > 45) s.flowHist.splice(0, s.flowHist.length - 45);
         const mark = { valueSol, liqUsd: v.liq != null ? v.liq : null, buysM5: v.buysM5 != null ? v.buysM5 : null, sellsM5: v.sellsM5 || 0, solUsd, volH1: v.volH1 || 0 };
+        if (this.onTick) { // observer hook: this tick's mark move, before the stack judges it
+          const mv = s.entrySol > 0 && s.remainingFrac > 0 ? (valueSol / (s.entrySol * s.remainingFrac)) / (s.entryRoundTrip > 0 ? s.entryRoundTrip : 1) : null;
+          try { this.onTick(s, mv, nowTs); } catch { /* observer only */ }
+        }
         const d = evaluateExit(s, mark, cfg, nowTs);
         // thread the decision's state outputs back exactly like managePosition does
         if (d.newPeak) s.peakRatio = d.newPeak;
@@ -196,6 +214,7 @@ export class ShadowTrades {
     try { fs.appendFileSync(this.file, JSON.stringify(rec) + '\n'); } catch { /* best effort */ }
     this._dirty = true;
     this._save(true);
+    if (this.onClose) { try { this.onClose(s, rec); } catch { /* observer only */ } }
     return rec;
   }
 
