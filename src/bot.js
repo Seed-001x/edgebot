@@ -23,6 +23,7 @@ import { CalloutLab } from './calloutLab.js';
 import { FlowExits } from './flowExits.js';
 import { StructureWatch } from './structureWatch.js';
 import { StaircaseSignal } from './staircaseSignal.js';
+import { ConfluenceSignal } from './confluenceSignal.js';
 import { ScanLab, buildScanCard } from './scanLab.js';
 import { ShadowSeller } from './shadowSeller.js';
 import { snapshotFeatures, externalExit } from './learn.js';
@@ -71,12 +72,13 @@ export class Bot {
       onTick: (s, move, ts) => this._onShadowVirtualTick(s, move, ts),   // stream judge fire-quality probes (record-only)
       onClose: (s, rec) => this._onShadowVirtualClose(s, rec),          // stream judge completion records (record-only)
     });
+    this.confluenceSignal = new ConfluenceSignal({ cfg, dir: cfg.dataDir, now: this.now, log: console.log }); // Confluence Shadow Signal (record-only, user 2026-10-16): every walletWatch confluence fire opens two DETECTION-time virtual positions — SCALP (100% at +20% net) and LADDER (the live exit stack) — the forward instrument for the classification study's open questions (touch rates at tradable refs, lag cost, per-profile EV); nothing reads it into any decision
     this.walletWatch = new WalletWatch({ // wallet-task shadow detectors (record-only): dev launches + survivor confluence over the Phase 1–3 sets
       cfg, dir: cfg.dataDir, now: this.now,
       fetchViews: deps.fetchViews,
       shadowGates: (v, setup) => this.shadowGateRecord(v, { setup, metrics: {} }, this.now()),
       noteMint: (m, s) => this.noteMint(m, s),
-      onEvent: (ev) => this.noteCalloutEvent(ev), // Callout Shadow Lab tap (record-only)
+      onEvent: (ev) => { this.noteCalloutEvent(ev); this.noteConfluenceEvent(ev); }, // observer taps (record-only): Callout Shadow Lab + Confluence Shadow Signal
     });
     this.cfgStamp = configStamp(cfg); // D1: config version stamp carried by entries + closes (record-only)
     this.lastSolUsd = null; // last SOL/USD the position loop saw (feeds observer marks)
@@ -893,6 +895,31 @@ export class Bot {
     } catch { /* observer only */ }
   }
 
+  /** Confluence Shadow Signal tap for walletWatch events (record-only):
+   *  a confluence fire opens its SCALP + LADDER virtual pair inside the
+   *  signal module, stamped at detection with the bot's book at that
+   *  moment attached (held: a real position is open on the mint;
+   *  signaled: the mint appears in this process's signal memory or the
+   *  journal's in-memory signal tail). Dev events return immediately. */
+  noteConfluenceEvent(ev) {
+    try {
+      if (!ev || ev.kind !== 'confluence' || !this.confluenceSignal) return;
+      const held = this.positions.some(p => p.mint === ev.mint);
+      const signaled = !!(this.lastSignal && this.lastSignal.has(ev.mint))
+        || !!((this.journal && Array.isArray(this.journal.signals)) && this.journal.signals.some(s => s && s.mint === ev.mint));
+      this.confluenceSignal.noteEvent(ev, { held, signaled });
+    } catch { /* observer only */ }
+  }
+
+  /** Read-only /confluencesignal payload — the Confluence Shadow Signal
+   *  card (record-only, user 2026-10-16): per-profile aggregates over the
+   *  FULL confluence_signal.jsonl (see confluenceSignal.js; ~60s cached
+   *  there), ready at 50 closes per profile. */
+  confluenceSignalCard() {
+    try { return this.confluenceSignal ? this.confluenceSignal.card() : { enabled: false }; }
+    catch { return { enabled: false }; }
+  }
+
   /** Read-only /callouts payload — the lab's scorecard over the FULL
    *  callout_shadow.jsonl (see calloutLab.js; ~60s cached there). */
   calloutCard() {
@@ -1245,6 +1272,13 @@ export class Bot {
       const have = new Set(pend.map(p => p.mint));
       for (const pm of this.scanLab.pendingMints()) if (!have.has(pm.mint)) pend.push(pm);
     }
+    // Confluence Shadow Signal (record-only): open virtual mints join the
+    // fetch set on the same terms — a shadow pair keeps being marked after
+    // every other tracker lets the mint go.
+    if (this.confluenceSignal) {
+      const have = new Set(pend.map(p => p.mint));
+      for (const pm of this.confluenceSignal.pendingMints()) if (!have.has(pm.mint)) pend.push(pm);
+    }
     const due = pend.filter(p => n - (this.outcomeSeenAt.get(p.mint) || 0) >= 25000).slice(0, 150);
     if (!due.length) return;
     this.stats.outcomeObs.ticks++;
@@ -1267,6 +1301,11 @@ export class Bot {
     // empty). No price fetch exists anywhere for the virtuals but this one
     // and the trading poll's.
     try { if (this.shadowTrades) { this.shadowTrades.tick(mint => (views ? views.get(mint) : null) || null, n, this.cfg, this.lastSolUsd); this._syncShadowStats(); } } catch { /* observer only */ }
+    // Confluence Shadow Signal: the same fetched views drive its virtual
+    // pairs (cap expiry included — it runs even when the fetch came back
+    // empty). No price fetch exists anywhere for the pairs but this one
+    // and the trading poll's.
+    try { if (this.confluenceSignal) this.confluenceSignal.tick(mint => (views ? views.get(mint) : null) || null, n, this.cfg, this.lastSolUsd); } catch { /* observer only */ }
   }
 
   // ------------------------------------------------------------ polling + signals
@@ -1334,6 +1373,9 @@ export class Bot {
       // Trade-grade shadow: the same already-fetched views mark the virtual
       // positions of gate-passing shadow signals (observer only)
       try { this.shadowTrades.tick(mint => this.latest.get(mint) || null, n, this.cfg, this.lastSolUsd); this._syncShadowStats(); } catch { /* observer only */ }
+      // Confluence Shadow Signal: the same already-fetched views mark its
+      // virtual pairs (observer only — can never trade)
+      try { if (this.confluenceSignal) this.confluenceSignal.tick(mint => this.latest.get(mint) || null, n, this.cfg, this.lastSolUsd); } catch { /* observer only */ }
       // Outcome observer (2026-10-14, record-only): price the mints with
       // outcome tracking in flight that the trading poll did NOT just cover,
       // so checkpoints stop depending on watchlist residence.

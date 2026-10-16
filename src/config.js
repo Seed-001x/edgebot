@@ -74,6 +74,18 @@ export function loadConfig(env = process.env) {
     // finalized marks) and scored by the watch's own forward scores, joined
     // at read time (/staircase). No path reads it back into a decision.
     staircaseSignal: num(env, 'STAIRCASE_SIGNAL', 1),        // 1 = staircase-3 shadow signal on (0 = no records, card off)
+    // Confluence Shadow Signal (user order 2026-10-16, RECORD-ONLY): every
+    // walletWatch confluence fire ALSO opens two virtual positions stamped
+    // at DETECTION time (the classification study's decisive unknowns are
+    // all forward questions — true touch rates at tradable refs, lag cost,
+    // post-friction EV per exit profile). SCALP exits whole at the first
+    // check whose net gain (exits.js's ruler) reaches confluenceScalpPct;
+    // LADDER runs the live exit stack via evaluateExit. Both mirror the
+    // live downside (liquidity death, momentum-failure undertaker) and a
+    // 4h max-hold terminal. Journal: confluence_signal.jsonl (/confluencesignal).
+    // No path reads it back into a decision.
+    confluenceSignal: num(env, 'CONFLUENCE_SIGNAL', 1),      // 1 = confluence shadow signal on (0 = no new fires, card off)
+    confluenceScalpPct: num(env, 'CONFLUENCE_SCALP_PCT', 0.20), // scalp profile: 100% exit at the first check with net gain >= this
     // Staircase-3 LIVE (user order 2026-10-16, "flip it live" — shadow study
     // continues untouched): when 1, an ordinal>=3 mark ALSO routes a live
     // entry attempt through the exact standard onSignal pipeline
@@ -617,6 +629,8 @@ export function validateConfig(cfg) {
   if (cfg.shadowSellerPriorK < 0) errs.push('SHADOW_SELLER_PRIOR_K must be >= 0');
   if (cfg.shadowSellerRefitMin < 1) errs.push('SHADOW_SELLER_REFIT_MIN must be >= 1');
   if (cfg.staircaseSignal < 0 || cfg.staircaseSignal > 1) errs.push('STAIRCASE_SIGNAL must be 0 or 1');
+  if (cfg.confluenceSignal < 0 || cfg.confluenceSignal > 1) errs.push('CONFLUENCE_SIGNAL must be 0 or 1');
+  if (cfg.confluenceScalpPct <= 0 || cfg.confluenceScalpPct > 2) errs.push('CONFLUENCE_SCALP_PCT must be between 0 and 2');
   if (cfg.staircaseLive < 0 || cfg.staircaseLive > 1) errs.push('STAIRCASE_LIVE must be 0 or 1');
   if (cfg.ratchetFlowWindowSec < 1 || cfg.ratchetFlowWindowSec > 120) errs.push('RATCHET_FLOW_WINDOW_SEC must be 1..120');
   if (cfg.ratchetFlowSellShare < 0 || cfg.ratchetFlowSellShare > 1) errs.push('RATCHET_FLOW_SELL_SHARE must be between 0 and 1');

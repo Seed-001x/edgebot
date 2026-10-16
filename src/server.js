@@ -325,6 +325,17 @@ export function startServer(bot, port) {
       if (!bot.staircaseCard) return json(res, 200, { enabled: false });
       return json(res, 200, bot.staircaseCard());
     }
+    if (req.method === 'GET' && u.pathname === '/confluencesignal') {
+      // Confluence Shadow Signal (record-only, user 2026-10-16): every
+      // walletWatch confluence fire as a pair of DETECTION-time virtual
+      // positions — SCALP (100% at +20% net) vs LADDER (the live exit
+      // stack) on a 0.05 SOL shadow stake — per-profile aggregates over
+      // the full confluence_signal.jsonl, scalp touch rate + median
+      // time-to-touch, ready at 50 closes per profile. Nothing here
+      // gates or trades.
+      if (!bot.confluenceSignalCard) return json(res, 200, { enabled: false });
+      return json(res, 200, bot.confluenceSignalCard());
+    }
     if (req.method === 'POST' && u.pathname === '/positions/notp') {
       let body = '';
       req.on('data', c => { body += c; if (body.length > 2000) req.destroy(); });

@@ -342,10 +342,18 @@ export class WalletWatch {
     const v = await this.viewFor(mint);
     const verdict = await this.gateVerdict(v, 'confluence');
     const names = [...new Set(this.buys.filter(b => b.mint === mint && trig.entities.includes(b.entity)).map(b => b.name))];
+    // Confluence Shadow Signal bucket features (additive, record-only):
+    // distinct WALLETS among the in-window buys (entities/clusters collapse
+    // them; the raw count is a separate axis), and the coin's age at
+    // detection when the view carries a creation time.
+    const winMs = this.cfg.conflWindowMin * 60000;
+    const walletCount = new Set(this.buys.filter(b => b.mint === mint && b.ts <= trig.ts && trig.ts - b.ts <= winMs).map(b => b.wallet)).size;
+    const coinAgeMin = v && v.createdAt ? Math.max(0, Math.round((this.now() - v.createdAt) / 600) / 100) : null;
     const ev = {
       id: `cnf-${ts}-${++this.seq}`, kind: 'confluence', ts: this.now(),
       mint, symbol: v ? v.symbol : null, entryTs: trig.ts,
       clusters: trig.clusters, entities: trig.entities, names, maxSol: trig.maxSol,
+      walletCount, coinAgeMin,
       mc: v ? v.mc : null, pool: v ? (v.pairAddress || null) : null, viewPrice: v ? v.price : null,
       gates: verdict.gates, gatePass: verdict.gatePass, firstBlocker: verdict.firstBlocker,
       out: null,
