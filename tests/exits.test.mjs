@@ -160,14 +160,14 @@ test('TP1 judged on what you pocket: chart +31% with 10% round-trip cost is not 
   assert.equal(evaluateExit(p, mark(0.0236), fixed, NOW).fraction, 0);    // price +31% but only +18% realizable
   assert.equal(evaluateExit(p, mark(0.0264), fixed, NOW).fraction, 0.65);  // +32% realizable minus fees ≥ +25%
 });
-test('post-TP1 trail: 25% below peak or back to entry sells the rest', () => {
+test('strip: post-TP1 trail cannot fire — 25% below peak or back to entry now HOLDS (removed 2026-10-16)', () => {
   const noTp2 = { ...cfg, tp2Pct: 99, tp2RejectZone: 0 };   // isolate the middle stage: TP2 + rejection off
   const p = pos({ tp1Done: true, remainingFrac: 0.35, peakRatio: 1.6, stallSince: NOW });
-  assert.equal(evaluateExit(p, mark(0.02 * 0.35 * 1.2), noTp2, NOW).fraction, 1);  // 1.2x = 25% off 1.6x peak → trail fires
-  assert.equal(evaluateExit(p, mark(0.02 * 0.35 * 1.0), noTp2, NOW).fraction, 1);  // back to entry → floor fires
+  assert.equal(evaluateExit(p, mark(0.02 * 0.35 * 1.2), noTp2, NOW).fraction, 0);  // 1.2x = 25% off 1.6x peak: the old trail print — holds
+  assert.equal(evaluateExit(p, mark(0.02 * 0.35 * 1.0), noTp2, NOW).fraction, 0);  // back to entry: the old floor print — holds
   const big = pos({ tp1Done: true, remainingFrac: 0.35, peakRatio: 3, stallSince: NOW });
   assert.equal(evaluateExit(big, mark(0.02 * 0.35 * 2.4), noTp2, NOW).fraction, 0);  // 2.4x vs 3x peak: holds
-  assert.match(evaluateExit(big, mark(0.02 * 0.35 * 2.1), noTp2, NOW).reason, /post-TP1 trail/);  // 2.1x ≤ 2.25x trail, above lock
+  assert.equal(evaluateExit(big, mark(0.02 * 0.35 * 2.1), noTp2, NOW).fraction, 0);  // 2.1x ≤ the old 2.25x trail line: holds
 });
 test('TP2 rejection: peaked in the zone, 10% off the peak without converting sells the rest', () => {
   const p = pos({ tp1Done: true, remainingFrac: 0.6, peakRatio: 1.85, stallSince: NOW });   // wizardcat shape: peak +85%
@@ -175,7 +175,7 @@ test('TP2 rejection: peaked in the zone, 10% off the peak without converting sel
   assert.equal(d.fraction, 1); assert.match(d.reason, /TP2 rejection/);
   assert.equal(evaluateExit(p, mark(0.02 * 0.6 * 1.7205), cfg, NOW).fraction, 0);            // only 7% off: still riding
 });
-test('TP2 rejection: a peak below the zone is just a pullback — the wide trail governs', () => {
+test('TP2 rejection: a peak below the zone is just a pullback — it holds (no trail remains under it)', () => {
   const p = pos({ tp1Done: true, remainingFrac: 0.6, peakRatio: 1.6, stallSince: NOW });      // peak +60% < +80% zone
   assert.equal(evaluateExit(p, mark(0.02 * 0.6 * 1.36), cfg, NOW).fraction, 0);              // 15% off peak: holds
 });
@@ -203,10 +203,10 @@ test('strip: generic trailing stop + profit lock cannot fire — the fade print 
   const d = evaluateExit(p, mark(0.032), { ...cfg, tp1Frac: 0 }, NOW);                       // ratio 1.6, move 1.6 (above the ratchet trigger)
   assert.equal(d.fraction, 0); assert.equal(d.reason, null);
 });
-test('a big runner keeps running until it gives back a quarter (post-TP1 trail)', () => {
+test('a big runner keeps running — deep give-backs hold now that the post-TP1 trail is gone', () => {
   const p = pos({ tp1Done: true, remainingFrac: 0.5, peakRatio: 3, stallSince: null });      // peak +200%
   assert.equal(evaluateExit(p, mark(0.0240), { ...cfg, trailPct: 0.9, tp2Pct: 99, tp2RejectZone: 0 }, NOW).fraction, 0);   // 2.4x: holds
-  assert.match(evaluateExit(p, mark(0.0195), { ...cfg, trailPct: 0.9, tp2Pct: 99, tp2RejectZone: 0 }, NOW).reason, /post-TP1 trail/); // 1.95x ≤ 2.25x
+  assert.equal(evaluateExit(p, mark(0.0195), { ...cfg, trailPct: 0.9, tp2Pct: 99, tp2RejectZone: 0 }, NOW).fraction, 0);   // 1.95x ≤ the old 2.25x trail line: holds
 });
 
 // ---- TP ladder (user 2026-10-13): adaptive TP1, TP2 at +100%, moonbag ----

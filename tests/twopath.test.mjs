@@ -23,8 +23,11 @@ const T0 = 1_700_000_000_000;
 const S = 1000;
 // txFeeSol 0 makes gain == ratio - 1 exactly, so fire prices land where the test
 // aims them. TP1: arms +10%, ceiling +60%, giveback 8pts — fires print the drop
-// target via rollover. Trails at the live 15% so the SCRIP shape is faithful.
-const cfg = testCfg({ txFeeSol: 0, tp1Pct: 0.10, tp1AdaptMax: 0.60, tp1Giveback: 0.08, tp1Frac: 0.4, tp2Pct: 0.80, tpTrailPct: 0.15, exitConfirmSec: 10, stallProbationSec: 0, lockKeep: 0, dipStopPct: 0 });
+// target via rollover.
+// 2026-10-16: the post-TP1 middle trail (3d) was REMOVED by user order (STRIP
+// postTp1Trail) — the prints below that it used to own now HOLD, and several
+// tests pin exactly that.
+const cfg = testCfg({ txFeeSol: 0, tp1Pct: 0.10, tp1AdaptMax: 0.60, tp1Giveback: 0.08, tp1Frac: 0.4, tp2Pct: 0.80, exitConfirmSec: 10, stallProbationSec: 0, lockKeep: 0, dipStopPct: 0 });
 const mark = (pos, ratio, o = {}) => ({ valueSol: pos.entrySol * pos.remainingFrac * ratio, liqUsd: 200_000, buysM5: 30, sellsM5: 10, solUsd: 150, volH1: 0, ...o });
 // thread the caller-persisted state from a decision back into the fixture, as bot.js does
 const thread = (p, d) => {
@@ -79,14 +82,15 @@ test('classify: NEYMAR shape — fire at +11% → ladder + overlay', () => {
   assert.equal(d.pathClass, 'ladder'); assert.equal(d.killZoneOverlay, true);
 });
 
-// ---- modest remainder under the strip: plain ladder — the trail judges it, no split exists ----
-test('strip: SCRIP shape — a modest remainder now trail-sells EXACTLY like the ladder control', () => {
+// ---- modest remainder under the strip: plain ladder — no split exists, and
+// ---- since 2026-10-16 no middle trail either: deep fades HOLD ----
+test('strip: SCRIP shape — a modest remainder now judges EXACTLY like the ladder control: the old trail print holds for both', () => {
   const base = { pathClass: 'modest', peakRatio: 1.66, peakMove: 1.66, postTp1PeakMove: 1.66, killZone: { armed: true, entries: 0 } };
   const d = evaluateExit(rem(base), mark(rem(base), 1.402), cfg, T0 + 60 * S);
-  assert.equal(d.fraction, 1); assert.match(d.reason, /post-TP1 trail/);
+  assert.equal(d.fraction, 0); assert.equal(d.reason, null);
   const ctl = { ...base, pathClass: 'ladder' };
   const dc = evaluateExit(rem(ctl), mark(rem(ctl), 1.402), cfg, T0 + 60 * S);
-  assert.equal(dc.fraction, 1); assert.match(dc.reason, /post-TP1 trail/);
+  assert.equal(dc.fraction, 0); assert.equal(dc.reason, null);
 });
 test('strip: crossing +50% splits nothing — no modestSplit, no bank; the remainder rides the ladder', () => {
   const p = rem({ pathClass: 'modest', peakRatio: 1.49, peakMove: 1.49, postTp1PeakMove: 1.49 });
@@ -119,43 +123,44 @@ test('strip: the zone NEVER arms — a post-TP1 peak through 1.25x accrues no zo
   assert.equal(d.killZone, null);
 });
 
-// ---- kill zone under the strip: its former prints belong to the middle trail ----
-test('strip: the former first-entry print is sold by the middle trail on the SAME check — no window, no pending, no zone events', () => {
+// ---- kill zone under the strip: its former prints belonged to the middle
+// ---- trail; with the trail also removed (2026-10-16) they simply HOLD ----
+test('strip: the former first-entry print now HOLDS — no zone, no trail, no pending, no events', () => {
   const p = rem({ pathClass: 'modest', postTp1PeakMove: 1.30, killZone: { armed: true, entries: 0 }, peakRatio: 1.30, peakMove: 1.30 });
-  const d = evaluateExit(p, mark(p, 1.08), cfg, T0 + 100 * S); // 1.08 is inside the old zone floor AND past the 15% trail line (1.30 × 0.85 = 1.105)
-  assert.equal(d.fraction, 1);
-  assert.match(d.reason, /post-TP1 trail/);
+  const d = evaluateExit(p, mark(p, 1.08), cfg, T0 + 100 * S); // 1.08 is inside the old zone floor AND past the old 15% trail line (1.30 × 0.85 = 1.105)
+  assert.equal(d.fraction, 0);
+  assert.equal(d.reason, null);
   assert.equal(d.exitPending.killzone, undefined);
   assert.deepEqual(d.killzoneEvents, []);
   assert.deepEqual(d.exitConfirmEvents, []);
 });
 test('strip: a stored armed zone record is inert — entries never count, re-entry kills do not exist', () => {
   const p = rem({ pathClass: 'modest', postTp1PeakMove: 1.30, killZone: { armed: true, entries: 0 }, peakRatio: 1.30, peakMove: 1.30 });
-  let d = evaluateExit(p, mark(p, 1.20), cfg, T0 + 100 * S); thread(p, d);   // above the trail line: holds
+  let d = evaluateExit(p, mark(p, 1.20), cfg, T0 + 100 * S); thread(p, d);   // above the old trail line: holds
   assert.equal(d.fraction, 0);
   assert.equal(d.killZone.entries, 0);
   d = evaluateExit(p, mark(p, 1.30), cfg, T0 + 104 * S); thread(p, d);       // recovery print: no cancel event, no entry counted
   assert.equal(d.fraction, 0);
   assert.deepEqual(d.killzoneEvents, []);
   assert.equal(d.killZone.entries, 0);
-  d = evaluateExit(p, mark(p, 1.07), cfg, T0 + 108 * S);                      // second dip: the trail, not a zone re-entry kill
-  assert.equal(d.fraction, 1);
-  assert.match(d.reason, /post-TP1 trail/);
+  d = evaluateExit(p, mark(p, 1.07), cfg, T0 + 108 * S);                      // second dip past the old trail line: holds — no trail, no zone kill
+  assert.equal(d.fraction, 0);
+  assert.equal(d.reason, null);
   assert.deepEqual(d.killzoneEvents, []);
 });
 
 // ---- overlay ladder remainders: ladder intact + zone overlaid ----
-test('overlay: TP2 still fires, the trail still fires — and the overlay adds nothing (no zone underneath)', () => {
+test('overlay: TP2 still fires — and the overlay adds nothing (no zone, and no trail since 2026-10-16)', () => {
   const tp2p = rem({ pathClass: 'ladder', killZoneOverlay: true, postTp1PeakMove: 1.30, killZone: { armed: true, entries: 0 }, peakRatio: 1.30, peakMove: 1.30 });
   const dTp2 = evaluateExit(tp2p, mark(tp2p, 1.85), cfg, T0 + 60 * S);
   assert.equal(dTp2.tp2, true);
-  // trail line (1.32 * 0.85 = 1.122) sits above the zone floor: the trail owns the descent
+  // the old trail line (1.32 * 0.85 = 1.122) sat above the zone floor and owned
+  // this descent; with the trail removed the dip simply holds
   const trp = rem({ pathClass: 'ladder', killZoneOverlay: true, postTp1PeakMove: 1.32, killZone: { armed: true, entries: 0 }, peakRatio: 1.32, peakMove: 1.32 });
   const dTr = evaluateExit(trp, mark(trp, 1.10), cfg, T0 + 60 * S);
-  assert.equal(dTr.fraction, 1); assert.match(dTr.reason, /post-TP1 trail/);
+  assert.equal(dTr.fraction, 0); assert.equal(dTr.reason, null);
   assert.equal(dTr.exitPending.killzone, undefined);
-  // trail line (1.26 * 0.85 = 1.071) sits below the old floor: under the strip
-  // NOTHING takes this dip — no zone pending arms; the remainder rides to the trail line
+  // NOTHING takes this dip either — no zone pending arms; the remainder rides on
   const zp = rem({ pathClass: 'ladder', killZoneOverlay: true, postTp1PeakMove: 1.26, killZone: { armed: true, entries: 0 }, peakRatio: 1.26, peakMove: 1.26 });
   const dZ = evaluateExit(zp, mark(zp, 1.09), cfg, T0 + 60 * S);
   assert.equal(dZ.fraction, 0); assert.equal(dZ.exitPending.killzone, undefined); assert.deepEqual(dZ.killzoneEvents, []);
@@ -173,10 +178,10 @@ test('overlay: NEYMAR shape — a run to 2.5x is never zone-sold; post-TP2 the b
 });
 
 // ---- >+40% ladder: byte-identical behavior, no zone, no target ----
-test('ladder (>40%): no zone accrues and no modest target exists — the trail judges as before', () => {
+test('ladder (>40%): no zone accrues, no modest target exists, and no trail (removed 2026-10-16) — the deep fade holds', () => {
   const p = rem({ pathClass: 'ladder', killZoneOverlay: false, postTp1PeakMove: 1.66, killZone: null, peakRatio: 1.66, peakMove: 1.66 });
   const d = evaluateExit(p, mark(p, 1.05), cfg, T0 + 60 * S);
-  assert.equal(d.fraction, 1); assert.match(d.reason, /post-TP1 trail/);
+  assert.equal(d.fraction, 0); assert.equal(d.reason, null);
   assert.equal(d.killZone, null); assert.equal(d.killzoneEvents.length, 0);
   const p2 = rem({ pathClass: 'ladder', killZoneOverlay: false, peakRatio: 1.55, peakMove: 1.55 });
   const d2 = evaluateExit(p2, mark(p2, 1.55), cfg, T0 + 60 * S);
@@ -196,12 +201,12 @@ test('strip + protect: a protected modest remainder gets no zone suppression rep
 });
 
 // ---- precedence under the strip: no slot contention remains ----
-test('strip: the old bleed-vs-zone contention print belongs to the middle trail alone — instantly, no pendings', () => {
+test('strip: the old bleed-vs-zone contention print now HOLDS — no bleed, no zone, and (2026-10-16) no trail remains to take it', () => {
   const t = T0 + 400 * S; // age 400s: past the old bleed prove-itself window
   const p = rem({ pathClass: 'modest', entryTs: T0, postTp1PeakMove: 1.30, killZone: { armed: true, entries: 0 }, peakRatio: 1.30, peakMove: 1.30, moveHist: [{ ts: t - 60 * S, move: 0.95 }] });
   const d = evaluateExit(p, mark(p, 0.90), cfg, t);
-  assert.equal(d.fraction, 1);
-  assert.match(d.reason, /post-TP1 trail/);
+  assert.equal(d.fraction, 0);
+  assert.equal(d.reason, null);
   assert.deepEqual(d.exitPending, {});
   assert.deepEqual(d.killzoneEvents, []);
 });

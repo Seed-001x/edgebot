@@ -43,9 +43,18 @@
 //                    now judges ONLY the moonbag stage (new section 3c2): a
 //                    post-TP2 remainder whose flow dies sells in full.
 // KEPT LIVE in v2, as in the strip: the TP ladder (TP1 adaptive / TP2 /
-// moonbag trail), the post-TP1 middle trail (3d), TP2 rejection (3d-pre),
-// liquidity death (1) and the 10-minute momentum-failure dead check (5) as
-// the sole undertaker for never-movers.
+// moonbag trail), TP2 rejection (3d-pre), liquidity death (1) and the
+// 10-minute momentum-failure dead check (5) as the sole undertaker for
+// never-movers.
+//
+// POST-TP1 TRAIL REMOVED (user order 2026-10-16 ~15:06 EDT, "remove the
+// post tp1 trail"): the founding case is ref — TP1 fade-fired at +14% and
+// 28s later the middle trail dumped the remaining 60% at +3.4% into a
+// seconds-long dip; the coin then ran to ~2x the entry without the bot.
+// The middle stage now has NO peak-retrace exit at all: after TP1 the
+// remainder rides to TP2, TP2 rejection (3d-pre), the moonbag stage, or
+// the undertaker. STRIP-gated like the other kills — the section remains
+// in place but can never fire; re-enabling is a code change.
 const STRIP = {
   stopFamily: true,
   stallProbation: true,
@@ -57,6 +66,7 @@ const STRIP = {
   volumeDecay: true,
   timeStop: true,
   maxHold: true,
+  postTp1Trail: true,
 };
 
 export function evaluateExit(pos, mark, cfg, now) {
@@ -401,10 +411,11 @@ export function evaluateExit(pos, mark, cfg, now) {
   //     trail down (wizardcat: peaked +80% net, rode the 25% trail out at +34%).
   if (!modestActive && pos.tp1Done && !pos.tp2Done && cfg.tp2RejectZone > 0 && peakGain >= cfg.tp2RejectZone && ratio <= peakRatio * (1 - cfg.tp2RejectDrop)) return out(1, `TP2 rejection (peak +${(peakGain * 100).toFixed(0)}%, now ${((ratio - 1) * 100).toFixed(1)}%)`);
 
-  // 3d. post-TP1 trail (middle stage, pre-TP2): trail the rest tpTrailPct below its peak with a hard
-  //     floor at entry — sell everything if it gives back the trail or fades back to cost.
-  //     MODEST remainders skip it — their downside is the kill zone (4e), not a trail.
-  if (!modestActive && pos.tp1Done && !pos.tp2Done && (ratio <= peakRatio * (1 - cfg.tpTrailPct) || ratio <= 1)) return out(1, `post-TP1 trail (peak ${(peakRatio).toFixed(2)}x, now ${((ratio - 1) * 100).toFixed(1)}%)`);
+  // 3d. post-TP1 trail — STRIP (postTp1Trail): disabled in code, can never fire
+  //     (removed by user order 2026-10-16 — see the header note). The section is
+  //     kept for reversibility only: with the gate on, a middle-stage remainder
+  //     is never sold for retracing its peak or fading back to cost.
+  if (!STRIP.postTp1Trail && !modestActive && pos.tp1Done && !pos.tp2Done && (ratio <= peakRatio * (1 - cfg.tpTrailPct) || ratio <= 1)) return out(1, `post-TP1 trail (peak ${(peakRatio).toFixed(2)}x, now ${((ratio - 1) * 100).toFixed(1)}%)`);
 
   // 4. trailing stop once armed (never on the moonbag — it has its own wider trail, 3c;
   //    never on an un-split modest remainder either — see 3d)
@@ -480,8 +491,8 @@ export function evaluateExit(pos, mark, cfg, now) {
   //     never the raw chart) reaches beArmPct, the trade can no longer become a loser: a
   //     fall back to beTriggerPct sells the FULL position at ~scratch — the +2% cushion over
   //     break-even exists so the executed fill lands at true scratch after the sell's own
-  //     slippage (user approved +1-2%). Pre-TP1 ONLY: once TP1 fires, the ladder's own
-  //     machinery (post-TP1 trail with its entry floor) owns the remainder and this never
+  //     slippage (user approved +1-2%). Pre-TP1 ONLY: once TP1 fires, the TP ladder
+  //     (TP2 / TP2 rejection / moonbag stage) owns the remainder and this never
   //     fires. Judged on the position's own peak path, independent of the stall/probation
   //     timeline — it can fire inside the first minute. It sits AFTER the stall block so a
   //     probationed position keeps the leash's own label on a deep dive (the leash's -7%

@@ -41,7 +41,7 @@ function rig(cfgOver = {}, rugRef = { rug: healthyRug }) {
 const approx = (a, b, tol = 1e-6) => Math.abs(a - b) <= tol;
 
 // ------------------------------------------------------------ tracker unit
-test('shadow trades: TP1 bank + post-TP1 trail exit completes with coherent P&L math', () => {
+test('shadow trades: TP1 bank, post-TP1 fade holds (trail removed), TP2 + moonbag exit completes with coherent P&L math', () => {
   const dir = tmp();
   const cfg = testCfg({ txFeeSol: 0.001, tp1Pct: 0.25, tp1Frac: 0.4, tp1AdaptMax: 0.60, tp1Giveback: 0.08 });
   const tr = new ShadowTrades(dir, () => T0, { txFeeSol: cfg.txFeeSol });
@@ -58,28 +58,42 @@ test('shadow trades: TP1 bank + post-TP1 trail exit completes with coherent P&L 
   assert.equal(mid.legs[0].frac, 0.4);
   assert.ok(approx(mid.realizedSol, 0.034), `banked ${mid.realizedSol}`); // 0.4 × (0.05 × 1.70)
 
-  price = 2.40; // ratio 1.20 vs peak 1.70 → inside the post-TP1 trail → full exit
+  price = 2.40; // ratio 1.20 vs peak 1.70 → the old post-TP1 trail print: since the
+  // trail's removal (2026-10-16) the middle-stage remainder HOLDS through the fade
   tr.tick(viewOf, T0 + 60000, cfg, 150);
+  assert.equal(tr.pending.size, 1, 'the fade no longer exits the shadow position');
+  assert.equal(tr.done.length, 0);
+
+  price = 4.40; // ratio 2.20: gain on the remainder clears TP2 (+100%) → second bank
+  tr.tick(viewOf, T0 + 90000, cfg, 150);
+  const mid2 = tr.pending.get('sig1');
+  assert.ok(mid2, 'position still open after the TP2 bank');
+  assert.ok(approx(mid2.remainingFrac, 0.25), `remainingFrac ${mid2.remainingFrac}`); // 0.6 − 0.35 of original
+  assert.equal(mid2.legs.length, 2);
+
+  price = 3.60; // ratio 1.80 vs peak 2.20 → past the moonbag trail (15% off peak) → full exit
+  tr.tick(viewOf, T0 + 120000, cfg, 150);
   assert.equal(tr.pending.size, 0);
   assert.equal(tr.done.length, 1);
   const rec = tr.done[0];
   assert.equal(rec.status, 'exited');
-  assert.match(rec.exitReason, /post-TP1 trail/);
-  assert.equal(rec.legs.length, 2, 'TP1 leg + final leg');
-  assert.equal(rec.legs[1].frac, 1);
-  // proceeds = 0.034 (TP1) + 0.036 (remainder at 1.20×) = 0.070; fees = 0.001 × (1 buy + 2 sells)
-  assert.ok(approx(rec.proceedsSol, 0.070), `proceeds ${rec.proceedsSol}`);
-  assert.ok(approx(rec.pnlSol, 0.017), `pnl ${rec.pnlSol}`);
-  assert.ok(approx(rec.pnlPct, 34), `pnlPct ${rec.pnlPct}`);
-  assert.ok(approx(rec.peakRatio, 1.70), `peak ${rec.peakRatio}`);
+  assert.match(rec.exitReason, /moonbag trail/);
+  assert.equal(rec.legs.length, 3, 'TP1 leg + TP2 leg + final leg');
+  assert.equal(rec.legs[2].frac, 1);
+  // proceeds = 0.034 (TP1 at 1.70×) + 0.0385 (TP2: 0.35 of original at 2.20×) + 0.0225
+  // (bag: 0.25 of original at 1.80×) = 0.095; fees = 0.001 × (1 buy + 3 sells)
+  assert.ok(approx(rec.proceedsSol, 0.095), `proceeds ${rec.proceedsSol}`);
+  assert.ok(approx(rec.pnlSol, 0.041), `pnl ${rec.pnlSol}`);
+  assert.ok(approx(rec.pnlPct, 82), `pnlPct ${rec.pnlPct}`);
+  assert.ok(approx(rec.peakRatio, 2.20), `peak ${rec.peakRatio}`);
   assert.equal(rec.pnlBasis, 'viewQuote');
-  assert.equal(rec.markCadenceSec, 30, 'two marks 30s apart — the cadence approximation is on the record');
-  assert.equal(rec.heldMin, 1);
+  assert.equal(rec.markCadenceSec, 30, 'marks 30s apart — the cadence approximation is on the record');
+  assert.equal(rec.heldMin, 2);
   assert.equal(rec.sizeSol, 0.05);
   assert.equal(rec.entryMc, 500000);
   const totals = tr.totalsView();
   assert.deepEqual([totals.opened, totals.completed, totals.wins], [1, 1, 1]);
-  assert.ok(approx(totals.netPnlSol, 0.017));
+  assert.ok(approx(totals.netPnlSol, 0.041));
   // persistence: the completed record is on disk; the pending file is drained
   const lines = fs.readFileSync(path.join(dir, 'virtual_trades.jsonl'), 'utf8').trim().split('\n');
   assert.equal(lines.length, 1);

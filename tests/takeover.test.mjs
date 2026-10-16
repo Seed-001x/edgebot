@@ -46,7 +46,7 @@ test('takeover: every LIVE exit family is skipped — the whole stack holds at f
     ['TP1', () => pos(), () => mark(0.0264), tp1Fixed, /TP1/],
     ['TP2', () => pos({ tp1Done: true, remainingFrac: 0.6 }), () => mark(0.0264), cfg, /TP2/],
     ['moonbag trail', () => pos({ tp1Done: true, tp2Done: true, remainingFrac: 0.25, peakRatio: 2 }), () => mark(0.006), cfg, /moonbag trail/],
-    ['post-TP1 trail', () => pos({ tp1Done: true, remainingFrac: 0.6, peakRatio: 1.30 }), () => mark(0.01152), cfg, /post-TP1 trail/],
+    ['TP2 rejection', () => pos({ tp1Done: true, remainingFrac: 0.6, peakRatio: 1.85 }), () => mark(0.019758), cfg, /TP2 rejection/],
     ['momentum failure', () => pos({ entryTs: NOW - 15 * 60000 }), () => mark(0.019, { buysM5: 0, sellsM5: 10 }), { ...cfg, dipStopPct: 0, stopHardPct: 0, stopLoss: 0, stallSec: 0 }, /momentum failure/],
   ];
   for (const [name, mkPos, mkMark, c, reason] of shapes) {

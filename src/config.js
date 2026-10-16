@@ -434,7 +434,7 @@ export function loadConfig(env = process.env) {
     tp2Pct: num(env, 'TP2_PCT', 1.00),                    // second bank at +100% net
     tp2Frac: num(env, 'TP2_FRAC', 0.35),                  // ...sells this fraction of the ORIGINAL position (0 = off)
     bagTrailPct: num(env, 'BAG_TRAIL_PCT', 0.15),         // moonbag trail below peak (was 0.35 from the MFE study; user tightened 35→20→15% on 2026-10-13 — exit at -15% under the last recorded peak)
-    tpTrailPct: num(env, 'TP_TRAIL_PCT', 0.25),           // after TP1, trail the rest this far below its peak (hard floor at entry)
+    tpTrailPct: num(env, 'TP_TRAIL_PCT', 0.25),           // DEAD KNOB: the post-TP1 middle trail (3d) is stripped in code (user order 2026-10-16) — read only by the disabled section
     tp2RejectZone: num(env, 'TP2_REJECT_ZONE', 0.80),     // middle stage: peak net gain at/above this = it reached for the TP2 mark (user 2026-10-13)
     tp2RejectDrop: num(env, 'TP2_REJECT_DROP', 0.10),     // ...and this far off that peak without converting = rejected → sell the remainder (zone 0 = off)
     // Two-path exit redesign (user 2026-10-15, variant c): at TP1 the position is classified by the

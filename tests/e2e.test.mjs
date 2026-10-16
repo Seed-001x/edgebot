@@ -54,9 +54,10 @@ test('full lifecycle: pop → gates pass → buy → adaptive TP1 → TP2 → mo
   assert.equal(r.bot.positions[0].tp1Done, true);
   assert.ok(Math.abs(r.bot.positions[0].remainingFrac - (1 - cfg.tp1Frac)) < 1e-9);
 
-  // Middle stage: a pullback that stays inside the post-TP1 trail (peak 1.70 × (1 − tpTrailPct)) holds.
+  // Middle stage: a pullback holds — the post-TP1 trail is removed (2026-10-16);
+  // the remainder rides to TP2 / rejection / the undertaker.
   r.q.valueLam = 30_000_000; await r.bot.positionTick();           // ratio 1.50 on the remaining basis
-  assert.equal(r.bot.positions.length, 1, 'middle-stage pullback inside the trail must hold');
+  assert.equal(r.bot.positions.length, 1, 'middle-stage pullback must hold');
   assert.equal(r.bot.positions[0].tp2Done, false);
 
   // TP2: the gain on the remainder reaches cfg.tp2Pct — banks cfg.tp2Frac of the ORIGINAL position.
