@@ -20,7 +20,6 @@
 //   stopFamily     — 2a dip stop, 2a2 hard floor, 2b grace stop (the early
 //                    below-entry stop family: the "instant stop" lineage)
 //   stallProbation — 4b stall deadline sell + probation leash / expiry
-//   deadflow       — 4d-pre dead-flow exit and its arming
 //   bleed          — 4d bleed exit
 //   genericTrail   — 4 trailing stop
 //   profitLock     — 4a profit lock
@@ -28,14 +27,36 @@
 //                    and the 4e kill zone. The lane STAMP on the TP1 decision
 //                    (pathClass / killZoneOverlay) stays as record-only
 //                    journaling; nothing below branches on it.
+//
+// EXIT-STACK V2 (user order 2026-10-15 ~20:26 EDT, "Go" — the user's final
+// re-spec of the stack after the strip): three further closers come off and
+// dead flow changes stage.
+//   tratchet       — 4c break-even ratchet (the classic Tratchet: pre-TP1,
+//                    arm at the BE_ARM line, fire at the BE_TRIGGER line). The
+//                    "-30% from peak" trail the user calls tratchet in the v2
+//                    spec is the MOONBAG trail (3c), which is unchanged.
+//   volumeDecay    — 5b volume decay
+//   timeStop       — 6 time stop
+//   maxHold        — 7 absolute max hold
+//   deadflow       — no longer a strip flag: the rule MOVED. Its pre-TP1
+//                    placement (4d-pre) is removed outright and the machinery
+//                    now judges ONLY the moonbag stage (new section 3c2): a
+//                    post-TP2 remainder whose flow dies sells in full.
+// KEPT LIVE in v2, as in the strip: the TP ladder (TP1 adaptive / TP2 /
+// moonbag trail), the post-TP1 middle trail (3d), TP2 rejection (3d-pre),
+// liquidity death (1) and the 10-minute momentum-failure dead check (5) as
+// the sole undertaker for never-movers.
 const STRIP = {
   stopFamily: true,
   stallProbation: true,
-  deadflow: true,
   bleed: true,
   genericTrail: true,
   profitLock: true,
   modestBranch: true,
+  tratchet: true,
+  volumeDecay: true,
+  timeStop: true,
+  maxHold: true,
 };
 
 export function evaluateExit(pos, mark, cfg, now) {
@@ -124,16 +145,19 @@ export function evaluateExit(pos, mark, cfg, now) {
   // remainder judges through the plain ladder exactly like any other remainder.
   const modestActive = !STRIP.modestBranch && !!pos.tp1Done && pos.pathClass === 'modest';
   const zoneEligible = !STRIP.modestBranch && !!pos.tp1Done && !pos.tp2Done && cfg.killZoneFloorPct > 0 && (modestActive || !!pos.killZoneOverlay);
-  // Dead-flow-at-altitude arming (user 2026-10-15): a persisted flag on the
-  // position, set on the first check the realizable peak move (peakMove — the
-  // same series the ratchet arms from) reaches the arm line while the position
-  // is still pre-TP1; counted once via deadflowEvents. Arming is bookkeeping
-  // only — section 4d-pre judges the fire fresh from the flow/move history on
-  // every check. Window 0 (rule off) never arms, and post-TP1 positions are
-  // out of scope: their stack owns them.
+  // Dead-flow arming (user 2026-10-15; REPOSITIONED to the moonbag stage by
+  // exit-stack v2, user order 2026-10-15 ~20:26 EDT): a persisted flag on the
+  // position, set on the first check the realizable peak move (peakMove)
+  // reaches the arm line while the position is POST-TP2; counted once via
+  // deadflowEvents. Arming is bookkeeping only — section 3c2 judges the fire
+  // fresh from the flow/move history on every check. Window 0 (rule off)
+  // never arms, and pre-TP2 positions are out of scope entirely: the ladder
+  // owns them. (The rule's first incarnation armed PRE-TP1 at the same line;
+  // v2 removed that placement outright — nothing pre-TP2 can arm or fire it.
+  // A flag a pre-v2 position already carries simply stays inert until TP2.)
   let deadflowArmed = !!pos.deadflowArmed;
   const deadflowEvents = [];
-  if (!STRIP.deadflow && !pos.tp1Done && cfg.deadflowWindowSec > 0 && !deadflowArmed && peakMove >= 1 + cfg.deadflowArmPct) {
+  if (pos.tp2Done && cfg.deadflowWindowSec > 0 && !deadflowArmed && peakMove >= 1 + cfg.deadflowArmPct) {
     deadflowArmed = true;
     deadflowEvents.push({ type: 'armed' });
   }
@@ -142,10 +166,10 @@ export function evaluateExit(pos, mark, cfg, now) {
   // coin himself. While protected, ONLY the stop-loss family (2a dip stop, 2a2 hard
   // floor, 2b grace stop), the break-even ratchet (4c) and the kill zone (4e — the
   // redesign widened the scope by exactly that one rule, user 2026-10-15) are
-  // skipped — the momentum failure, time stops and the full TP ladder judge exactly
-  // as normal. (Since the 2026-10-15 strip, the stop family, kill zone, bleed,
-  // probation/stall and the trails are off for EVERY position, protected or not;
-  // the only suppression with live effect left is the ratchet's.) The flag holds for the
+  // skipped — the momentum failure and the full TP ladder judge exactly
+  // as normal. (Since the 2026-10-15 strip + v2, the stop family, kill zone, bleed,
+  // probation/stall, the trails and Tratchet are off for EVERY position, protected or not;
+  // the only suppression with live effect left is the post-TP2 dead flow's, 3c2.) The flag holds for the
   // LIFE of the position: no timeout, no auto-expiry; it clears only when the
   // position closes or when POST /unprotect clears it (bot.js owns both, and
   // unprotect also resets the kill-zone record so the zone re-arms fresh). The
@@ -308,6 +332,69 @@ export function evaluateExit(pos, mark, cfg, now) {
   //     the generic trailing stop / profit lock below skip tp2Done positions: the bag's job is to ride.
   if (pos.tp2Done && ratio <= peakRatio * (1 - cfg.bagTrailPct)) return out(1, `moonbag trail (${Math.round(cfg.bagTrailPct * 100)}% off peak ${peakRatio.toFixed(2)}x, now ${((ratio - 1) * 100).toFixed(1)}%)`);
 
+  // 3c2. DEAD FLOW AFTER TP2 (exit-stack v2, user 2026-10-15 ~20:26 EDT): the
+  //      dead-flow rule, repositioned. Its first incarnation judged PRE-TP1
+  //      positions at altitude (founding case Scout/AAD) and was stripped the
+  //      same day it shipped; in the v2 spec the user gives dead flow exactly
+  //      one stage — the MOONBAG. Once TP1 and TP2 have banked, a remainder
+  //      nobody is buying anymore is finished: if its own flow flatlines for
+  //      a full rolling window, the whole bag sells instead of waiting for
+  //      the wide trail to be reached. Machinery and parameters are the
+  //      original rule's, unchanged:
+  //        ARM: the position's peak `move` reached 1 + deadflowArmPct (state
+  //          prep above, persisted as pos.deadflowArmed — a post-TP2 position
+  //          crossed that line long ago, so arming is effectively immediate).
+  //        TRIGGER — all three over a rolling deadflowWindowSec window
+  //          (DEADFLOW_WINDOW_SEC; 120s in the live store), judged on the ~4s
+  //          checks from the position's OWN recorded series:
+  //          1. the buy count barely moves: flowHist's per-check `buys` (the
+  //             trailing-5m buy count bot.js records every check) rises by at
+  //             most deadflowMaxBuyDelta (1) across the window.
+  //          2. no new peak inside the window: the best `move` printed since
+  //             the window opened does not exceed the peak as of its start
+  //             (both off moveHist, the position's own per-check move prints).
+  //          3. the price actually stopped pushing: the current `move` sits
+  //             at least deadflowPeakGapPct below that window-start peak —
+  //             and the window-start peak itself is at/above the arm line, so
+  //             the stall being judged is a stall at altitude, not a sag.
+  //      The window IS the confirmation — a full window of accumulated dead
+  //      flow, not one bad tick — so the fire is instant: no exitPending.
+  //      FAIL-CLOSED: the window must be fully covered (flow + move samples
+  //      at or just before its start, a fresh current sample, buy counts
+  //      present at both ends) — missing data never fires.
+  //      SCOPE is exactly tp2Done: pre-TP1 and post-TP1/pre-TP2 positions can
+  //      never fire it. PLACEMENT: after the moonbag trail — a trail breach
+  //      on the same check keeps the trail's label; both sell the full bag.
+  //      PROTECT suppresses the fire like the original rule's (noteBlock —
+  //      it is a profit-side auto exit); TAKEOVER returned long before here.
+  if (pos.tp2Done && cfg.deadflowWindowSec > 0 && deadflowArmed) {
+    const winMs = cfg.deadflowWindowSec * 1000;
+    const winStart = now - winMs;
+    let fStart = null, fNow = null;
+    for (const s of pos.flowHist || []) {
+      if (!s || s.ts == null) continue;
+      if (s.ts <= winStart && (fStart == null || s.ts > fStart.ts)) fStart = s;
+      if (fNow == null || s.ts > fNow.ts) fNow = s;
+    }
+    let peakAtStart = null, peakInWindow = null;
+    for (const h of moveHist) {
+      if (h.ts <= winStart) peakAtStart = peakAtStart == null ? h.move : Math.max(peakAtStart, h.move);
+      else peakInWindow = peakInWindow == null ? h.move : Math.max(peakInWindow, h.move);
+    }
+    const covered = fStart != null && fNow != null && winStart - fStart.ts <= 12000 && now - fNow.ts <= 12000
+      && fStart.buys != null && fNow.buys != null && peakAtStart != null && peakInWindow != null;
+    if (covered && peakAtStart >= 1 + cfg.deadflowArmPct) {
+      const buyDelta = fNow.buys - fStart.buys;
+      if (buyDelta <= cfg.deadflowMaxBuyDelta && peakInWindow <= peakAtStart + 1e-9 && move <= peakAtStart - cfg.deadflowPeakGapPct) {
+        if (prot) noteBlock('dead flow');
+        else {
+          deadflowEvents.push({ type: 'fired' });
+          return out(1, `dead flow after TP2 (${move >= 1 ? '+' : ''}${((move - 1) * 100).toFixed(1)}%, ${Math.max(0, buyDelta)} new buys in ${cfg.deadflowWindowSec}s, peak stalled)`);
+        }
+      }
+    }
+  }
+
   // 3d-pre. TP2 rejection (user 2026-10-13): the middle stage climbed to within reach of the TP2
   //     mark (peak net gain >= tp2RejectZone) but never converted; a fade of tp2RejectDrop off
   //     that peak is a rejection, not a pullback — sell the remainder instead of riding the wide
@@ -412,7 +499,11 @@ export function evaluateExit(pos, mark, cfg, now) {
   //     with EXIT_CONFIRM_SEC > 0 the trigger must hold continuously across the window (a
   //     recovery back above the trigger line cancels via the else-branch below); the reason
   //     string is built fresh on the selling check, exactly as before.
-  if (!pos.tp1Done && cfg.beArmPct > 0 && pos.peakMove != null && peakMove >= 1 + cfg.beArmPct && move <= 1 + cfg.beTriggerPct) {
+  //     STRIP (tratchet, exit-stack v2): disabled in code — the section below
+  //     can never arm a pending or fire, at any BE_ARM/BE_TRIGGER value. A
+  //     stale pre-v2 ratchet pending on a carried-over position passes
+  //     through untouched and inert (the cancel is gated off with the fire).
+  if (!STRIP.tratchet && !pos.tp1Done && cfg.beArmPct > 0 && pos.peakMove != null && peakMove >= 1 + cfg.beArmPct && move <= 1 + cfg.beTriggerPct) {
     if (prot) noteBlock('ratchet'); // PROTECT: "no ratchet" — skipped; its pending was already dropped from the returned state above
     else {
       const pctFmt = (x) => `${x >= 0 ? '+' : ''}${(x * 100).toFixed(1)}%`;
@@ -420,72 +511,8 @@ export function evaluateExit(pos, mark, cfg, now) {
       if (d) return d;
       // pending: fall through — the bleed section and everything below still judge this check
     }
-  } else {
+  } else if (!STRIP.tratchet) {
     cancelPending('ratchet');
-  }
-
-  // 4d-pre. DEAD FLOW AT ALTITUDE (user 2026-10-15): the founding case is Scout
-  //     (Anti-AI Dog) — spiked to ~+12% realizable, the buys flatlined for
-  //     minutes while the price chopped, and it round-tripped to −0.4% where
-  //     probation expiry closed it red; a sell inside the stall banks ~+10%.
-  //     Nothing else owned that shape: the ratchet arms at +15% and even armed
-  //     waits for +5%; TP1's strength test starts at +20%; momentum failure
-  //     needs 10 minutes of death. This rule owns it, PRE-TP1 ONLY (post-TP1
-  //     remainders belong to the trails / kill zone). Placement: after the TP
-  //     ladder — a firing TP1 on the same check has already returned and wins —
-  //     and after the ratchet, whose armed confirmation owns a fade it is
-  //     already judging (the rule waits while a ratchet pending runs).
-  //     ARM: the position's peak `move` reached 1 + deadflowArmPct (state prep
-  //     above, persisted as pos.deadflowArmed).
-  //     TRIGGER — all three over a rolling deadflowWindowSec window, judged on
-  //     the ~4s checks from the position's OWN recorded series:
-  //       1. the buy count barely moves: flowHist's per-check `buys` (the
-  //          view's trailing-5m buy count bot.js records every check — the
-  //          closest per-check flow series the bot keeps) rises by at most
-  //          deadflowMaxBuyDelta across the window. A flatlined coin's count
-  //          only ages out flat-to-down; one stray buy is tolerated.
-  //       2. no new peak inside the window: the best `move` printed since the
-  //          window opened does not exceed the peak as of the window's start
-  //          (both off moveHist, the position's own per-check move prints).
-  //       3. the price actually stopped pushing: the current `move` sits at
-  //          least deadflowPeakGapPct below that window-start peak — and the
-  //          window-start peak itself must be at/above the arm line, so the
-  //          stall being judged is a stall AT ALTITUDE, not a later sag.
-  //     The window IS the confirmation — 45s of accumulated dead flow, not one
-  //     bad tick — so the fire is instant: no exitPending, no extra grace.
-  //     FAIL-CLOSED: the window must be fully covered (flow + move samples at
-  //     or just before its start, a fresh current sample, buy counts present
-  //     at both ends) — missing data never fires, the TP1-strength convention.
-  //     PROTECT suppresses the fire like the ratchet's (noteBlock — it is a
-  //     profit-side auto exit); TAKEOVER returned long before this section.
-  if (!STRIP.deadflow && !pos.tp1Done && cfg.deadflowWindowSec > 0 && deadflowArmed) { // STRIP (deadflow): can never fire
-    const winMs = cfg.deadflowWindowSec * 1000;
-    const winStart = now - winMs;
-    let fStart = null, fNow = null;
-    for (const s of pos.flowHist || []) {
-      if (!s || s.ts == null) continue;
-      if (s.ts <= winStart && (fStart == null || s.ts > fStart.ts)) fStart = s;
-      if (fNow == null || s.ts > fNow.ts) fNow = s;
-    }
-    let peakAtStart = null, peakInWindow = null;
-    for (const h of moveHist) {
-      if (h.ts <= winStart) peakAtStart = peakAtStart == null ? h.move : Math.max(peakAtStart, h.move);
-      else peakInWindow = peakInWindow == null ? h.move : Math.max(peakInWindow, h.move);
-    }
-    const covered = fStart != null && fNow != null && winStart - fStart.ts <= 12000 && now - fNow.ts <= 12000
-      && fStart.buys != null && fNow.buys != null && peakAtStart != null && peakInWindow != null;
-    if (covered && peakAtStart >= 1 + cfg.deadflowArmPct) {
-      const buyDelta = fNow.buys - fStart.buys;
-      if (buyDelta <= cfg.deadflowMaxBuyDelta && peakInWindow <= peakAtStart + 1e-9 && move <= peakAtStart - cfg.deadflowPeakGapPct) {
-        if (prot) noteBlock('dead flow');
-        else if (exitPending != null && exitPending.ratchet != null) {
-          // the ratchet's confirmation window owns this fade — it sells or cancels first
-        } else {
-          deadflowEvents.push({ type: 'fired' });
-          return out(1, `dead flow at altitude (${move >= 1 ? '+' : ''}${((move - 1) * 100).toFixed(1)}%, ${Math.max(0, buyDelta)} new buys in ${cfg.deadflowWindowSec}s, peak stalled)`);
-        }
-      }
-    }
   }
 
   // 4d. bleed exit (user 2026-10-14, "Still-falling test — down 7%+ and not recovering"):
@@ -599,16 +626,19 @@ export function evaluateExit(pos, mark, cfg, now) {
   if (heldMin >= 10 && ratio < 1 && mark.buysM5 != null && mark.buysM5 <= 1 && mark.sellsM5 > mark.buysM5 * 3) return out(1, 'momentum failure (no buyers)');
 
   // 5b. volume decay: volume dried up 70%+ from entry and price isn't pushing up — no fuel left
-  if (pos.entryVolH1 > 0 && mark.volH1 != null && heldMin >= 5) {
+  //     STRIP (volumeDecay, exit-stack v2): disabled in code — can never fire.
+  if (!STRIP.volumeDecay && pos.entryVolH1 > 0 && mark.volH1 != null && heldMin >= 5) {
     const volRatio = mark.volH1 / pos.entryVolH1;
     if (volRatio < 0.3 && ratio < 1.05) return out(1, `volume decay (vol ${(volRatio * 100).toFixed(0)}% of entry, price ${((ratio - 1) * 100).toFixed(1)}%)`);
   }
 
   // 6. time stop: didn't work fast enough
-  if (heldMin >= cfg.timeStopMin && ratio < 1 + cfg.timeStopMinGain) return out(1, `time stop (${Math.round(heldMin)}m, ${((ratio - 1) * 100).toFixed(0)}%)`);
+  //     STRIP (timeStop, exit-stack v2): disabled in code — can never fire.
+  if (!STRIP.timeStop && heldMin >= cfg.timeStopMin && ratio < 1 + cfg.timeStopMinGain) return out(1, `time stop (${Math.round(heldMin)}m, ${((ratio - 1) * 100).toFixed(0)}%)`);
 
   // 7. absolute max hold
-  if (heldMin >= cfg.maxHoldMin) return out(1, `max hold ${cfg.maxHoldMin}m`);
+  //     STRIP (maxHold, exit-stack v2): disabled in code — can never fire.
+  if (!STRIP.maxHold && heldMin >= cfg.maxHoldMin) return out(1, `max hold ${cfg.maxHoldMin}m`);
 
   return out(0, null);
 }

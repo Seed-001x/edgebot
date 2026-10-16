@@ -4,12 +4,14 @@ import { evaluateExit } from '../src/exits.js';
 import { loadConfig, validateConfig } from '../src/config.js';
 import { testCfg } from './helpers.mjs';
 
-// EXIT-STACK STRIP (user order 2026-10-15): the stop family, stall/probation,
-// bleed, dead-flow, generic trail, profit lock and the two-path branching are
-// disabled IN CODE (src/exits.js STRIP) — the blocks below pin that they cannot
-// fire under their former trigger conditions, with their knobs at live values.
+// EXIT-STACK STRIP (user order 2026-10-15) + V2 (user order 2026-10-15 ~20:26
+// EDT): the stop family, stall/probation, bleed, generic trail, profit lock,
+// the two-path branching, Tratchet, volume decay, the time stop and the max
+// hold are disabled IN CODE (src/exits.js STRIP) — the blocks below pin that
+// they cannot fire under their former trigger conditions, with their knobs at
+// live values. Dead flow survives ONLY as a post-TP2 exit (deadflow.test.mjs).
 // What remains live: the TP ladder, the post-TP1 middle trail, TP2 rejection,
-// Tratchet, momentum failure, volume decay, the time stops and liquidity death.
+// momentum failure and liquidity death.
 const cfg = testCfg({ stallProbationSec: 0 }); const NOW = 1_000_000_000_000;
 const pos = (o = {}) => ({ entrySol: 0.02, remainingFrac: 1, peakRatio: 1, tp1Done: false, entryTs: NOW - 5 * 60000, ...o });
 const mark = (valueSol, o = {}) => ({ valueSol, liqUsd: 200_000, buysM5: 30, sellsM5: 10, solUsd: 150, ...o });
@@ -36,7 +38,7 @@ test('strip: dip stop cannot fire on the round-trip-adjusted print either', () =
   assert.equal(evaluateExit(p, mark(0.0170), cfg, NOW).fraction, 0);                   // price -5.6%: the old fire print
 });
 // ---- entry stall (STRIPPED): the deadline sell can never fire — in-band prints
-//      at/past the deadline simply hold; a faded spike is Tratchet's now, not the stall's ----
+//      at/past the deadline simply hold; a faded spike holds too (v2 stripped Tratchet) ----
 const stallCfg = { ...cfg, stallSec: 60, stallBandPct: 0.05, dipStopPct: 0 };
 test('strip: entry stall cannot fire — inside the range at/past the deadline holds, no probation state', () => {
   assert.equal(evaluateExit(pos({ entryTs: NOW - 59 * S }), mark(0.0201), stallCfg, NOW).fraction, 0);
@@ -44,11 +46,11 @@ test('strip: entry stall cannot fire — inside the range at/past the deadline h
   assert.equal(d.fraction, 0); assert.equal(d.reason, null); assert.equal(d.probationSince, null);
   assert.equal(evaluateExit(pos({ entryTs: NOW - 90 * S }), mark(0.0196), stallCfg, NOW).fraction, 0); // under entry but inside the old range: holds too
 });
-test('strip: the faded-spike print the stall used to own now belongs to Tratchet', () => {
+test('strip v2: the faded-spike print neither the stall nor Tratchet owns anymore — it holds', () => {
   const faded = pos({ entryTs: NOW - 300 * S, peakMove: 1.30 });  // spiked +30% in its first minute, faded back to +1%
   const d = evaluateExit(faded, mark(0.0202), stallCfg, NOW);
-  assert.equal(d.fraction, 1); assert.match(d.reason, /break-even ratchet/);   // armed at the +30% peak, faded to the trigger — the ratchet's print, judged on the same check the stall once took
-  assert.equal(evaluateExit(pos({ entryTs: NOW - 300 * S, peakMove: 1.12, peakRatio: 1.12 }), mark(0.0216), stallCfg, NOW).fraction, 0); // +8% at the check: above the ratchet trigger, holds
+  assert.equal(d.fraction, 0); assert.equal(d.reason, null);   // the ratchet's former print (armed at the +30% peak, faded to its trigger) — v2 stripped the ratchet too, so nothing sells it here
+  assert.equal(evaluateExit(pos({ entryTs: NOW - 300 * S, peakMove: 1.12, peakRatio: 1.12 }), mark(0.0216), stallCfg, NOW).fraction, 0); // +8% at the check: holds as before
   assert.equal(evaluateExit(pos({ entryTs: NOW - 300 * S }), mark(0.0184), stallCfg, NOW).fraction, 0);                  // -8% with no tracked peak: nothing owns it now — it rides
   // post-TP1: in the old stall range at the deadline, the middle trail is the judge — inside its line it holds
   assert.equal(evaluateExit(pos({ entryTs: NOW - 300 * S, tp1Done: true, remainingFrac: 0.35, peakRatio: 1.4 }), mark(0.0074), { ...stallCfg, lockKeep: 0 }, NOW).fraction, 0);
@@ -237,25 +239,60 @@ test('moonbag: post-TP2 remainder rides a 15% trail under its recorded peak, imm
   assert.equal(d.fraction, 1); assert.match(d.reason, /moonbag trail/);
 });
 
-// ---- break-even ratchet (user 2026-10-14, "Build it — arm at +5%"): a pre-TP1 position whose
-//      peak realizable move reached +5% can no longer become a loser — a fall back to +2%
-//      sells it in full at ~scratch. Judged on move/peakMove (round-trip-adjusted), never the
-//      chart. beCfg isolates the ratchet: dip stop off, probation off (shared cfg), young ages
-//      keep the stall/momentum/time sections out of the way except where a test says so. ----
+// ---- late closers (STRIPPED in v2): volume decay (5b), the time stop (6) and
+//      the absolute max hold (7) can never fire — a position that outlives
+//      every old clock simply rides until the ladder, a trail or the dead
+//      check (5, still live — pinned at the bottom of this block) closes it.
+//      The shapes below are the former trigger prints verbatim (the takeover
+//      suite used two of them as live controls until v2). ----
+test('strip v2: time stop cannot fire — 30 min in, under the +10% gain line, holds (pre- and post-TP1 shapes)', () => {
+  const post = evaluateExit(pos({ entryTs: NOW - 30 * 60000, tp1Done: true, remainingFrac: 0.6, peakRatio: 1.05 }), mark(0.0126), cfg, NOW); // ratio 1.05 on the remainder — the old fire print
+  assert.equal(post.fraction, 0); assert.equal(post.reason, null);
+  const pre = evaluateExit(pos({ entryTs: NOW - 30 * 60000 }), mark(0.021), cfg, NOW);   // ratio 1.05, never TP1'd
+  assert.equal(pre.fraction, 0); assert.equal(pre.reason, null);
+  const late = evaluateExit(pos({ entryTs: NOW - 90 * 60000 }), mark(0.0204), cfg, NOW); // 90 min in at +2%: still not the clock's
+  assert.equal(late.fraction, 0);
+});
+test('strip v2: max hold cannot fire — past the 120m absolute line the position still rides', () => {
+  const d = evaluateExit(pos({ entryTs: NOW - 130 * 60000, tp1Done: true, remainingFrac: 0.6, peakRatio: 1.5 }), mark(0.018), cfg, NOW); // ratio 1.5, 130 min old — the old fire print
+  assert.equal(d.fraction, 0); assert.equal(d.reason, null);
+  const older = evaluateExit(pos({ entryTs: NOW - 600 * 60000, tp1Done: true, remainingFrac: 0.6, peakRatio: 1.5 }), mark(0.018), cfg, NOW); // 10 hours in: no clock owns it
+  assert.equal(older.fraction, 0); assert.equal(older.reason, null);
+});
+test('strip v2: volume decay cannot fire — volume at 20% of entry, price flat, past the 5m mark holds', () => {
+  const p = pos({ entryTs: NOW - 6 * 60000, entryVolH1: 100_000 });
+  const d = evaluateExit(p, mark(0.0205, { volH1: 20_000 }), cfg, NOW);   // volRatio 0.20 < 0.30, ratio 1.025 < 1.05 — the old fire print
+  assert.equal(d.fraction, 0); assert.equal(d.reason, null);
+  const older = evaluateExit(pos({ entryTs: NOW - 60 * 60000, entryVolH1: 100_000 }), mark(0.0196, { volH1: 5_000 }), cfg, NOW); // an hour in, volume at 5%: still holds
+  assert.equal(older.fraction, 0);
+});
+test('momentum failure (the dead check) STILL fires — 15 min in, underwater, no buyers: the sole undertaker', () => {
+  const d = evaluateExit(pos({ entryTs: NOW - 15 * 60000 }), mark(0.019, { buysM5: 0, sellsM5: 10 }), cfg, NOW);
+  assert.equal(d.fraction, 1);
+  assert.equal(d.reason, 'momentum failure (no buyers)');
+  // and its conditions are unchanged: live two-way flow at the same age/price holds
+  assert.equal(evaluateExit(pos({ entryTs: NOW - 15 * 60000 }), mark(0.019, { buysM5: 30, sellsM5: 10 }), cfg, NOW).fraction, 0);
+});
+
+// ---- break-even ratchet (STRIPPED in v2 — the classic Tratchet, +15% arm /
+//      +5% fire at live knob values): its former trigger prints — a pre-TP1
+//      position whose peak realizable move reached the arm line, fallen back
+//      to the trigger — now simply hold, at any BE_ARM/BE_TRIGGER value.
+//      beCfg keeps the old isolation: dip stop off, probation off (shared cfg),
+//      young ages keep the momentum/time sections out of the way. ----
 const beCfg = { ...cfg, dipStopPct: 0 };
-test('break-even ratchet: peaked +12.4%, back at the +2% trigger — sells in full, reason names both prints', () => {
+test('strip v2: Tratchet cannot fire — peaked +12.4%, back at the +2% trigger holds', () => {
   // round-trip 0.95: the +1.8% is a MOVE print (ratio 0.9671 under water on raw value) —
-  // the ratchet judges the price path, not the sunk round-trip cost, and fires at 30s old,
-  // long before any stall deadline (the DOG shape: peaked +22%, dead inside a minute).
+  // the ratchet's exact founding shape (the DOG shape: peaked +22%, dead inside a minute).
   const p = pos({ entryTs: NOW - 30 * S, entryRoundTrip: 0.95, peakRatio: 1.068, peakMove: 1.124 });
   const d = evaluateExit(p, mark(0.019342), beCfg, NOW);   // move = 0.9671 / 0.95 = 1.018
-  assert.equal(d.fraction, 1);
-  assert.equal(d.reason, 'break-even ratchet (peaked +12.4%, back to +1.8%)');
+  assert.equal(d.fraction, 0);
+  assert.equal(d.reason, null);
 });
-test('break-even ratchet: arms at exactly +5% peak, fires at exactly +2%', () => {
+test('strip v2: Tratchet cannot fire at its exact lines — +5% peak, back at exactly +2% holds', () => {
   const d = evaluateExit(pos({ entryTs: NOW - 30 * S, peakMove: 1.05 }), mark(0.0204), beCfg, NOW); // move 1.02
-  assert.equal(d.fraction, 1);
-  assert.equal(d.reason, 'break-even ratchet (peaked +5.0%, back to +2.0%)');
+  assert.equal(d.fraction, 0);
+  assert.equal(d.reason, null);
 });
 test('break-even ratchet: peak only +4% never arms — +2% and below still hold, other exits keep it', () => {
   const p = pos({ entryTs: NOW - 30 * S, peakMove: 1.04 });
@@ -277,17 +314,17 @@ test('break-even ratchet: BE_ARM_PCT=0 disables it entirely', () => {
   const p = pos({ entryTs: NOW - 30 * S, peakMove: 1.124 });
   assert.equal(evaluateExit(p, mark(0.02036), { ...beCfg, beArmPct: 0 }, NOW).fraction, 0); // move 1.018, would fire if on
 });
-test('strip: with probation gone, Tratchet owns the deadline-check fade AND the deep dive outright', () => {
+test('strip v2: with probation AND Tratchet gone, the deadline-check fade and the deep dive both hold', () => {
   const probBeCfg = { ...cfg, stallSec: 180, stallProbationSec: 300, stallLeashPct: 0.07, stallBandPct: 0.05, stallBandUpPct: 0.03, dipStopPct: 0 };
-  // deadline check, in band at +0.5% with a +10% tracked peak: no probation detour — the armed ratchet scratches on this very check
+  // deadline check, in band at +0.5% with a +10% tracked peak: no probation detour, no ratchet scratch — it holds
   const start = evaluateExit(pos({ entryTs: NOW - 180 * S, peakMove: 1.10 }), mark(0.0201), probBeCfg, NOW);
-  assert.equal(start.fraction, 1); assert.match(start.reason, /break-even ratchet/); assert.equal(start.probationSince, null);
-  // faded to +1.8%: the ratchet scratches it (unchanged)
+  assert.equal(start.fraction, 0); assert.equal(start.reason, null); assert.equal(start.probationSince, null);
+  // faded to +1.8%: the ratchet's former scratch print — holds; the stored probation stamp passes through inert
   const faded = evaluateExit(pos({ entryTs: NOW - 204 * S, peakMove: 1.10, probationSince: NOW - 24 * S }), mark(0.02036), probBeCfg, NOW);
-  assert.equal(faded.fraction, 1); assert.match(faded.reason, /break-even ratchet/);
-  // deep dive to -8.5%: the leash no longer pre-empts the label — an armed ratchet owns any print at/below its trigger
+  assert.equal(faded.fraction, 0); assert.equal(faded.reason, null); assert.equal(faded.probationSince, NOW - 24 * S);
+  // deep dive to -8.5%: neither the leash nor the ratchet owns a print at/below the old trigger — it holds
   const dive = evaluateExit(pos({ entryTs: NOW - 204 * S, peakMove: 1.10, probationSince: NOW - 24 * S }), mark(0.0183), probBeCfg, NOW);
-  assert.equal(dive.fraction, 1); assert.match(dive.reason, /break-even ratchet/);
+  assert.equal(dive.fraction, 0); assert.equal(dive.reason, null);
 });
 test('break-even ratchet: no recorded peakMove (legacy position) never arms — the round-trip seed cannot fake a breakout', () => {
   // round-trip 0.90 with no stored peakMove: the peakRatio seed would read 1/0.9 = +11%,
@@ -341,17 +378,14 @@ test('strip: bleed vs probation is moot — a legacy probationed, still-falling 
   assert.equal(d.reason, null);
 });
 
-// ---- fail-safe confirmation (user 2026-10-14, "a fail safe to the fail safe"): of the
-//      three original fail-safe exits only Tratchet remains live after the strip — the
-//      bleed and leash blocks below pin that their pendings can never even arm. For the
-//      ratchet: it no longer sells on the first triggering check — with EXIT_CONFIRM_SEC > 0 the trigger ARMS a pending
-//      ({kind: sinceTs}, persisted on the position as exitPending) and sells only when the
-//      exit's FULL condition has held continuously until the first check at/after the
-//      window; a recovery inside the window cancels it (decision.exitConfirmEvents carries
-//      the outcome for bot.js to count). Fixtures below carry exitPending: {} — the state
-//      bot.js initializes at entry; positions without the field keep the instant behavior
-//      the blocks above assert. `run` threads the returned state back onto the position
-//      exactly as bot.js does. ----
+// ---- fail-safe confirmation (user 2026-10-14, "a fail safe to the fail safe"): after
+//      the strip + v2, NONE of the three original fail-safe exits remains live — the
+//      bleed and leash blocks below pin that their pendings can never even arm, and the
+//      ratchet block now pins the same for Tratchet: its trigger arms NO pending, a
+//      held trigger never confirms into a sell, and a stale pre-v2 pending passes
+//      through untouched and inert (never confirmed, never cancelled, never sold).
+//      Fixtures below carry exitPending: {} — the state bot.js initializes at entry.
+//      `run` threads the returned state back onto the position exactly as bot.js does. ----
 const run = (p, m, c, now) => {
   const d = evaluateExit(p, m, c, now);
   if ('exitPending' in d) p.exitPending = d.exitPending;
@@ -374,42 +408,43 @@ test('exit confirmation config: EXIT_CONFIRM_SEC defaults to 10 and validates; 0
   assert.ok(validateConfig(loadConfig({ EXIT_CONFIRM_SEC: '-1' })).some(e => e.includes('EXIT_CONFIRM_SEC')));
 });
 
-// ---- ratchet ----
-test('ratchet confirmation: trigger arms a pending; a recovery above the trigger inside the window cancels it', () => {
+// ---- ratchet (STRIPPED in v2): the confirmation machinery can never engage —
+//      no pending arms on the former trigger, none confirms through the window ----
+test('strip v2: Tratchet trigger arms NO pending and emits NO events; a recovery is equally inert (no cancel exists)', () => {
   const p = pos({ entryTs: NOW - 30 * S, entryRoundTrip: 0.95, peakRatio: 1.068, peakMove: 1.124, exitPending: {} });
-  const d1 = run(p, mark(0.019342), confBeCfg, NOW);                    // move 1.018 — the old instant trigger
-  assert.equal(d1.fraction, 0);                                          // NOT sold: the window just opened
-  assert.equal(p.exitPending.ratchet, NOW);
+  const d1 = run(p, mark(0.019342), confBeCfg, NOW);                    // move 1.018 — the old trigger
+  assert.equal(d1.fraction, 0);
+  assert.equal(p.exitPending.ratchet, undefined);                        // no window opens
   assert.deepEqual(d1.exitConfirmEvents, []);
   const d2 = run(p, mark(0.01995), confBeCfg, NOW + 4 * S);              // move 1.05: back above the +2% line
   assert.equal(d2.fraction, 0);
-  assert.equal(p.exitPending.ratchet, undefined);                        // pending disarmed
-  assert.deepEqual(d2.exitConfirmEvents, [{ type: 'cancelled', kind: 'ratchet' }]);
+  assert.equal(p.exitPending.ratchet, undefined);
+  assert.deepEqual(d2.exitConfirmEvents, []);                            // no 'cancelled' event — the machinery is off, not disarmed
 });
-test('ratchet confirmation: trigger held continuously sells at the first check at/after 10s — not before', () => {
+test('strip v2: the Tratchet trigger held through the whole former window never sells — not at 10s, not ever', () => {
   const p = pos({ entryTs: NOW - 30 * S, peakMove: 1.12, exitPending: {} });
-  assert.equal(run(p, mark(0.0204), confBeCfg, NOW).fraction, 0);        // trigger: pending opens
-  assert.equal(run(p, mark(0.0204), confBeCfg, NOW + 4 * S).fraction, 0);  // 4s in: still holding, no sell
-  assert.equal(run(p, mark(0.0204), confBeCfg, NOW + 8 * S).fraction, 0);  // 8s in: still short of the window
-  const d = run(p, mark(0.0204), confBeCfg, NOW + 12 * S);               // first check past 10s
-  assert.equal(d.fraction, 1);
-  assert.equal(d.reason, 'break-even ratchet (peaked +12.0%, back to +2.0%)');
-  assert.deepEqual(d.exitConfirmEvents, [{ type: 'confirmed', kind: 'ratchet' }]);
+  assert.equal(run(p, mark(0.0204), confBeCfg, NOW).fraction, 0);
+  assert.equal(run(p, mark(0.0204), confBeCfg, NOW + 4 * S).fraction, 0);
+  assert.equal(run(p, mark(0.0204), confBeCfg, NOW + 8 * S).fraction, 0);
+  const d = run(p, mark(0.0204), confBeCfg, NOW + 12 * S);               // the old confirmation lapse print
+  assert.equal(d.fraction, 0);
+  assert.equal(d.reason, null);
+  assert.deepEqual(d.exitConfirmEvents, []);
   assert.deepEqual(p.exitPending, {});
-  // a check landing exactly ON the window edge also sells
   const q = pos({ entryTs: NOW - 30 * S, peakMove: 1.12, exitPending: {} });
   assert.equal(run(q, mark(0.0204), confBeCfg, NOW).fraction, 0);
-  assert.equal(run(q, mark(0.0204), confBeCfg, NOW + 10 * S).fraction, 1);
+  assert.equal(run(q, mark(0.0204), confBeCfg, NOW + 10 * S).fraction, 0); // exactly ON the old window edge: still nothing
 });
-test('ratchet confirmation: cancel then re-trigger starts a FRESH full window', () => {
-  const p = pos({ entryTs: NOW - 30 * S, peakMove: 1.12, exitPending: {} });
-  run(p, mark(0.0204), confBeCfg, NOW);                                  // trigger #1
-  run(p, mark(0.0212), confBeCfg, NOW + 4 * S);                          // recovery: cancelled
-  const re = run(p, mark(0.0204), confBeCfg, NOW + 8 * S);               // trigger #2
-  assert.equal(re.fraction, 0);
-  assert.equal(p.exitPending.ratchet, NOW + 8 * S);                      // stamped at the re-trigger, not the first
-  assert.equal(run(p, mark(0.0204), confBeCfg, NOW + 12 * S).fraction, 0); // 12s after trigger #1 but only 4s into window #2: no sell
-  assert.equal(run(p, mark(0.0204), confBeCfg, NOW + 20 * S).fraction, 1); // window #2 complete
+test('strip v2: a stale pre-v2 ratchet pending passes through untouched (never confirmed, never sold, never cancelled)', () => {
+  const p = pos({ entryTs: NOW - 30 * S, peakMove: 1.12, exitPending: { ratchet: NOW - 20000 } });
+  const d = run(p, mark(0.0204), confBeCfg, NOW);                        // window long past, trigger still true
+  assert.equal(d.fraction, 0);
+  assert.equal(p.exitPending.ratchet, NOW - 20000);                      // inert: the section never judges it
+  assert.deepEqual(d.exitConfirmEvents, []);
+  const d2 = run(p, mark(0.0212), confBeCfg, NOW + 4 * S);               // recovery print: no cancel either
+  assert.equal(d2.fraction, 0);
+  assert.equal(p.exitPending.ratchet, NOW - 20000);
+  assert.deepEqual(d2.exitConfirmEvents, []);
 });
 
 // ---- bleed (STRIPPED): the confirmation machinery can never engage — no pending
@@ -467,38 +502,39 @@ test('strip: no leash re-trigger cycle exists — repeated dives and recoveries 
   assert.equal(run(p, mark(0.0185), confProbCfg, NOW + 20 * S).fraction, 0);
 });
 
-// ---- EXIT_CONFIRM_SEC=0: the layer is off — the ratchet still sells instantly;
-//      the stripped fail-safes hold even in instant mode ----
-test('exit confirmation OFF (EXIT_CONFIRM_SEC=0): the ratchet sells instantly; bleed + leash shapes still cannot fire', () => {
+// ---- EXIT_CONFIRM_SEC=0: the layer is off — and with every fail-safe stripped
+//      in v2, instant mode changes nothing for any of the three shapes ----
+test('exit confirmation OFF (EXIT_CONFIRM_SEC=0): the ratchet cannot fire either — all three fail-safe shapes hold in instant mode', () => {
   const r = evaluateExit(pos({ entryTs: NOW - 30 * S, peakMove: 1.12, exitPending: {} }), mark(0.0204), { ...confBeCfg, exitConfirmSec: 0 }, NOW);
-  assert.equal(r.fraction, 1); assert.match(r.reason, /break-even ratchet/); assert.deepEqual(r.exitPending, {});
+  assert.equal(r.fraction, 0); assert.equal(r.reason, null); assert.deepEqual(r.exitPending, {});
   const b = evaluateExit(pos({ entryTs: NOW - 200 * S, moveHist: hist([60, 0.92]), exitPending: {} }), mark(0.0182), { ...confBleedCfg, exitConfirmSec: 0 }, NOW);
   assert.equal(b.fraction, 0); assert.equal(b.reason, null);
   const l = evaluateExit(pos({ entryTs: NOW - 200 * S, probationSince: NOW - 20 * S, exitPending: {} }), mark(0.0185), { ...confProbCfg, exitConfirmSec: 0 }, NOW);
   assert.equal(l.fraction, 0); assert.equal(l.reason, null);
 });
 
-// ---- interplay: a pending fail-safe never blocks the rest of the stack ----
-test('exit confirmation: a TP1 decision during a ratchet pending executes immediately; the pending survives the partial sell', () => {
+// ---- interplay: a stale fail-safe pending is inert — it never blocks the stack ----
+test('strip v2: a TP1 decision executes immediately with a stale ratchet pending on the position; the pending passes through untouched', () => {
   const tpCfg = { ...cfg, dipStopPct: 0, exitConfirmSec: 10, tp1Pct: 0.20, tp1Frac: 0.4, tp1AdaptMax: 0.60, tp1Giveback: 0.08, lockKeep: 0 };
-  const p = pos({ entryTs: NOW - 30 * S, peakRatio: 1.45, peakMove: 1.45, exitPending: {} });
-  const d1 = run(p, mark(0.0204), tpCfg, NOW);                           // faded to +2%: ratchet pending opens
-  assert.equal(d1.fraction, 0);
-  assert.equal(p.exitPending.ratchet, NOW);
+  const p = pos({ entryTs: NOW - 30 * S, peakRatio: 1.45, peakMove: 1.45, exitPending: { ratchet: NOW - 20000 } });
+  const d1 = run(p, mark(0.0204), tpCfg, NOW);                           // faded to +2%: the ratchet's old trigger print
+  assert.equal(d1.fraction, 0);                                          // no sell, no confirm — the pending is a fossil
+  assert.equal(p.exitPending.ratchet, NOW - 20000);
   const d2 = run(p, mark(0.026), tpCfg, NOW + 4 * S);                    // rips to 1.30x: TP1 rollover off the 1.45 peak
   assert.equal(d2.tp1, true);
-  assert.equal(d2.fraction, 0.4);                                        // banked NOW — the pending did not delay it
-  assert.equal(d2.exitPending.ratchet, NOW);                             // ...and the ratchet pending is still ticking on the remainder
+  assert.equal(d2.fraction, 0.4);                                        // banked NOW — the fossil never delayed it
+  assert.equal(d2.exitPending.ratchet, NOW - 20000);                     // ...and it is still sitting there, inert
   assert.deepEqual(d2.exitConfirmEvents, []);
 });
 
 // ---- PROTECT switch (user 2026-10-15, "just the stop loss… no ratchet", "no SL until
 //      I say"): a one-time per-position flag (pos.protected, set via POST /protect).
-//      Since the strip, the stop-loss family is off for EVERYONE — protection's only
-//      live suppression left is the break-even ratchet (4c). The stop-state clearing
-//      under the flag is kept (stale armings/counters are dropped from the returned
-//      state) and pinned below; momentum and the full TP ladder judge as normal.
-//      The flag holds for the life of the position; /unprotect re-arms the ratchet. ----
+//      Since the strip + v2, the stop-loss family AND Tratchet are off for EVERYONE —
+//      protection's only live suppression left is the post-TP2 dead flow (3c2, pinned
+//      in deadflow.test.mjs). The stop-state clearing under the flag is kept (stale
+//      armings/counters are dropped from the returned state) and pinned below;
+//      momentum and the full TP ladder judge as normal. The flag holds for the life
+//      of the position; /unprotect restores normal judging. ----
 const protPos = (o = {}) => pos({ protected: NOW - 60000, ...o });
 test('strip + protect: the deep stop-family print holds for protected AND unprotected alike; protect still clears stop state', () => {
   const d = evaluateExit(protPos(), mark(0.011), cfg, NOW);   // move 0.55 — deep in the old dip-stop / floor / grace territory
@@ -528,15 +564,16 @@ test('strip + protect: stale hard-floor counters are cleared under the flag; the
   const ctl = evaluateExit(pos({ floorChecks: 1, floorSince: NOW - 10000 }), mark(0.011, { buysM5: 1, sellsM5: 1 }), c, NOW);
   assert.equal(ctl.fraction, 0); assert.equal(ctl.reason, null); // control: no second-check sell exists anymore
 });
-test('protect: ratchet is skipped even with a matured pending, and the pending is dropped silently', () => {
+test('strip v2 + protect: the ratchet print holds for protected AND unprotected alike; protect still drops a stale ratchet pending silently', () => {
   const p = protPos({ entryTs: NOW - 30 * S, peakMove: 1.12, exitPending: { ratchet: NOW - 12000 } });
-  const d = evaluateExit(p, mark(0.0204), confBeCfg, NOW);    // move 1.02 — the armed ratchet's trigger
+  const d = evaluateExit(p, mark(0.0204), confBeCfg, NOW);    // move 1.02 — the armed ratchet's old trigger
   assert.equal(d.fraction, 0);
-  assert.equal(d.protectedBlock, 'ratchet');
-  assert.equal(d.exitPending.ratchet, undefined);             // dropped — it can never execute under the flag
+  assert.equal(d.protectedBlock, null);                       // nothing to suppress — the strip, not the flag, holds it (no noteBlock exists to report)
+  assert.equal(d.exitPending.ratchet, undefined);             // the protect block still drops the fossil from the returned state
   assert.ok(!d.exitConfirmEvents.some(e => e.kind === 'ratchet')); // and it is NOT counted as a cancelled window
   const ctl = evaluateExit(pos({ entryTs: NOW - 30 * S, peakMove: 1.12, exitPending: { ratchet: NOW - 12000 } }), mark(0.0204), confBeCfg, NOW);
-  assert.equal(ctl.fraction, 1); assert.match(ctl.reason, /break-even ratchet/); // control: matured pending sells
+  assert.equal(ctl.fraction, 0); assert.equal(ctl.reason, null); // control: unprotected holds too — the pending passes through inert
+  assert.equal(ctl.exitPending.ratchet, NOW - 12000);
 });
 test('protect: a bleed pending is left exactly as it was — still armed, still ticking', () => {
   const p = protPos({ entryTs: NOW - 200 * S, moveHist: hist([60, 0.92]), exitPending: { ratchet: NOW - 5000, bleed: NOW - 5000 } });
@@ -583,14 +620,14 @@ test('strip + unprotect: no grace stop exists to re-arm — the deep print holds
   const d3 = evaluateExit(p, dead, c, NOW + 6 * S);
   assert.equal(d3.fraction, 0); assert.equal(d3.reason, null);
 });
-test('protect off again (unprotect): the ratchet re-arms and sells through its window', () => {
+test('strip v2 + unprotect: no ratchet exists to re-arm — the trigger print holds before and after unprotect', () => {
   const p = pos({ entryTs: NOW - 30 * S, peakMove: 1.12, exitPending: {}, protected: NOW - 60000 });
   const d1 = run(p, mark(0.0204), confBeCfg, NOW);
-  assert.equal(d1.fraction, 0); assert.equal(d1.protectedBlock, 'ratchet');
+  assert.equal(d1.fraction, 0); assert.equal(d1.protectedBlock, null); // the flag suppresses nothing here anymore
   assert.deepEqual(p.exitPending, {});                             // no pending could arm under the flag
   delete p.protected;                                              // POST /unprotect
   const d2 = run(p, mark(0.0204), confBeCfg, NOW + 2 * S);
-  assert.equal(d2.fraction, 0); assert.equal(p.exitPending.ratchet, NOW + 2 * S); // fresh window opens
+  assert.equal(d2.fraction, 0); assert.equal(p.exitPending.ratchet, undefined); // no fresh window opens — the ratchet is stripped for everyone
   const d3 = run(p, mark(0.0204), confBeCfg, NOW + 13 * S);
-  assert.equal(d3.fraction, 1); assert.match(d3.reason, /break-even ratchet/);
+  assert.equal(d3.fraction, 0); assert.equal(d3.reason, null);
 });

@@ -1,14 +1,14 @@
-// DEAD-FLOW EXIT AT ALTITUDE — STRIPPED (user order 2026-10-15 ~17:05 EDT, the
-// exit-stack strip): the rule is disabled IN CODE (src/exits.js STRIP.deadflow).
-// The drive sequences below are its former trigger conditions, kept verbatim —
-// every one now pins that the rule can neither arm nor fire, at the shipped
-// knob values. Original design, for the record: a PRE-TP1 position whose peak
-// realizable move reached +8% sold in full when its own flow flatlined for a
-// full 45s window (buy count rises <= 1), no new peak inside the window, and
-// the move >= 1pt below the window-start peak.
-// Founding case: Scout (Anti-AI Dog), 2026-10-15 — peaked ~+12% realizable,
-// buys flatlined for minutes, chopped, round-tripped to −0.4% (probation
-// expiry, −0.0009 SOL); the rule used to fire ~45s into the stall.
+// DEAD-FLOW EXIT — REPOSITIONED POST-TP2 (exit-stack v2, user order 2026-10-15
+// ~20:26 EDT). The rule's first incarnation judged PRE-TP1 positions at
+// altitude (founding case Scout/AAD: peaked ~+12% realizable, buys flatlined,
+// round-tripped to −0.4%); the 2026-10-15 strip disabled that placement, and
+// v2 re-specified the stack with dead flow owning exactly one stage — the
+// MOONBAG: a post-TP2 remainder whose own flow flatlines for a full rolling
+// window (buy count rises <= deadflowMaxBuyDelta), with no new peak inside
+// the window and the move >= 1pt below the window-start peak, sells in full.
+// The drive sequences in the first block are the former PRE-TP1 trigger
+// conditions, kept verbatim — every one pins that nothing pre-TP2 can arm or
+// fire anymore. The second block pins the new post-TP2 behavior.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { evaluateExit } from '../src/exits.js';
@@ -201,6 +201,96 @@ test('strip: a data gap (restart) and a full fresh window after it — still no 
   const tail = drive(p, [{ ratio: 1.105, buys: 150, sells: 40 }]);
   assert.equal(tail[0].fraction, 0, 'the former post-gap fire check holds — there is no window judgment anymore');
   assert.equal(tail[0].reason, null);
+});
+
+// ---- POST-TP2 (exit-stack v2): the rule's only stage now ----
+// A moonbag-stage fixture: TP1 + TP2 banked, 25% riding, peak 1.90x. The
+// moonbag trail (bagTrailPct 0.15 at test defaults) lines at 1.615 — the flat
+// 1.86 prints below stay well above it, so only dead flow can act.
+const bag = (o = {}) => fresh({ tp1Done: true, tp2Done: true, pathClass: 'ladder', remainingFrac: 0.25, peakRatio: 1.9, peakMove: 1.9, postTp1PeakMove: 1.9, ...o });
+const BAG_CLIMB = [1.90, 1.90, 1.90];
+const BAG_CLIMB_B = [300, 306, 312];
+
+test('v2 post-TP2: the bag arms on its first check (peak far past the +8% line)', () => {
+  const p = bag();
+  const ds = drive(p, seq([1.90], [300]));
+  assert.deepEqual(ds[0].deadflowEvents, [{ type: 'armed' }]);
+  assert.equal(p.deadflowArmed, true);
+  assert.equal(ds[0].fraction, 0);
+});
+
+test('v2 post-TP2: a full 45s window of dead flow sells the whole bag — not before the window completes', () => {
+  const p = bag();
+  const ds = drive(p, [...seq(BAG_CLIMB, BAG_CLIMB_B), ...flat(14, 1.86, 312)]);
+  const fireIdx = ds.findIndex(d => d.fraction === 1);
+  assert.ok(fireIdx >= 13, `no fire before the window can complete (fired at index ${fireIdx})`);
+  assert.ok(ds.slice(0, fireIdx).every(d => d.fraction === 0));
+  // (the drive keeps judging after the fire — the live bot removes the position
+  // on the full sell, so later identical fires are a harness artifact)
+  assert.match(ds[fireIdx].reason, /^dead flow after TP2 \(\+86\.0%, 0 new buys in 45s, peak stalled\)$/);
+  assert.deepEqual(ds[fireIdx].deadflowEvents, [{ type: 'fired' }]);
+});
+
+test('v2 post-TP2: the live 120s window value fires at its own lapse, with the window in the reason', () => {
+  const cfgX = testCfg({ txFeeSol: 0, dipStopPct: 0, lockKeep: 0, stallSec: 0, stallProbationSec: 0, beArmPct: 0, deadflowWindowSec: 120 });
+  const p = bag();
+  const ds = drive(p, [...seq(BAG_CLIMB, BAG_CLIMB_B), ...flat(34, 1.86, 312)], cfgX);
+  const fireIdx = ds.findIndex(d => d.fraction === 1);
+  assert.ok(fireIdx >= 31, `no fire before the 120s window can complete (fired at index ${fireIdx})`);
+  assert.ok(ds.slice(0, fireIdx).every(d => d.fraction === 0));
+  assert.match(ds[fireIdx].reason, /^dead flow after TP2 \(\+86\.0%, 0 new buys in 120s, peak stalled\)$/);
+});
+
+test('v2 post-TP2: live flow (buys still rising) never fires, however long the plateau', () => {
+  const p = bag();
+  const buys = Array.from({ length: 14 }, (_, i) => 315 + i * 3);
+  const ds = drive(p, [...seq(BAG_CLIMB, BAG_CLIMB_B), ...seq(Array(14).fill(1.86), buys)]);
+  assert.ok(ds.every(d => d.fraction === 0));
+  assert.equal(p.deadflowArmed, true);   // armed — it is the flow, not the arming, that holds the fire
+});
+
+test('v2 post-TP2: a new peak inside the window voids it — no fire while the peak is still in-window', () => {
+  const p = bag();
+  const ds = drive(p, [
+    ...seq(BAG_CLIMB, BAG_CLIMB_B),
+    ...flat(10, 1.86, 312),
+    { ratio: 1.93, buys: 312, sells: 40 },   // fresh peak mid-window
+    ...flat(8, 1.86, 312),
+  ]);
+  assert.ok(ds.every(d => d.fraction === 0));
+});
+
+test('v2 post-TP2: protect suppresses the fire and reports the block — the bag rides', () => {
+  const p = bag({ protected: true });
+  const ds = drive(p, [...seq(BAG_CLIMB, BAG_CLIMB_B), ...flat(14, 1.86, 312)]);
+  assert.ok(ds.every(d => d.fraction === 0), 'protection never sells');
+  assert.ok(ds.every(d => !(d.deadflowEvents || []).some(e => e.type === 'fired')), 'no fire event under the flag');
+  assert.equal(ds[ds.length - 1].protectedBlock, 'dead flow');
+});
+
+test('v2 post-TP2: a deep fade still exits via the moonbag trail — the trail keeps its label and precedence', () => {
+  const p = bag();
+  const ds = drive(p, [...seq(BAG_CLIMB, BAG_CLIMB_B), { ratio: 1.55, buys: 312, sells: 40 }]); // 1.55 <= 1.9 x 0.85
+  const d = ds[ds.length - 1];
+  assert.equal(d.fraction, 1);
+  assert.match(d.reason, /^moonbag trail/);
+  assert.ok(!(d.deadflowEvents || []).some(e => e.type === 'fired'));
+});
+
+test('v2: a post-TP1 / pre-TP2 runner in dead flow never arms and never fires — the ladder owns it', () => {
+  const p = fresh({ tp1Done: true, pathClass: 'ladder', remainingFrac: 0.6, peakRatio: 1.9, peakMove: 1.9, postTp1PeakMove: 1.9 });
+  const ds = drive(p, [...seq(BAG_CLIMB, BAG_CLIMB_B), ...flat(14, 1.86, 312)]);
+  assert.ok(ds.every(d => d.fraction === 0));
+  assert.ok(ds.every(d => !(d.deadflowEvents || []).length), 'no arming before TP2');
+  assert.ok(!p.deadflowArmed);
+});
+
+test('v2 post-TP2: a bag whose peak never reached the arm line never arms (and cannot fire)', () => {
+  const p = bag({ peakRatio: 1.05, peakMove: 1.05, postTp1PeakMove: 1.05 });
+  const ds = drive(p, [...flat(17, 1.03, 312)]);
+  assert.ok(ds.every(d => d.fraction === 0));
+  assert.ok(ds.every(d => !(d.deadflowEvents || []).length));
+  assert.ok(!p.deadflowArmed);
 });
 
 // ---- config ----

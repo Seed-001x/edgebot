@@ -231,12 +231,16 @@ test('ensureClose: a position the judge never saw armed gets NO completion recor
   assert.equal(r.bot.stats.ratchetShadow.completed, 0);
 });
 
-// ---- zero behavior change: the MINDPAD shape through the real position loop ----
-test('managePosition: armed position crashes through the line — live ratchet sells as today; shadow records would-fire + completion alongside', async () => {
+// ---- the MINDPAD shape through the real position loop (exit-stack v2): the
+//      LIVE Tratchet is stripped in code, so the position now rides through
+//      the crash — but the shadow judge is a separate record-only module and
+//      keeps scoring exactly as before: would-fire records, completion waits
+//      for whatever exit eventually closes the position. ----
+test('managePosition: armed position crashes through the line — the live stack holds (Tratchet stripped in v2); the shadow judge still records its would-fire', async () => {
   const r = shadowRig();
   const pos = r.pos();
   r.bot.positions.push(pos);
-  // check 1: mark at move 1.12 (peak +12% on the realizable quote) — arms both ratchets, no exit
+  // check 1: mark at move 1.12 (peak +12% on the realizable quote) — arms the shadow judge, no exit
   r.mark = 0.1 * 1.12 * 0.972;
   await r.bot.managePosition(pos, 150);
   assert.equal(r.bot.positions.length, 1);
@@ -246,21 +250,16 @@ test('managePosition: armed position crashes through the line — live ratchet s
   r.bot.noteTrade('MINT1', { ts: r.clock.t + 1000, side: 'sell', sol: 1.6, tokens: 10, price: 0.16 });
   r.bot.noteTrade('MINT1', { ts: r.clock.t + 2000, side: 'sell', sol: 0.9, tokens: 10, price: 0.09 });
   r.bot.noteTrade('MINT1', { ts: r.clock.t + 2000, side: 'buy', sol: 0.3, tokens: 10, price: 0.03 });
-  // check 2 (4s later): the coin has crashed to move 0.93 — through the +2% trigger
+  // check 2 (4s later): the coin has crashed to move 0.93 — through the old +2% trigger
   r.clock.t += 4000;
   r.mark = 0.1 * 0.93 * 0.972;
   await r.bot.managePosition(pos, 150);
-  assert.equal(r.bot.positions.length, 0, 'the live ratchet must sell exactly as it does today');
+  assert.equal(r.bot.positions.length, 1, 'no live ratchet exists anymore — the position rides');
   const closes = r.bot.journal.trades.filter(t => t.type === 'close');
-  assert.equal(closes.length, 1);
-  assert.match(closes[0].reason, /^break-even ratchet/);
+  assert.equal(closes.length, 0);
   const recs = r.shadowRecs();
-  assert.equal(recs.length, 2);
+  assert.equal(recs.length, 1);
   assert.equal(recs[0].kind, 'would-fire');
   assert.equal(recs[0].moveAtFire, 0.93);
-  assert.equal(recs[1].kind, 'closed');
-  assert.equal(recs[1].ratchetFired, true);
-  assert.equal(recs[1].wouldFire, true);
-  assert.equal(recs[1].actualExitMove, 0.93);
-  assert.deepEqual(r.bot.stats.ratchetShadow, { wouldFire: 1, completed: 1 });
+  assert.deepEqual(r.bot.stats.ratchetShadow, { wouldFire: 1, completed: 0 });
 });

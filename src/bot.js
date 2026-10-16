@@ -1849,13 +1849,14 @@ export class Bot {
         else if (ev.type === 'reentry') this.stats.killzone.reentryKills++;
       }
     }
-    // Dead-flow exit at altitude (user 2026-10-15): count armings (a pre-TP1
-    // position's peak move reached the arm line — counted once per position,
-    // exits.js emits the event only on the transition) and fires.
+    // Dead-flow exit (user 2026-10-15; repositioned post-TP2 by exit-stack
+    // v2): count armings (a post-TP2 position's peak move reached the arm
+    // line — counted once per position, exits.js emits the event only on the
+    // transition) and fires.
     if (decision.deadflowEvents && decision.deadflowEvents.length) {
       this.stats.deadflow = this.stats.deadflow || { armed: 0, fired: 0 };
       for (const ev of decision.deadflowEvents) {
-        if (ev.type === 'armed') { this.stats.deadflow.armed++; console.log(`[deadflow] ${pos.symbol}: armed (peak move reached +${Math.round(this.cfg.deadflowArmPct * 100)}% pre-TP1)`); }
+        if (ev.type === 'armed') { this.stats.deadflow.armed++; console.log(`[deadflow] ${pos.symbol}: armed (peak move reached +${Math.round(this.cfg.deadflowArmPct * 100)}% post-TP2)`); }
         else if (ev.type === 'fired') this.stats.deadflow.fired++;
       }
     }

@@ -35,10 +35,11 @@ const bleedCfg = { ...cfg, dipStopPct: 0, stallSec: 0 };
 const hist = (...prints) => prints.map(([agoSec, move]) => ({ ts: NOW - agoSec * S, move }));
 
 test('takeover: every LIVE exit family is skipped — the whole stack holds at fraction 0', () => {
-  // Shape list = the families that can still sell after the 2026-10-15 strip.
+  // Shape list = the families that can still sell after the 2026-10-15 strip + v2.
   // (Dip stop / stall / probation leash + expiry / bleed shapes were here until
-  // the strip: their controls no longer sell for ANY position, taken or not, so
-  // there is nothing left for takeover to skip — exits.test.mjs pins that.)
+  // the strip, and the break-even ratchet / time stop / max hold until v2: their
+  // controls no longer sell for ANY position, taken or not, so there is nothing
+  // left for takeover to skip — exits.test.mjs pins that.)
   const tp1Fixed = { ...cfg, tp1AdaptMax: cfg.tp1Pct };
   const shapes = [
     ['liquidity death', () => pos(), () => mark(0.05, { liqUsd: 1500 }), cfg, /liquidity death/],
@@ -46,10 +47,7 @@ test('takeover: every LIVE exit family is skipped — the whole stack holds at f
     ['TP2', () => pos({ tp1Done: true, remainingFrac: 0.6 }), () => mark(0.0264), cfg, /TP2/],
     ['moonbag trail', () => pos({ tp1Done: true, tp2Done: true, remainingFrac: 0.25, peakRatio: 2 }), () => mark(0.006), cfg, /moonbag trail/],
     ['post-TP1 trail', () => pos({ tp1Done: true, remainingFrac: 0.6, peakRatio: 1.30 }), () => mark(0.01152), cfg, /post-TP1 trail/],
-    ['break-even ratchet', () => pos({ entryTs: NOW - 30 * S, peakMove: 1.12, exitPending: {} }), () => mark(0.0204), { ...beCfg, exitConfirmSec: 0 }, /break-even ratchet/],
     ['momentum failure', () => pos({ entryTs: NOW - 15 * 60000 }), () => mark(0.019, { buysM5: 0, sellsM5: 10 }), { ...cfg, dipStopPct: 0, stopHardPct: 0, stopLoss: 0, stallSec: 0 }, /momentum failure/],
-    ['time stop', () => pos({ entryTs: NOW - 30 * 60000, tp1Done: true, remainingFrac: 0.6, peakRatio: 1.05 }), () => mark(0.0126), cfg, /time stop/],
-    ['max hold', () => pos({ entryTs: NOW - 130 * 60000, tp1Done: true, remainingFrac: 0.6, peakRatio: 1.5 }), () => mark(0.018), cfg, /max hold/],
   ];
   for (const [name, mkPos, mkMark, c, reason] of shapes) {
     const ctl = evaluateExit(mkPos(), mkMark(), c, NOW);
@@ -270,27 +268,33 @@ test('managePosition: a taken-over position rides through a crash — no sell, p
   assert.equal(r.bot.stats.takeover.sellsSuppressed, 3);     // one suppressed judging pass per check
 });
 
-test('managePosition: release restores judging — a matured pre-takeover pending does NOT fire instantly; a fresh window arms, then sells', async () => {
+test('managePosition: release restores judging — the stale ratchet pending is inert under v2; a fresh TP1 print banks normally', async () => {
   const r = loopRig();
-  const pos = r.pos({ peakMove: 1.12, exitPending: { ratchet: LT0 - 12000 } }); // ratchet pending already matured (12s > 10s window)
+  const pos = r.pos({ peakMove: 1.12, exitPending: { ratchet: LT0 - 12000 } }); // pre-v2 ratchet pending, already matured (12s > 10s window)
   r.bot.positions.push(pos);
   r.bot.takeoverPosition('MINT1');
   assert.deepEqual(pos.exitPending, {});                     // dropped at set time
-  r.mark = 0.1 * 1.01 * 0.972;                               // move 1.01 — inside the armed ratchet's trigger
+  r.mark = 0.1 * 1.01 * 0.972;                               // move 1.01 — inside the old ratchet's trigger
   await r.bot.managePosition(pos, 150);
   assert.equal(r.sells, 0);                                  // suppressed under takeover
   r.bot.releasePosition('MINT1');
   r.clock.t += 2000;
   await r.bot.managePosition(pos, 150);
-  assert.equal(r.sells, 0);                                  // NO instant sell off the stale pending — a fresh window arms instead
-  assert.equal(pos.exitPending.ratchet, r.clock.t);
-  r.clock.t += 11000;                                        // the fresh window matures with the trigger still true
+  assert.equal(r.sells, 0);                                  // NO sell off the fossil pending — and no fresh window arms (the ratchet is stripped)
+  assert.equal(pos.exitPending.ratchet, undefined);
+  r.clock.t += 11000;                                        // time passing changes nothing for the fossil
   await r.bot.managePosition(pos, 150);
-  assert.equal(r.sells, 1);
-  assert.equal(r.bot.positions.length, 0);
-  const closes = r.bot.journal.trades.filter(t => t.type === 'close');
-  assert.equal(closes.length, 1);
-  assert.match(closes[0].reason, /^break-even ratchet/);
+  assert.equal(r.sells, 0);
+  assert.equal(r.bot.positions.length, 1);
+  // judging itself is fully restored: a rip through the TP1 ceiling banks on schedule
+  r.mark = 0.1 * 1.70 * 0.972;                               // gain past the +60% adaptive ceiling
+  r.clock.t += 4000;
+  await r.bot.managePosition(pos, 150);
+  assert.equal(r.sells, 1);                                  // the TP1 sell executed
+  assert.equal(pos.tp1Done, true);
+  const sells = r.bot.journal.trades.filter(t => t.type === 'sell');
+  assert.equal(sells.length, 1);
+  assert.match(sells[0].reason, /^TP1 /);
 });
 
 test('managePosition: the no-quote force-exit is suppressed while taken over (and fires for the control)', async () => {
