@@ -431,6 +431,7 @@ export function loadConfig(env = process.env) {
     slFinalPct: num(env, 'SL_FINAL_PCT', 0.30),           // FINAL rung: first check at/below −this starts a flat slFinalSec countdown — only a full recovery above the arm line inside it saves the position
     slFinalSec: num(env, 'SL_FINAL_SEC', 10),             // ...the final countdown
     slHandoffPct: num(env, 'SL_HANDOFF_PCT', 0.15),       // the limbo line: at/below −this at soft expiry sells; above it (after a deep print, or at soft expiry) the flow handoff judges — the undertaker's conjunction (buysM5 ≤ 1, sellsM5 > 3× buysM5) with NO 10-minute age gate
+    slMinAgeSec: num(env, 'SL_MIN_AGE_SEC', 180),         // 3-MINUTE ENGAGEMENT GATE (user 2026-10-16 18:37 EDT, after the ladder's first fire sold a 74-second-old position at −25% and the coin bounced): before a position is this old the ladder is ABSENT for it — no arm, no state, no deadlines accrue; at the first check at/past this age the machine engages on the CURRENT gain with every clock starting at that check ("if after the 3m timer it is at -10% then the count starts; if it's at -25-30% then it goes accordingly to how we had it"). 0 = the ladder judges from entry, exactly as first built
     dipStopPct: num(env, 'DIP_STOP_PCT', 0.05),           // sell if PRICE drops this far below entry (0 = off)
     stallSec: num(env, 'STALL_SEC', 60),                  // entry stall: sell if price never breaks out within this many seconds of entry (0 = off)
     stallBandPct: num(env, 'STALL_BAND_PCT', 0.05),       // entry range half-width: at stallSec the price must be OUTSIDE entry ± this or the position sells (user 2026-10-13 endpoint version)
@@ -555,6 +556,7 @@ export function validateConfig(cfg) {
   if (cfg.slDeepCapSec < 0 || cfg.slDeepCapSec > 3600) errs.push('SL_DEEP_CAP_SEC must be between 0 and 3600');
   if (cfg.slPenaltySec < 0 || cfg.slPenaltySec > 600) errs.push('SL_PENALTY_SEC must be between 0 and 600');
   if (cfg.slFinalSec < 0 || cfg.slFinalSec > 600) errs.push('SL_FINAL_SEC must be between 0 and 600');
+  if (cfg.slMinAgeSec < 0 || cfg.slMinAgeSec > 3600) errs.push('SL_MIN_AGE_SEC must be between 0 and 3600');
   if (cfg.stopXcheckPct < 0.05 || cfg.stopXcheckPct > 0.9) errs.push('STOP_XCHECK_PCT must be between 0.05 and 0.9');
   if (cfg.extMaxFromBase < 0 || cfg.extMaxFromBase > 20) errs.push('EXT_MAX_FROM_BASE must be between 0 and 20 (0 = off)');
   if (cfg.paceRelax < 0 || cfg.paceRelax > 1) errs.push('PACE_RELAX must be 0 or 1');

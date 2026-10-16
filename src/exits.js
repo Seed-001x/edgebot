@@ -71,6 +71,16 @@
 // bounce the sellers are still dominating is not a recovery. Judged on
 // `gain` like the TP ladder, pre-TP1 + middle stages only; the undertaker
 // (5) stays as the 10-minute backstop, unchanged.
+// 3-MINUTE ENGAGEMENT GATE (user 2026-10-16 18:37 EDT, added the same
+// evening after the ladder's first live fire): the ladder's first position
+// ran the full rung stack and sold 74 seconds after entry at −25% — and
+// bounced hard immediately after. The owner's correction: "re add the 3m
+// timer... if after the 3m timer it is at -10% then the count starts.
+// Vice versa if it's at -25-30% then it goes accordingly to how we had
+// it." So before a position is SL_MIN_AGE_SEC old the ladder is ABSENT
+// for it (no arm, no state, no deadlines — state prep enforces it), and
+// at the first check at/past the gate the machine engages on the CURRENT
+// gain with every clock measured from that engagement check.
 const STRIP = {
   stopFamily: true,
   stallProbation: true,
@@ -198,12 +208,20 @@ export function evaluateExit(pos, mark, cfg, now) {
   // finalDeadline are null unless that rung's countdown is running.
   let slLadder = (pos.slLadder && typeof pos.slLadder === 'object') ? { ...pos.slLadder } : null;
   const slLadderEvents = [];
+  // 3-MINUTE ENGAGEMENT GATE (user 2026-10-16 18:37 EDT — see the header
+  // note): while a position is younger than SL_MIN_AGE_SEC the ladder is
+  // absent for it. "Young" is judged off the entry stamp; a position with
+  // no entryTs (legacy) fails open to the ungated behavior, like every
+  // other missing-field case in this engine. SL_MIN_AGE_SEC = 0 disables
+  // the gate outright (the ladder exactly as first built).
+  const slTooYoung = (cfg.slMinAgeSec || 0) > 0 && pos.entryTs != null && (now - pos.entryTs) < cfg.slMinAgeSec * 1000;
   // Scope, enforced here so no section below has to re-check it: the ladder
   // exists only while its switch is on and the position is pre-moonbag —
-  // reaching TP2 (or flipping SL_LADDER off) drops any carried state, and a
-  // check back above the arm line DISARMS outright (mirrors the grace stop's
-  // stopArmedTs reset above): re-arming needs a fresh breach.
-  if (!(cfg.slLadder > 0) || pos.tp2Done) slLadder = null;
+  // reaching TP2 (or flipping SL_LADDER off, or still being inside the
+  // engagement gate) drops any carried state, and a check back above the
+  // arm line DISARMS outright (mirrors the grace stop's stopArmedTs reset
+  // above): re-arming needs a fresh breach.
+  if (!(cfg.slLadder > 0) || pos.tp2Done || slTooYoung) slLadder = null;
   else if (slLadder && gain > -cfg.slArmPct) { slLadder = null; slLadderEvents.push({ type: 'disarmed' }); }
   // PROTECT switch (user 2026-10-15, "just the stop loss… no ratchet", "no SL until I
   // say"): a one-time, per-position flag set via POST /protect while the user rides a
@@ -407,6 +425,20 @@ export function evaluateExit(pos, mark, cfg, now) {
   //          handoff ends on a full disarm, a fresh deep print (snap-back
   //          re-runs), a final-rung print, or the hard cap — which still
   //          sells from inside a handoff.
+  //      ENGAGEMENT GATE — none of the above exists before the position is
+  //      SL_MIN_AGE_SEC old: state prep (slTooYoung) already dropped any
+  //      young state, and the arming condition below never engages while
+  //      young, so no rung, deadline or handoff can accrue pre-gate. At
+  //      the first check at/past the gate with the position at/below the
+  //      arm line, the arm stamps armTs = THAT check and the rung
+  //      transitions run on the current print — a position sitting at
+  //      −25–30% at its 3-minute check composes deep clamp + penalty +
+  //      final countdown on the spot, exactly as a same-check flash does
+  //      on an already-armed position ("it goes accordingly to how we
+  //      had it"). Every deadline in this machine is therefore measured
+  //      from the engagement check, never from entry, and there is no
+  //      deferred-verdict queue: a young dip that recovered by the gate
+  //      check leaves nothing behind at all.
   //      Fires are plain full exits (fraction 1) on the ladder's own clocks
   //      — no EXIT_CONFIRM window on top. PROTECT silences it like the rest
   //      of the stop family (noteBlock; its state was already dropped in
@@ -417,7 +449,7 @@ export function evaluateExit(pos, mark, cfg, now) {
   if (cfg.slLadder > 0 && !pos.tp2Done) {
     if (prot) {
       if (gain <= -cfg.slArmPct) noteBlock('SL ladder'); // PROTECT: suppressed — reported, never armed, never fired
-    } else if (slLadder || gain <= -cfg.slArmPct) {
+    } else if (!slTooYoung && (slLadder || gain <= -cfg.slArmPct)) {
       if (!slLadder) {
         slLadder = {
           armTs: now, softDeadline: now + cfg.slSoftSec * 1000, hardDeadline: now + cfg.slCapSec * 1000,
