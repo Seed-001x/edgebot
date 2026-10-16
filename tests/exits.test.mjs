@@ -11,7 +11,7 @@ import { testCfg } from './helpers.mjs';
 // they cannot fire under their former trigger conditions, with their knobs at
 // live values. Dead flow survives ONLY as a post-TP2 exit (deadflow.test.mjs).
 // What remains live: the TP ladder, the post-TP1 middle trail, TP2 rejection,
-// momentum failure and liquidity death.
+// the stall exit and liquidity death.
 const cfg = testCfg({ stallProbationSec: 0 }); const NOW = 1_000_000_000_000;
 const pos = (o = {}) => ({ entrySol: 0.02, remainingFrac: 1, peakRatio: 1, tp1Done: false, entryTs: NOW - 5 * 60000, ...o });
 const mark = (valueSol, o = {}) => ({ valueSol, liqUsd: 200_000, buysM5: 30, sellsM5: 10, solUsd: 150, ...o });
@@ -266,11 +266,20 @@ test('strip v2: volume decay cannot fire — volume at 20% of entry, price flat,
   const older = evaluateExit(pos({ entryTs: NOW - 60 * 60000, entryVolH1: 100_000 }), mark(0.0196, { volH1: 5_000 }), cfg, NOW); // an hour in, volume at 5%: still holds
   assert.equal(older.fraction, 0);
 });
-test('momentum failure (the dead check) STILL fires — 15 min in, underwater, no buyers: the sole undertaker', () => {
-  const d = evaluateExit(pos({ entryTs: NOW - 15 * 60000 }), mark(0.019, { buysM5: 0, sellsM5: 10 }), cfg, NOW);
-  assert.equal(d.fraction, 1);
-  assert.equal(d.reason, 'momentum failure (no buyers)');
-  // and its conditions are unchanged: live two-way flow at the same age/price holds
+test('stall exit (the undertaker successor, user order 2026-10-16 19:24 EDT) — 15 min in, dead flow: the first check only stamps the pending; still dead 60s later it sells', () => {
+  // The old momentum-failure undertaker sold this print INSTANTLY (10 min in,
+  // underwater, no buyers). Its successor keeps the conjunction and the sole-
+  // undertaker seat, but: no price input (underwater is not a condition), the
+  // age gate is 3 minutes, and a 60s confirm stands between stamp and sell.
+  const p = pos({ entryTs: NOW - 15 * 60000 });
+  const d1 = evaluateExit(p, mark(0.019, { buysM5: 0, sellsM5: 10 }), cfg, NOW);
+  assert.equal(d1.fraction, 0);
+  assert.equal(d1.stallPending, NOW);
+  p.stallPending = d1.stallPending;
+  const d2 = evaluateExit(p, mark(0.019, { buysM5: 0, sellsM5: 10 }), cfg, NOW + 60 * S);
+  assert.equal(d2.fraction, 1);
+  assert.equal(d2.reason, 'stall exit (dead flow, 60s confirm)');
+  // and live two-way flow at the same age/price holds, pending or not
   assert.equal(evaluateExit(pos({ entryTs: NOW - 15 * 60000 }), mark(0.019, { buysM5: 30, sellsM5: 10 }), cfg, NOW).fraction, 0);
 });
 
@@ -539,7 +548,7 @@ const protPos = (o = {}) => pos({ protected: NOW - 60000, ...o });
 test('strip + protect: the deep stop-family print holds for protected AND unprotected alike; protect still clears stop state', () => {
   const d = evaluateExit(protPos(), mark(0.011), cfg, NOW);   // move 0.55 — deep in the old dip-stop / floor / grace territory
   assert.equal(d.fraction, 0);
-  assert.equal(d.protectedBlock, 'SL ladder');                // the STRIPPED family still reports nothing (the strip holds it) — but this print is deep in the SL ladder's territory, the ladder is LIVE (user 2026-10-16), and protect suppresses it and says so
+  assert.equal(d.protectedBlock, null);                       // the STRIPPED family reports nothing (the strip holds it) — and since the SL ladder's removal (user 2026-10-16 19:24 EDT) nothing live is left on this print for protect to suppress: the stall exit is flow-judged and this tape (30b/10s) is alive
   assert.equal(d.stopArmedTs, null);
   assert.equal(d.floorChecks, 0);
   const ctl = evaluateExit(pos(), mark(0.011), cfg, NOW);     // control: unprotected holds too now
@@ -559,7 +568,7 @@ test('strip + protect: stale hard-floor counters are cleared under the flag; the
   const p = protPos({ floorChecks: 1, floorSince: NOW - 10000 });
   const d = evaluateExit(p, mark(0.011, { buysM5: 1, sellsM5: 1 }), c, NOW);
   assert.equal(d.fraction, 0);
-  assert.equal(d.protectedBlock, 'SL ladder');                // the floor counters report nothing (stripped) — the suppressed live rule on this print is the SL ladder (user 2026-10-16)
+  assert.equal(d.protectedBlock, null);                       // the floor counters report nothing (stripped) — and no live rule is suppressed on this print either (1b/1s is not the stall exit's dead-flow conjunction: sells must exceed 3x buys)
   assert.equal(d.floorChecks, 0); assert.equal(d.floorSince, null);
   const ctl = evaluateExit(pos({ floorChecks: 1, floorSince: NOW - 10000 }), mark(0.011, { buysM5: 1, sellsM5: 1 }), c, NOW);
   assert.equal(ctl.fraction, 0); assert.equal(ctl.reason, null); // control: no second-check sell exists anymore
@@ -582,7 +591,7 @@ test('protect: a bleed pending is left exactly as it was — still armed, still 
   assert.equal(d.exitPending.bleed, NOW - 5000);              // bleed pending preserved to the tick
   assert.equal(d.exitPending.ratchet, undefined);             // only the ratchet pending was dropped
   assert.deepEqual(d.exitConfirmEvents, []);
-  assert.equal(d.protectedBlock, 'SL ladder');                // the bleed itself proceeded normally (pending preserved above) — what the flag suppressed on this print is the SL ladder: net −10.6% sits just past its −10% arm line (user 2026-10-16)
+  assert.equal(d.protectedBlock, null);                       // the bleed itself proceeded normally (pending preserved above) — and nothing else live is suppressed on this print: the tape (30b/10s) is alive, so the stall exit has nothing to stamp, protected or not
 });
 test('strip + protect: the bleed print cannot fire, protected or not', () => {
   const p = protPos({ entryTs: NOW - 200 * S, moveHist: hist([60, 0.92]), exitPending: {} });

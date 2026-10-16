@@ -165,8 +165,14 @@ export class Bot {
   }
 
   loadStats() {
-    try { const s = JSON.parse(fs.readFileSync(this.statsFile, 'utf8')); Object.assign(this.stats, s); return; }
+    let loaded = false;
+    try { const s = JSON.parse(fs.readFileSync(this.statsFile, 'utf8')); Object.assign(this.stats, s); loaded = true; }
     catch { /* no saved stats */ }
+    // STALL-EXIT simplification (user order 2026-10-16 19:24 EDT): the removed
+    // SL ladder's counters die with it — a stats file persisted during the
+    // ladder's few live hours must not resurrect them on /state.
+    delete this.stats.slLadder; delete this.stats.ladderOff;
+    if (loaded) return;
     // Seed from journal history so dashboard isn't empty after first deploy with persistence
     try {
       if (this.journal) {
@@ -536,57 +542,6 @@ export class Bot {
     return p;
   }
 
-  // LADDER-OFF switch (user 2026-10-16 19:09 EDT, "create a switch to switch
-  // off this SL system for this coin or any coin I choose to do it on so it
-  // could be done quick"): a per-position flag set via POST /ladderoff that
-  // silences ONLY the SL ladder (exits.js 3b2) for that one coin —
-  // deliberately NARROWER than protect, which also touches the stop family,
-  // the ratchet and the kill zone. While set, the ladder does not arm, track
-  // or fire for the position, and any armed probation record drops the
-  // moment the flag lands (here, and again in exits.js state prep, so a
-  // stale record can never execute). Everything else — the TP banks, TP2
-  // rejection, the undertaker, the moonbag exits, liquidity death — judges
-  // exactly as normal. The flag lives ON the position record (persisted by
-  // savePositions, so it survives restarts), holds for the life of the
-  // position with no expiry, and clears only when the position closes (the
-  // record goes with it — a rebuy starts with the ladder on) or when
-  // ladderOnPosition clears it early. Re-setting an already-off position is
-  // a no-op that does not double-count the set.
-  ladderOffPosition(key) {
-    const p = this.positions.find(x => x.mint === key || x.id === key || x.symbol === key);
-    if (!p) return null;
-    if (!p.ladderOff) {
-      p.ladderOff = this.now();
-      p.slLadder = null; // an armed probation record dies with the flip — nothing ladder-shaped may execute under the flag
-      this.stats.ladderOff = this.stats.ladderOff || { set: 0, cleared: 0 };
-      this.stats.ladderOff.set++;
-      console.log(`[ladder-off] ${p.symbol} SL ladder OFF at ${new Date(p.ladderOff).toISOString()} — the ladder will not judge this coin until /ladderon or close`);
-    }
-    this.savePositions();
-    return p;
-  }
-
-  // Clears the ladder-off flag early (POST /ladderon). Resuming invents no
-  // state and re-runs no gate from the toggle moment: the ladder re-derives
-  // from the position's real age on the next checks — a coin already past
-  // SL_MIN_AGE_SEC engages fresh on its next breach exactly as the
-  // engagement gate judges any position of that age, and a younger coin is
-  // still gated from its entry stamp. Returns the position when a flag was
-  // cleared, false when the position exists but its ladder is already on,
-  // null when no open position matches — the route maps those to
-  // 200 / 404 / 404, exactly like unprotect.
-  ladderOnPosition(key) {
-    const p = this.positions.find(x => x.mint === key || x.id === key || x.symbol === key);
-    if (!p) return null;
-    if (!p.ladderOff) return false;
-    delete p.ladderOff;
-    this.stats.ladderOff = this.stats.ladderOff || { set: 0, cleared: 0 };
-    this.stats.ladderOff.cleared++;
-    this.savePositions();
-    console.log(`[ladder-off] ${p.symbol} SL ladder back ON — judging resumes under the normal rules from the position's real age`);
-    return p;
-  }
-
   // TP1 OVERRIDE (user 2026-10-16 19:12 EDT, "arm tp1 to hit at 50% / not
   // 20%-60% / just for this coin"): POST /tp1at pins one position's TP1 to a
   // flat net-gain line (pos.tp1AtPct, a fraction — 0.5 = +50%). While set,
@@ -766,7 +721,7 @@ export class Bot {
       stamp: this.cfgStamp, gates: { adopted: true }, gatePass: null, decimals: close.decimals ?? null,
       entryFillSol: open.entryFillSol ?? close.entryFillSol ?? null, solUsdEntry: null, ticks: [],
       entryVolH1: snap ? snap.volH1 || 0 : 0,
-      entryRoundTrip: rtRatio, peakMove: Math.max(1, ratio0), stopArmedTs: null, floorChecks: 0, floorSince: null, probationSince: null, moveHist: [], exitPending: {}, slLadder: null, feesSol: this.cfg.txFeeSol || 0,
+      entryRoundTrip: rtRatio, peakMove: Math.max(1, ratio0), stopArmedTs: null, floorChecks: 0, floorSince: null, probationSince: null, moveHist: [], exitPending: {}, stallPending: null, feesSol: this.cfg.txFeeSol || 0,
       bw: { tracked: null, supply: 0, creator: null, weights: linkedWeights(null), snaps: [], vals: [], lastTs: 0, trimmed: false },
       entry: snap, lastTickTs: 0, lastChainTs: 0, chainDropStrikes: 0,
       adopted: true, adoptedTs: now, adoptOf: close.id || null, lastValueSol: valueSol,
@@ -2131,7 +2086,7 @@ export class Bot {
       stamp: this.cfgStamp, gates: checks, gatePass: g.pass, decimals: dec,
       entryFillSol: tokensWhole > 0 ? fill.solSpent / tokensWhole : null, solUsdEntry: solUsd || null, ticks: [],
       entryVolH1: v.volH1 || 0,
-      entryRoundTrip: rt.ratio, peakMove: 1, stopArmedTs: null, floorChecks: 0, floorSince: null, probationSince: null, moveHist: [], exitPending: {}, slLadder: null, feesSol: this.cfg.txFeeSol || 0, // buy tx fee // entry stall: price is at entry (move 1.0) by definition; the 60s clock runs from entryTs
+      entryRoundTrip: rt.ratio, peakMove: 1, stopArmedTs: null, floorChecks: 0, floorSince: null, probationSince: null, moveHist: [], exitPending: {}, stallPending: null, feesSol: this.cfg.txFeeSol || 0, // buy tx fee // entry stall: price is at entry (move 1.0) by definition; the 60s clock runs from entryTs
       bw: { tracked: null, supply: rug && rug.token ? Number(rug.token.supply) || 0 : 0, creator: rug && rug.creator ? String(rug.creator) : null, weights: linkedWeights(rug), snaps: [], vals: [], lastTs: 0, trimmed: false },
       entry: snapshotFeatures({ v, sig, rug, g, now: n }), lastTickTs: 0, lastChainTs: 0, chainDropStrikes: 0,
     };
@@ -2329,7 +2284,7 @@ export class Bot {
     if ('killZone' in decision) pos.killZone = decision.killZone;
     if ('postTp1PeakMove' in decision) pos.postTp1PeakMove = decision.postTp1PeakMove;
     if ('deadflowArmed' in decision) pos.deadflowArmed = decision.deadflowArmed;
-    if ('slLadder' in decision) pos.slLadder = decision.slLadder;
+    if ('stallPending' in decision) pos.stallPending = decision.stallPending;
     // fail-safe confirmation outcomes (user 2026-10-14): count the windows that held to a
     // sell vs the triggers that recovered and were cancelled — the layer's report card.
     if (decision.exitConfirmEvents && decision.exitConfirmEvents.length) {
@@ -2363,17 +2318,17 @@ export class Bot {
         else if (ev.type === 'fired') this.stats.deadflow.fired++;
       }
     }
-    // SL LADDER (user 2026-10-16): lifecycle counts — probation arms, full
-    // disarms (recovery above the arm line), flow handoffs and fires. The
-    // fire itself rides the normal sell path: the close journals the
-    // decision's "SL ladder (...)" reason with its rung path.
-    if (decision.slLadderEvents && decision.slLadderEvents.length) {
-      this.stats.slLadder = this.stats.slLadder || { arms: 0, fires: 0, disarms: 0, handoffs: 0 };
-      for (const ev of decision.slLadderEvents) {
-        if (ev.type === 'armed') { this.stats.slLadder.arms++; console.log(`[sl-ladder] ${pos.symbol}: probation armed at -${Math.round(this.cfg.slArmPct * 100)}% (soft ${this.cfg.slSoftSec}s / cap ${this.cfg.slCapSec}s)`); }
-        else if (ev.type === 'disarmed') { this.stats.slLadder.disarms++; console.log(`[sl-ladder] ${pos.symbol}: disarmed — back above the arm line`); }
-        else if (ev.type === 'handoff') { this.stats.slLadder.handoffs++; console.log(`[sl-ladder] ${pos.symbol}: flow handoff — the tape judges from here`); }
-        else if (ev.type === 'fired') this.stats.slLadder.fires++;
+    // STALL EXIT (user order 2026-10-16 19:24 EDT): lifecycle counts —
+    // pendings stamped (dead flow first seen past the age gate), pendings
+    // cancelled (the tape showed life inside the confirm window) and
+    // fires. The fire itself rides the normal sell path: the close
+    // journals the decision's "stall exit (...)" reason.
+    if (decision.stallEvents && decision.stallEvents.length) {
+      this.stats.stallExit = this.stats.stallExit || { pendings: 0, cancelled: 0, fires: 0 };
+      for (const ev of decision.stallEvents) {
+        if (ev.type === 'pending') { this.stats.stallExit.pendings++; console.log(`[stall-exit] ${pos.symbol}: dead flow — ${this.cfg.stallExitConfirmSec}s confirm window started`); }
+        else if (ev.type === 'cancelled') { this.stats.stallExit.cancelled++; console.log(`[stall-exit] ${pos.symbol}: flow revived inside the window — pending cancelled`); }
+        else if (ev.type === 'fired') this.stats.stallExit.fires++;
       }
     }
     // PROTECT switch (user 2026-10-15): count the checks where protection suppressed
@@ -2584,7 +2539,7 @@ export class Bot {
       tp1Done: !!pos.tp1Done, tp2Done: !!pos.tp2Done, tp1Arm: pos.tp1Arm || null,
       stallSince: pos.stallSince ?? null, stopArmedTs: pos.stopArmedTs ?? null,
       floorChecks: pos.floorChecks || 0, floorSince: pos.floorSince ?? null,
-      probationSince: pos.probationSince ?? null, moveHist: pos.moveHist || [], exitPending: {}, slLadder: pos.slLadder ?? null,
+      probationSince: pos.probationSince ?? null, moveHist: pos.moveHist || [], exitPending: {}, stallPending: pos.stallPending ?? null,
       flowHist: (pos.flowHist || []).slice(-45),
       manualTs: n, manualPnlSol: manual.pnlSol, manualMarkSol: manual.valueSol ?? null,
       // D1 follow-up: when the manual side was priced from the real sell tx,
@@ -2632,7 +2587,7 @@ export class Bot {
       limits: { tradeSol: this.risk.effectiveTradeSol(), maxPositions: this.cfg.maxPositions, dailyLossSol: this.cfg.dailyLossSol, maxTradesPerHour: this.cfg.maxTradesPerHour, tp1Pct: this.cfg.tp1Pct, tp1Frac: this.cfg.tp1Frac },
       watchlist: this.watch.size,
       pairedShadow: this.paired ? { pending: this.paired.pending.size, done: this.paired.done.length } : { pending: 0, done: 0 },
-      positions: this.positions.map(p => ({ id: p.id, symbol: p.symbol, mint: p.mint, setup: p.setup, entrySol: p.entrySol, remainingFrac: p.remainingFrac, peakRatio: +(p.peakRatio || 1).toFixed(2), heldMin: +((this.now() - p.entryTs) / 60000).toFixed(1), simulated: p.simulated, noTp: !!p.noTp, protected: p.protected || null, takenOver: p.takenOver || null, ladderOff: p.ladderOff || null, tp1AtPct: p.tp1AtPct ?? null, path: p.pathClass || null, slLadder: p.slLadder ? { armed: true, armTs: p.slLadder.armTs, deepest: +(p.slLadder.deepest || 0).toFixed(3), deadline: Math.min(...[p.slLadder.softDeadline, p.slLadder.hardDeadline, p.slLadder.snapDeadline, p.slLadder.finalDeadline].filter(x => x != null)), inHandoff: !!p.slLadder.inHandoff } : null })),
+      positions: this.positions.map(p => ({ id: p.id, symbol: p.symbol, mint: p.mint, setup: p.setup, entrySol: p.entrySol, remainingFrac: p.remainingFrac, peakRatio: +(p.peakRatio || 1).toFixed(2), heldMin: +((this.now() - p.entryTs) / 60000).toFixed(1), simulated: p.simulated, noTp: !!p.noTp, protected: p.protected || null, takenOver: p.takenOver || null, tp1AtPct: p.tp1AtPct ?? null, path: p.pathClass || null, stallPending: p.stallPending ?? null })),
       // stats.shadowTrades is read from the tracker at read time so /state can
       // never show a stale report card between the maintained sync points
       // gtOutcomes is read from the gtFetch tallies at read time (same pattern

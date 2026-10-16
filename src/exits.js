@@ -56,31 +56,23 @@
 // the undertaker. STRIP-gated like the other kills — the section remains
 // in place but can never fire; re-enabling is a code change.
 //
-// SL LADDER (user 2026-10-16, dictated 17:53–18:05 EDT, "Go ahead and get
-// it built and implemented"; his name for it: "the SL ladder"): a NEW live
-// downside exit, section 3b2 — NOT part of the STRIP above and not gated by
-// it: the strip killed the old stop family (instant lines that sold local
-// bottoms), and the path study that followed showed a bare price stop has
-// nowhere to sit on this tape (winners dip as deep as losers; the median
-// worst dip is −85%). The ladder is the owner's answer: stops judged on
-// DEPTH + PERSISTENCE + FLOW instead of a line — one probation clock per
-// position (SL_SOFT_SEC soft deadline inside a SL_CAP_SEC hard cap, his
-// "3 total minutes"), and every deeper rung (deep −20% snap-back test,
-// −25% clock penalty, −30% final countdown) spends the clock faster.
-// Recovery hands the call to the flow (the −15% limbo handoff), because a
-// bounce the sellers are still dominating is not a recovery. Judged on
-// `gain` like the TP ladder, pre-TP1 + middle stages only; the undertaker
-// (5) stays as the 10-minute backstop, unchanged.
-// 3-MINUTE ENGAGEMENT GATE (user 2026-10-16 18:37 EDT, added the same
-// evening after the ladder's first live fire): the ladder's first position
-// ran the full rung stack and sold 74 seconds after entry at −25% — and
-// bounced hard immediately after. The owner's correction: "re add the 3m
-// timer... if after the 3m timer it is at -10% then the count starts.
-// Vice versa if it's at -25-30% then it goes accordingly to how we had
-// it." So before a position is SL_MIN_AGE_SEC old the ladder is ABSENT
-// for it (no arm, no state, no deadlines — state prep enforces it), and
-// at the first check at/past the gate the machine engages on the CURRENT
-// gain with every clock measured from that engagement check.
+// THE SIMPLIFICATION (user order 2026-10-16 19:24 EDT, "remove the mess we
+// just did. And simplify it" / "No SL rule aside from the 3M stall 60 sec
+// confirm"): the SL ladder — a price-rung probation machine (arm −10%,
+// deep −20% snap-back, −25% clock penalty, −30% final countdown, flow
+// handoff) built earlier the same evening — is REMOVED ENTIRE, together
+// with its per-coin ladder-off switch; and the 10-minute momentum-failure
+// undertaker that stood at section 5 since the strip is REPLACED by the
+// one rule the owner kept: the STALL EXIT (section 5) — the undertaker's
+// own dead-flow conjunction (buysM5 ≤ 1 AND sellsM5 > 3 × buysM5), judged
+// from 3 minutes of age instead of 10, with a 60-second confirm the
+// undertaker never had: the first dead check only stamps a pending, and
+// the sell needs the tape to STILL be dead when the window lapses. No
+// price input anywhere: price alone can never trigger, arm or cancel it.
+// What remains live in the stack: the TP ladder (TP1 adaptive / TP2 /
+// moonbag trail), TP2 rejection (3d-pre), moonbag dead flow (3c2),
+// liquidity death (1) and the stall exit (5) as the sole general downside
+// exit for pre-TP1 + middle positions.
 const STRIP = {
   stopFamily: true,
   stallProbation: true,
@@ -197,48 +189,24 @@ export function evaluateExit(pos, mark, cfg, now) {
     deadflowArmed = true;
     deadflowEvents.push({ type: 'armed' });
   }
-  // SL-ladder state (user 2026-10-16, section 3b2): the position's probation
-  // record while the ladder is armed — null = not armed. Persisted by the
-  // caller with the rest of the exit state, so an arm survives restarts; a
-  // position opened before this build carries none and starts unarmed.
-  // Shape: { armTs, softDeadline, hardDeadline, deepest, deepSeen,
-  // deepClamped, penalized, snapDeadline, finalDeadline, inHandoff } —
-  // deadlines are absolute ms; `deepest` is the deepest net-gain depth seen
-  // this arm (a positive fraction: 0.23 = printed −23%); snapDeadline /
-  // finalDeadline are null unless that rung's countdown is running.
-  let slLadder = (pos.slLadder && typeof pos.slLadder === 'object') ? { ...pos.slLadder } : null;
-  const slLadderEvents = [];
-  // 3-MINUTE ENGAGEMENT GATE (user 2026-10-16 18:37 EDT — see the header
-  // note): while a position is younger than SL_MIN_AGE_SEC the ladder is
-  // absent for it. "Young" is judged off the entry stamp; a position with
-  // no entryTs (legacy) fails open to the ungated behavior, like every
-  // other missing-field case in this engine. SL_MIN_AGE_SEC = 0 disables
-  // the gate outright (the ladder exactly as first built).
-  const slTooYoung = (cfg.slMinAgeSec || 0) > 0 && pos.entryTs != null && (now - pos.entryTs) < cfg.slMinAgeSec * 1000;
-  // LADDER-OFF switch (user 2026-10-16 19:09 EDT, "switch off this SL system
-  // for this coin or any coin I choose"): pos.ladderOff is the per-coin flag
-  // set via POST /ladderoff (bot.js owns the flag). While set, the SL ladder
-  // is absent for THIS position only — nothing arms, tracks or fires — and
-  // any carried probation record drops in the scope line below, so no rung
-  // deadline can execute under the flag. Deliberately narrower than
-  // protect: no other section reads this flag, so the TP banks, TP2
-  // rejection, the undertaker, the moonbag exits and liquidity death all
-  // judge exactly as normal.
-  const ladderOff = !!pos.ladderOff;
-  // Scope, enforced here so no section below has to re-check it: the ladder
+  // Stall-exit state (user order 2026-10-16 19:24 EDT, section 5): the
+  // pending stamp (ms) of the first dead-flow check inside the rule's
+  // confirm window — null = no pending. Persisted by the caller with the
+  // rest of the exit state, so a pending survives restarts; a position
+  // opened before this build carries none and starts unpended.
+  let stallPending = pos.stallPending ?? null;
+  const stallEvents = [];
+  // Scope, enforced here so no section below has to re-check it: the rule
   // exists only while its switch is on and the position is pre-moonbag —
-  // reaching TP2 (or flipping SL_LADDER off, or still being inside the
-  // engagement gate) drops any carried state, and a check back above the
-  // arm line DISARMS outright (mirrors the grace stop's stopArmedTs reset
-  // above): re-arming needs a fresh breach.
-  if (!(cfg.slLadder > 0) || pos.tp2Done || slTooYoung || ladderOff) slLadder = null;
-  else if (slLadder && gain > -cfg.slArmPct) { slLadder = null; slLadderEvents.push({ type: 'disarmed' }); }
+  // reaching TP2 (or flipping STALL_EXIT off) drops any carried pending,
+  // so no stale stamp can execute in a stage the rule does not own.
+  if (!(cfg.stallExit > 0) || pos.tp2Done) stallPending = null;
   // PROTECT switch (user 2026-10-15, "just the stop loss… no ratchet", "no SL until I
   // say"): a one-time, per-position flag set via POST /protect while the user rides a
   // coin himself. While protected, ONLY the stop-loss family (2a dip stop, 2a2 hard
   // floor, 2b grace stop), the break-even ratchet (4c) and the kill zone (4e — the
   // redesign widened the scope by exactly that one rule, user 2026-10-15) are
-  // skipped — the momentum failure and the full TP ladder judge exactly
+  // skipped — the stall exit (5) and the full TP ladder judge exactly
   // as normal. (Since the 2026-10-15 strip + v2, the stop family, kill zone, bleed,
   // probation/stall, the trails and Tratchet are off for EVERY position, protected or not;
   // the only suppression with live effect left is the post-TP2 dead flow's, 3c2.) The flag holds for the
@@ -254,7 +222,7 @@ export function evaluateExit(pos, mark, cfg, now) {
   let protectedBlock = null;
   const noteBlock = (kind) => { if (prot && !protectedBlock) protectedBlock = kind; };
   if (prot) {
-    stopArmedTs = null; floorChecks = 0; floorSince = null; slLadder = null; // PROTECT: the SL ladder is stop-family — its state drops too, so nothing can execute under the flag
+    stopArmedTs = null; floorChecks = 0; floorSince = null;
     if (exitPending != null) { delete exitPending.ratchet; delete exitPending.killzone; }
   }
   // TAKEOVER switch (user 2026-10-15, the XZON race: his manual sell collided with
@@ -272,9 +240,9 @@ export function evaluateExit(pos, mark, cfg, now) {
   // section 4b), so no clock that matured during the takeover can fire. Takeover
   // supersedes protect: with both flags set, this return wins and nothing judges.
   const taken = !!pos.takenOver;
-  const out = (fraction, reason) => ({ fraction, reason, newPeak: peakRatio, newPeakMove: peakMove, ratio, stallSince: null, stopArmedTs, floorChecks, floorSince, probationSince, tp1Arm, moveHist, exitPending, exitConfirmEvents, protectedBlock, killZone, postTp1PeakMove, killzoneEvents, deadflowArmed, deadflowEvents, slLadder, slLadderEvents });
+  const out = (fraction, reason) => ({ fraction, reason, newPeak: peakRatio, newPeakMove: peakMove, ratio, stallSince: null, stopArmedTs, floorChecks, floorSince, probationSince, tp1Arm, moveHist, exitPending, exitConfirmEvents, protectedBlock, killZone, postTp1PeakMove, killzoneEvents, deadflowArmed, deadflowEvents, stallPending, stallEvents });
   if (taken) {
-    stopArmedTs = null; floorChecks = 0; floorSince = null; probationSince = null; tp1Arm = null; slLadder = null;
+    stopArmedTs = null; floorChecks = 0; floorSince = null; probationSince = null; tp1Arm = null; stallPending = null;
     if (exitPending != null) exitPending = {};
     return { ...out(0, null), takenOver: true };
   }
@@ -372,8 +340,8 @@ export function evaluateExit(pos, mark, cfg, now) {
     // already makes a stale value on a middle-stage position inert. TPs
     // judge under protect, so the override does too; takeover returned
     // long before this section, so a taken-over position's override simply
-    // never fires. Nothing else reads the field — the SL ladder, the
-    // undertaker and every other position are untouched.
+    // never fires. Nothing else reads the field — the stall exit and
+    // every other position are untouched.
     if (pos.tp1AtPct > 0) {
       tp1Arm = null; // the adaptive arm does not survive into the override window
       if (gain >= pos.tp1AtPct) {
@@ -423,127 +391,6 @@ export function evaluateExit(pos, mark, cfg, now) {
   if (!modestActive && pos.tp1Done && !pos.tp2Done && !pos.noTp && cfg.tp2Frac > 0 && gain >= cfg.tp2Pct) {
     const frac = Math.min(1, cfg.tp2Frac / Math.max(pos.remainingFrac, 1e-9));
     return { ...out(frac, `TP2 +${(gain * 100).toFixed(0)}%`), tp2: true };
-  }
-
-  // 3b2. SL LADDER (user 2026-10-16, "the SL ladder" — see the header note):
-  //      ONE probation clock per position, and depth spends it faster. Judged
-  //      on `gain` (the engine's fee-aware net ruler), pre-TP1 and middle
-  //      stages only — state prep above already dropped any ladder record on
-  //      a tp2Done position, and the moonbag's own trail/dead flow own the
-  //      bag. The full state machine, in the owner's terms:
-  //        ARM — first check at/below −SL_ARM_PCT: softDeadline = now +
-  //          SL_SOFT_SEC, hardDeadline = now + SL_CAP_SEC (his "3 total
-  //          minutes"). A check back above the arm line disarms outright
-  //          (state prep); re-arming needs a fresh breach.
-  //        DEEP — first check at/below −SL_DEEP_PCT: the hard cap clamps to
-  //          armTs + SL_DEEP_CAP_SEC (his "2m04s" of probation at −20%) and
-  //          the SNAP-BACK TEST starts: SL_SNAPBACK_SEC to print back above
-  //          the deep line. A print above it passes (test cancels; a later
-  //          deep print re-runs it); still at/below when the window lapses
-  //          sells in full.
-  //        PENALTY — first check at/below −SL_PENALTY_PCT (once per arm):
-  //          SL_PENALTY_SEC comes off BOTH deadlines, never inside the
-  //          last 10s.
-  //        FINAL — first check at/below −SL_FINAL_PCT: a flat SL_FINAL_SEC
-  //          countdown. At expiry it sells regardless of flow or partial
-  //          recovery — only a full climb back above the arm line inside
-  //          the countdown (the prep disarm) saves the position.
-  //        SOFT EXPIRY — at softDeadline: still at/below −SL_HANDOFF_PCT
-  //          sells; inside the (−HANDOFF, −ARM) limbo the timer stops being
-  //          the judge and the FLOW HANDOFF takes over.
-  //        FLOW HANDOFF (the owner's recovery rule) — entered at soft expiry
-  //          in the limbo, or on ANY check that prints back into the limbo
-  //          after a deep print: the undertaker's flow conjunction with NO
-  //          10-minute age gate (buysM5 ≤ 1 AND sellsM5 > 3 × buysM5, the
-  //          same mark fields section 5 reads), re-judged every check while
-  //          in handoff. Aggressive sellers sell; calm flow holds. The
-  //          handoff ends on a full disarm, a fresh deep print (snap-back
-  //          re-runs), a final-rung print, or the hard cap — which still
-  //          sells from inside a handoff.
-  //      ENGAGEMENT GATE — none of the above exists before the position is
-  //      SL_MIN_AGE_SEC old: state prep (slTooYoung) already dropped any
-  //      young state, and the arming condition below never engages while
-  //      young, so no rung, deadline or handoff can accrue pre-gate. At
-  //      the first check at/past the gate with the position at/below the
-  //      arm line, the arm stamps armTs = THAT check and the rung
-  //      transitions run on the current print — a position sitting at
-  //      −25–30% at its 3-minute check composes deep clamp + penalty +
-  //      final countdown on the spot, exactly as a same-check flash does
-  //      on an already-armed position ("it goes accordingly to how we
-  //      had it"). Every deadline in this machine is therefore measured
-  //      from the engagement check, never from entry, and there is no
-  //      deferred-verdict queue: a young dip that recovered by the gate
-  //      check leaves nothing behind at all.
-  //      Fires are plain full exits (fraction 1) on the ladder's own clocks
-  //      — no EXIT_CONFIRM window on top. PROTECT silences it like the rest
-  //      of the stop family (noteBlock; its state was already dropped in
-  //      the protect block); TAKEOVER returned long before this section.
-  //      LADDER-OFF (pos.ladderOff, POST /ladderoff — user 2026-10-16
-  //      19:09 EDT) removes this section for the one coin entirely: state
-  //      prep already dropped its record and the gate below never enters,
-  //      while every other section judges untouched.
-  //      Placement is after the banks (3/3a/3b) by the owner's spec: the
-  //      ladder never pre-empts a TP bank on the same check, and the
-  //      undertaker (5) remains the backstop behind it.
-  if (cfg.slLadder > 0 && !pos.tp2Done && !ladderOff) {
-    if (prot) {
-      if (gain <= -cfg.slArmPct) noteBlock('SL ladder'); // PROTECT: suppressed — reported, never armed, never fired
-    } else if (!slTooYoung && (slLadder || gain <= -cfg.slArmPct)) {
-      if (!slLadder) {
-        slLadder = {
-          armTs: now, softDeadline: now + cfg.slSoftSec * 1000, hardDeadline: now + cfg.slCapSec * 1000,
-          deepest: cfg.slArmPct, deepSeen: false, deepClamped: false, penalized: false,
-          snapDeadline: null, finalDeadline: null, inHandoff: false,
-        };
-        slLadderEvents.push({ type: 'armed' });
-      }
-      const L = slLadder;
-      if (-gain > (L.deepest || 0)) L.deepest = -gain;
-      // rung transitions (a flash straight down runs them all on one check,
-      // in depth order: deep clamp, then the penalty spends from it, then final)
-      if (gain <= -cfg.slDeepPct) {
-        L.deepSeen = true;
-        L.inHandoff = false; // a fresh deep print ends any handoff — the snap-back test owns the deep zone
-        if (!L.deepClamped) { L.deepClamped = true; L.hardDeadline = Math.min(L.hardDeadline, L.armTs + cfg.slDeepCapSec * 1000); }
-        if (L.snapDeadline == null && L.finalDeadline == null) L.snapDeadline = now + cfg.slSnapbackSec * 1000;
-      } else if (L.snapDeadline != null) {
-        L.snapDeadline = null; // printed back above the deep line inside the window: the snap-back passed
-      }
-      if (gain <= -cfg.slPenaltyPct && !L.penalized) {
-        L.penalized = true;
-        const floor = now + 10000; // a penalty never pulls a deadline inside the last 10s
-        L.softDeadline = Math.max(L.softDeadline - cfg.slPenaltySec * 1000, floor);
-        L.hardDeadline = Math.max(L.hardDeadline - cfg.slPenaltySec * 1000, floor);
-      }
-      if (gain <= -cfg.slFinalPct && L.finalDeadline == null) {
-        L.finalDeadline = now + cfg.slFinalSec * 1000;
-        L.inHandoff = false; // the final countdown overrides the handoff — flow no longer judges
-      }
-      // fire evaluation, most specific clock first
-      const pct = (x) => `${x >= 0 ? '+' : ''}${(x * 100).toFixed(0)}%`;
-      const rungs = [`armed -${Math.round(cfg.slArmPct * 100)}%`];
-      if (L.deepSeen) rungs.push(`deep -${Math.round(cfg.slDeepPct * 100)}%`);
-      const ladderFire = (cause) => { slLadderEvents.push({ type: 'fired' }); return out(1, `SL ladder (${rungs.join(', ')} — ${cause})`); };
-      const flowAggressive = mark.buysM5 != null && mark.buysM5 <= 1 && mark.sellsM5 > mark.buysM5 * 3;
-      if (L.finalDeadline != null && now >= L.finalDeadline) return ladderFire(`final -${Math.round(cfg.slFinalPct * 100)}% countdown expired at ${pct(gain)}`);
-      if (L.snapDeadline != null && now >= L.snapDeadline) return ladderFire(`snap-back failed, still ${pct(gain)} after ${cfg.slSnapbackSec}s under -${Math.round(cfg.slDeepPct * 100)}%`);
-      if (now >= L.hardDeadline) return ladderFire(`probation cap reached at ${pct(gain)}`);
-      // flow handoff: a deep position that printed back into the limbo hands
-      // the call to the flow (never while the final countdown runs)
-      if (!L.inHandoff && L.finalDeadline == null && L.deepSeen && gain >= -cfg.slHandoffPct) {
-        L.inHandoff = true;
-        slLadderEvents.push({ type: 'handoff' });
-      }
-      if (L.inHandoff) {
-        if (L.finalDeadline == null && flowAggressive) return ladderFire(`flow handoff, sellers aggressive (${mark.buysM5}b/${mark.sellsM5}s)`);
-      } else if (now >= L.softDeadline) {
-        if (gain <= -cfg.slHandoffPct) return ladderFire(`soft expiry at ${pct(gain)}`);
-        // soft expiry inside the limbo: the timer yields to the flow handoff
-        L.inHandoff = true;
-        slLadderEvents.push({ type: 'handoff' });
-        if (flowAggressive) return ladderFire(`flow handoff, sellers aggressive (${mark.buysM5}b/${mark.sellsM5}s)`);
-      }
-    }
   }
 
   // 3c. moonbag: the post-TP2 remainder trails bagTrailPct below its peak — no at-entry floor, and
@@ -841,8 +688,46 @@ export function evaluateExit(pos, mark, cfg, now) {
     if (killZone != null || kz.armed || kz.entries > 0) killZone = kz;
   }
 
-  // 5. momentum failure: underwater, 10 min in, essentially no buyers (only sell when truly dead)
-  if (heldMin >= 10 && ratio < 1 && mark.buysM5 != null && mark.buysM5 <= 1 && mark.sellsM5 > mark.buysM5 * 3) return out(1, 'momentum failure (no buyers)');
+  // 5. STALL EXIT (user order 2026-10-16 19:24 EDT — the simplification; see
+  //     the header note): the ONE general downside exit, successor to both
+  //     the SL ladder (removed) and the momentum-failure undertaker that
+  //     stood here (10-minute age gate + this same conjunction, instant,
+  //     and it also demanded the position be underwater — a price input
+  //     the new rule drops entirely). The rule, entire:
+  //       AGE — the position must be at least STALL_EXIT_MIN_AGE_SEC old
+  //         (his "3M"): younger than that the rule does not exist for it
+  //         and no pending can stamp.
+  //       TRIGGER — the undertaker's dead-flow conjunction on the live
+  //         check: buysM5 ≤ 1 AND sellsM5 > 3 × buysM5 — the same mark
+  //         fields and the same numbers the undertaker judged, carried
+  //         over rather than re-invented.
+  //       CONFIRM — the first dead check stamps the pending (persisted on
+  //         the position, visible on /state); the sell executes at the
+  //         first check at/after pending + STALL_EXIT_CONFIRM_SEC (his
+  //         "60 sec confirm") where the conjunction STILL holds. Any
+  //         intervening check where it fails cancels the pending
+  //         outright; it can re-trigger later with a fresh window.
+  //     NO price input anywhere: no gain line arms, fires or cancels —
+  //     a coin down 50% with buyers alive rides, and a green coin on a
+  //     dead tape sells. Sells in full (fraction 1). Scope is pre-TP1 +
+  //     middle: state prep already dropped any pending on a tp2Done
+  //     position, and the moonbag's own dead flow (3c2) owns the bag.
+  //     PROTECT does not block it — it succeeds the undertaker, which
+  //     judged under protect; TAKEOVER returned long before this section.
+  if (cfg.stallExit > 0 && !pos.tp2Done) {
+    const ageOk = heldMin * 60 >= (cfg.stallExitMinAgeSec || 0);
+    const deadFlow = mark.buysM5 != null && mark.buysM5 <= 1 && mark.sellsM5 > mark.buysM5 * 3;
+    if (ageOk && deadFlow) {
+      if (stallPending == null) { stallPending = now; stallEvents.push({ type: 'pending' }); }
+      if (now - stallPending >= (cfg.stallExitConfirmSec || 0) * 1000) {
+        stallEvents.push({ type: 'fired' });
+        return out(1, `stall exit (dead flow, ${cfg.stallExitConfirmSec}s confirm)`);
+      }
+    } else if (stallPending != null) {
+      stallPending = null; // the tape showed life inside the window (or the position left the rule's scope): the pending dies
+      stallEvents.push({ type: 'cancelled' });
+    }
+  }
 
   // 5b. volume decay: volume dried up 70%+ from entry and price isn't pushing up — no fuel left
   //     STRIP (volumeDecay, exit-stack v2): disabled in code — can never fire.

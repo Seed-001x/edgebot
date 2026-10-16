@@ -81,7 +81,7 @@ export function loadConfig(env = process.env) {
     // post-friction EV per exit profile). SCALP exits whole at the first
     // check whose net gain (exits.js's ruler) reaches confluenceScalpPct;
     // LADDER runs the live exit stack via evaluateExit. Both mirror the
-    // live downside (liquidity death, momentum-failure undertaker) and a
+    // live downside (liquidity death, stall exit) and a
     // 4h max-hold terminal. Journal: confluence_signal.jsonl (/confluencesignal).
     // No path reads it back into a decision.
     confluenceSignal: num(env, 'CONFLUENCE_SIGNAL', 1),      // 1 = confluence shadow signal on (0 = no new fires, card off)
@@ -414,24 +414,21 @@ export function loadConfig(env = process.env) {
     stopFlowVeto: num(env, 'STOP_FLOW_VETO', 1),          // 1 = buyers absorbing the dip vetoes a confirmed stop (0 = off)
     stopXcheck: num(env, 'STOP_XCHECK', 1),               // 1 = a full exit needs a corroborating instant re-quote (bad-print guard)
     stopXcheckPct: num(env, 'STOP_XCHECK_PCT', 0.20),     // re-quote may differ from the triggering mark by at most this fraction
-    // SL LADDER (user 2026-10-16, "the SL ladder" — dictated 17:53–18:05 EDT, built
-    // the same evening at his order): a NEW live downside exit in exits.js (section
-    // 3b2), separate from the STRIPped stop family above. ONE probation clock per
-    // position (pre-TP1 + middle stages, judged on the fee-aware net `gain`):
-    // breaching the arm line starts the clock; deeper prints spend it faster.
-    slLadder: num(env, 'SL_LADDER', 1),                   // 1 = live (the user's explicit "built and implemented" order); 0 = fully off, engine behaves as before this build
-    slArmPct: num(env, 'SL_ARM_PCT', 0.10),               // ARM: first check at/below −this net gain starts probation (soft deadline + slSoftSec, hard cap + slCapSec — his "3 total minutes"); a check back above the line disarms outright
-    slSoftSec: num(env, 'SL_SOFT_SEC', 120),              // soft deadline from the arm: at expiry, still ≤ −slHandoffPct sells; inside the limbo the flow handoff judges instead
-    slCapSec: num(env, 'SL_CAP_SEC', 180),                // hard cap from the arm: at expiry any still-armed position sells — the probation's outer bound, handoff included
-    slDeepPct: num(env, 'SL_DEEP_PCT', 0.20),             // DEEP rung: first check at/below −this starts the snap-back test and clamps the hard cap to arm + slDeepCapSec
-    slSnapbackSec: num(env, 'SL_SNAPBACK_SEC', 15),       // snap-back window: still at/below −slDeepPct when it lapses sells in full; one print back above the deep line passes the test
-    slDeepCapSec: num(env, 'SL_DEEP_CAP_SEC', 124),       // the hard cap once deep has printed — his "2m04s" of probation at −20%
-    slPenaltyPct: num(env, 'SL_PENALTY_PCT', 0.25),       // PENALTY rung: first check at/below −this (once per arm) takes slPenaltySec off both deadlines
-    slPenaltySec: num(env, 'SL_PENALTY_SEC', 60),         // ...the penalty itself (a deadline never drops below now + 10s)
-    slFinalPct: num(env, 'SL_FINAL_PCT', 0.30),           // FINAL rung: first check at/below −this starts a flat slFinalSec countdown — only a full recovery above the arm line inside it saves the position
-    slFinalSec: num(env, 'SL_FINAL_SEC', 10),             // ...the final countdown
-    slHandoffPct: num(env, 'SL_HANDOFF_PCT', 0.15),       // the limbo line: at/below −this at soft expiry sells; above it (after a deep print, or at soft expiry) the flow handoff judges — the undertaker's conjunction (buysM5 ≤ 1, sellsM5 > 3× buysM5) with NO 10-minute age gate
-    slMinAgeSec: num(env, 'SL_MIN_AGE_SEC', 180),         // 3-MINUTE ENGAGEMENT GATE (user 2026-10-16 18:37 EDT, after the ladder's first fire sold a 74-second-old position at −25% and the coin bounced): before a position is this old the ladder is ABSENT for it — no arm, no state, no deadlines accrue; at the first check at/past this age the machine engages on the CURRENT gain with every clock starting at that check ("if after the 3m timer it is at -10% then the count starts; if it's at -25-30% then it goes accordingly to how we had it"). 0 = the ladder judges from entry, exactly as first built
+    // STALL EXIT (user order 2026-10-16 19:24 EDT, "remove the mess... simplify
+    // it" / "No SL rule aside from the 3M stall 60 sec confirm"): the ONE general
+    // downside exit (exits.js section 5). It replaced BOTH the SL ladder — a
+    // price-rung probation machine built and removed the same evening at his
+    // order — and the 10-minute momentum-failure undertaker it succeeds: the
+    // same dead-flow conjunction the undertaker judged (buysM5 ≤ 1 AND sellsM5 >
+    // 3 × buysM5), but from 3 minutes of age instead of 10, and the first dead
+    // check only stamps a pending — the sell needs the flow to STILL be dead
+    // 60s later. No price input anywhere: price alone can never trigger, arm
+    // or cancel it. Pre-TP1 + middle stages; the moonbag keeps its own dead
+    // flow (3c2) and trail. Protect does NOT block it (the undertaker never
+    // was protect-blocked either); takeover silences it like everything else.
+    stallExit: num(env, 'STALL_EXIT', 1),                 // kill switch: 0 = no general downside exit pre-TP2 besides liquidity death (the owner's chosen shape if flipped)
+    stallExitMinAgeSec: num(env, 'STALL_EXIT_MIN_AGE_SEC', 180), // the "3M": the rule does not exist for a younger position — no pending can stamp
+    stallExitConfirmSec: num(env, 'STALL_EXIT_CONFIRM_SEC', 60), // the "60 sec confirm": dead flow must still hold this long after the pending stamps, judged on the first check at/after the lapse
     dipStopPct: num(env, 'DIP_STOP_PCT', 0.05),           // sell if PRICE drops this far below entry (0 = off)
     stallSec: num(env, 'STALL_SEC', 60),                  // entry stall: sell if price never breaks out within this many seconds of entry (0 = off)
     stallBandPct: num(env, 'STALL_BAND_PCT', 0.05),       // entry range half-width: at stallSec the price must be OUTSIDE entry ± this or the position sells (user 2026-10-13 endpoint version)
@@ -544,19 +541,9 @@ export function validateConfig(cfg) {
   if (cfg.stopHardConfirmChecks < 1 || cfg.stopHardConfirmChecks > 10) errs.push('STOP_HARD_CONFIRM_CHECKS must be between 1 and 10');
   if (cfg.stopHardConfirmSec < 0 || cfg.stopHardConfirmSec > 60) errs.push('STOP_HARD_CONFIRM_SEC must be between 0 and 60');
   if (cfg.stopGraceSec < 0 || cfg.stopGraceSec > 120) errs.push('STOP_GRACE_SEC must be between 0 and 120');
-  if (cfg.slLadder < 0 || cfg.slLadder > 1) errs.push('SL_LADDER must be 0 or 1');
-  if (cfg.slArmPct <= 0 || cfg.slArmPct >= 1) errs.push('SL_ARM_PCT must be between 0 and 1');
-  if (cfg.slDeepPct <= 0 || cfg.slDeepPct >= 1) errs.push('SL_DEEP_PCT must be between 0 and 1');
-  if (cfg.slPenaltyPct <= 0 || cfg.slPenaltyPct >= 1) errs.push('SL_PENALTY_PCT must be between 0 and 1');
-  if (cfg.slFinalPct <= 0 || cfg.slFinalPct >= 1) errs.push('SL_FINAL_PCT must be between 0 and 1');
-  if (cfg.slHandoffPct <= 0 || cfg.slHandoffPct >= 1) errs.push('SL_HANDOFF_PCT must be between 0 and 1');
-  if (cfg.slSoftSec < 0 || cfg.slSoftSec > 3600) errs.push('SL_SOFT_SEC must be between 0 and 3600');
-  if (cfg.slCapSec < 0 || cfg.slCapSec > 3600) errs.push('SL_CAP_SEC must be between 0 and 3600');
-  if (cfg.slSnapbackSec < 0 || cfg.slSnapbackSec > 600) errs.push('SL_SNAPBACK_SEC must be between 0 and 600');
-  if (cfg.slDeepCapSec < 0 || cfg.slDeepCapSec > 3600) errs.push('SL_DEEP_CAP_SEC must be between 0 and 3600');
-  if (cfg.slPenaltySec < 0 || cfg.slPenaltySec > 600) errs.push('SL_PENALTY_SEC must be between 0 and 600');
-  if (cfg.slFinalSec < 0 || cfg.slFinalSec > 600) errs.push('SL_FINAL_SEC must be between 0 and 600');
-  if (cfg.slMinAgeSec < 0 || cfg.slMinAgeSec > 3600) errs.push('SL_MIN_AGE_SEC must be between 0 and 3600');
+  if (cfg.stallExit < 0 || cfg.stallExit > 1) errs.push('STALL_EXIT must be 0 or 1');
+  if (cfg.stallExitMinAgeSec < 0 || cfg.stallExitMinAgeSec > 3600) errs.push('STALL_EXIT_MIN_AGE_SEC must be between 0 and 3600');
+  if (cfg.stallExitConfirmSec < 0 || cfg.stallExitConfirmSec > 600) errs.push('STALL_EXIT_CONFIRM_SEC must be between 0 and 600');
   if (cfg.stopXcheckPct < 0.05 || cfg.stopXcheckPct > 0.9) errs.push('STOP_XCHECK_PCT must be between 0.05 and 0.9');
   if (cfg.extMaxFromBase < 0 || cfg.extMaxFromBase > 20) errs.push('EXT_MAX_FROM_BASE must be between 0 and 20 (0 = off)');
   if (cfg.paceRelax < 0 || cfg.paceRelax > 1) errs.push('PACE_RELAX must be 0 or 1');

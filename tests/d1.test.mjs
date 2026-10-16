@@ -185,6 +185,12 @@ test('D1 paired: a manual exit spawns a virtual exit that terminates with a woul
   bot.latest.set('MINT1', view({ price: 0.5, buysM5: 0, sellsM5: 10 }));
   clock.t = n + 60000;
   bot.paired.tick(m => bot.latest.get(m) || null, clock.t, bot.cfg, 150);
+  // the stall exit (successor to the instant momentum-failure undertaker,
+  // user order 2026-10-16 19:24 EDT) only STAMPS its pending on the first
+  // dead tick — the virtual terminates when the tape is still dead 60s on
+  assert.equal(bot.paired.pending.size, 1, 'first dead tick stamps the stall pending — the 60s confirm is running');
+  clock.t = n + 121000;
+  bot.paired.tick(m => bot.latest.get(m) || null, clock.t, bot.cfg, 150);
   assert.equal(bot.paired.pending.size, 0, 'virtual position terminated');
   const done = bot.paired.done.find(d => d.id === rec.id);
   assert.ok(done, 'paired comparison record produced');

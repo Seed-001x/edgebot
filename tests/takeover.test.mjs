@@ -2,7 +2,7 @@
 // own ratchet sell fired into the same balance and the bot's sell found nothing):
 // POST /takeover hands an open position to the user ENTIRELY. While pos.takenOver
 // is set, exit judging is skipped in full — no TP ladder, no trails, no stop
-// family, no bleed, no probation leash/expiry, no ratchet, no momentum failure,
+// family, no bleed, no probation leash/expiry, no ratchet, no stall exit,
 // no time stops, not even liquidity death — and nothing else in the bot may sell
 // the position either (bundle watcher, no-quote force-exit). Marks, peaks and
 // flow history keep updating; the manual-exit detector and the reconciler keep
@@ -47,7 +47,7 @@ test('takeover: every LIVE exit family is skipped — the whole stack holds at f
     ['TP2', () => pos({ tp1Done: true, remainingFrac: 0.6 }), () => mark(0.0264), cfg, /TP2/],
     ['moonbag trail', () => pos({ tp1Done: true, tp2Done: true, remainingFrac: 0.25, peakRatio: 2 }), () => mark(0.006), cfg, /moonbag trail/],
     ['TP2 rejection', () => pos({ tp1Done: true, remainingFrac: 0.6, peakRatio: 1.85 }), () => mark(0.019758), cfg, /TP2 rejection/],
-    ['momentum failure', () => pos({ entryTs: NOW - 15 * 60000 }), () => mark(0.019, { buysM5: 0, sellsM5: 10 }), { ...cfg, dipStopPct: 0, stopHardPct: 0, stopLoss: 0, stallSec: 0 }, /momentum failure/],
+    ['stall exit', () => pos({ entryTs: NOW - 15 * 60000, stallPending: NOW - 61 * S }), () => mark(0.019, { buysM5: 0, sellsM5: 10 }), { ...cfg, dipStopPct: 0, stopHardPct: 0, stopLoss: 0, stallSec: 0 }, /stall exit/],
   ];
   for (const [name, mkPos, mkMark, c, reason] of shapes) {
     const ctl = evaluateExit(mkPos(), mkMark(), c, NOW);

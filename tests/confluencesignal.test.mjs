@@ -110,20 +110,26 @@ test('confluence signal: kill switch — no fires journaled, card dark', () => {
   assert.deepEqual(cs.card(), { enabled: false });
 });
 
-test('scalp judge: liquidity death and the undertaker are exits.js rules verbatim', () => {
+test('scalp judge: liquidity death and the stall exit are exits.js rules verbatim', () => {
   const s = { entrySol: 0.05, remainingFrac: 1, entryTs: T0 };
   const c = cfg();
   // liquidity death fires even green and even in the first minute
   let d = scalpExit(s, { valueSol: 0.06, liqUsd: 100, buysM5: 30, sellsM5: 10, solUsd: 150 }, c, T0 + 60000);
   assert.equal(d.fraction, 1);
   assert.match(d.reason, /liquidity death/);
-  // undertaker: 10+ min, underwater, no buyers
-  d = scalpExit(s, { valueSol: 0.025, liqUsd: 100000, buysM5: 1, sellsM5: 10, solUsd: 150 }, c, T0 + 11 * 60000);
+  // stall exit (exits.js §5 verbatim, successor to the undertaker): past
+  // 3 min a dead tape stamps the pending; still dead 60s later it sells
+  const s2 = { entrySol: 0.05, remainingFrac: 1, entryTs: T0, stallPending: null };
+  d = scalpExit(s2, { valueSol: 0.025, liqUsd: 100000, buysM5: 1, sellsM5: 10, solUsd: 150 }, c, T0 + 11 * 60000);
+  assert.equal(d.fraction, 0);
+  assert.equal(d.stallPending, T0 + 11 * 60000);
+  s2.stallPending = d.stallPending;
+  d = scalpExit(s2, { valueSol: 0.025, liqUsd: 100000, buysM5: 1, sellsM5: 10, solUsd: 150 }, c, T0 + 11 * 60000 + 61000);
   assert.equal(d.fraction, 1);
-  assert.match(d.reason, /momentum failure/);
-  // ...but not before 10 minutes, and not while buyers exist
-  assert.equal(scalpExit(s, { valueSol: 0.025, liqUsd: 100000, buysM5: 1, sellsM5: 10, solUsd: 150 }, c, T0 + 9 * 60000).fraction, 0);
-  assert.equal(scalpExit(s, { valueSol: 0.025, liqUsd: 100000, buysM5: 5, sellsM5: 10, solUsd: 150 }, c, T0 + 11 * 60000).fraction, 0);
+  assert.match(d.reason, /stall exit/);
+  // ...but no pending before 3 minutes, and live flow cancels a stamped one
+  assert.equal(scalpExit({ entrySol: 0.05, remainingFrac: 1, entryTs: T0, stallPending: null }, { valueSol: 0.025, liqUsd: 100000, buysM5: 1, sellsM5: 10, solUsd: 150 }, c, T0 + 2 * 60000).stallPending, null);
+  assert.equal(scalpExit({ entrySol: 0.05, remainingFrac: 1, entryTs: T0, stallPending: T0 + 600000 }, { valueSol: 0.025, liqUsd: 100000, buysM5: 5, sellsM5: 10, solUsd: 150 }, c, T0 + 11 * 60000).stallPending, null);
   // flat and healthy: hold
   assert.equal(scalpExit(s, { valueSol: 0.05, liqUsd: 100000, buysM5: 30, sellsM5: 10, solUsd: 150 }, c, T0 + 60000).fraction, 0);
 });
@@ -171,7 +177,7 @@ test('confluence signal: SCALP holds below the +20% net line and exits WHOLE at 
   assert.deepEqual(card.recentCloses[0].names, ['Alpha', 'Beta'], 'recent closes carry the fire features');
 });
 
-test('confluence signal: LADDER runs the real stack — TP1 banks a fraction, the undertaker closes the rest', () => {
+test('confluence signal: LADDER runs the real stack — TP1 banks a fraction, the stall exit closes the rest', () => {
   const dir = tmp();
   const c = cfg();
   const cs = new ConfluenceSignal({ cfg: c, dir, now: () => T0 + 240000 });
@@ -186,13 +192,16 @@ test('confluence signal: LADDER runs the real stack — TP1 banks a fraction, th
   assert.ok(approx(lad.realizedSol, 0.034), `banked ${lad.realizedSol}`); // 0.4 × (0.05 × 1.70)
   assert.ok(lad.tp1Done, 'TP1 state threaded back');
   assert.equal(cs.pending.has('cnf-1000-1:scalp'), false, 'the scalp twin exited whole on the same print');
-  // fade into dead flow at 11 min: the momentum-failure undertaker closes the ladder
+  // fade into dead flow at 11 min: the stall exit stamps its pending on the
+  // first dead tick and closes the ladder when the tape is still dead 61s on
   cs.tick(() => view({ price: 0.9, buysM5: 1, sellsM5: 10 }), T0 + 240000 + 11 * 60000, c, 150);
+  assert.ok(cs.pending.has('cnf-1000-1:ladder'), 'pending stamped, not yet sold — the 60s confirm is running');
+  cs.tick(() => view({ price: 0.9, buysM5: 1, sellsM5: 10 }), T0 + 240000 + 11 * 60000 + 61000, c, 150);
   assert.equal(cs.pending.size, 0);
   const closes = readJournal(dir).filter(r => r.type === 'close');
   const lrec = closes.find(r => r.profile === 'ladder');
   assert.ok(lrec, 'ladder close journaled');
-  assert.match(lrec.exitReason, /momentum failure/);
+  assert.match(lrec.exitReason, /stall exit/);
   assert.equal(lrec.legs.length, 2, 'TP1 leg + final leg');
   assert.equal(lrec.status, 'exited');
   // proceeds = 0.034 (TP1 at 1.70×) + 0.0135 (0.6 remainder at 0.45×) = 0.0475; fees 0.001 × 3

@@ -93,9 +93,21 @@ export function scalpExit(s, mark, cfg, now) {
   const gain = ratio - 1 - feeFrac;
   const pct = cfg.confluenceScalpPct > 0 ? cfg.confluenceScalpPct : 0.20;
   if (gain >= pct) return { fraction: 1, reason: `confluence scalp +${Math.round(pct * 100)}% (net gain +${(gain * 100).toFixed(0)}%)` };
-  // 3. momentum failure: underwater, 10 min in, essentially no buyers (exits.js §5)
-  if (heldMin >= 10 && ratio < 1 && mark.buysM5 != null && mark.buysM5 <= 1 && mark.sellsM5 > mark.buysM5 * 3) return { fraction: 1, reason: 'momentum failure (no buyers)' };
-  return { fraction: 0, reason: null };
+  // 3. stall exit (exits.js §5, verbatim): past STALL_EXIT_MIN_AGE_SEC, a
+  //    dead tape (buysM5 ≤ 1 AND sellsM5 > 3 × buysM5) stamps the pending;
+  //    still dead at pending + STALL_EXIT_CONFIRM_SEC it sells in full; any
+  //    live check inside the window cancels. No price input, like the rule
+  //    it mirrors. The pending rides the decision for the caller to thread.
+  let stallPending = s.stallPending ?? null;
+  if (cfg.stallExit > 0) {
+    const deadFlow = mark.buysM5 != null && mark.buysM5 <= 1 && mark.sellsM5 > mark.buysM5 * 3;
+    const ageOk = heldMin * 60 >= (cfg.stallExitMinAgeSec || 0);
+    if (ageOk && deadFlow) {
+      if (stallPending == null) stallPending = now;
+      if (now - stallPending >= (cfg.stallExitConfirmSec || 0) * 1000) return { fraction: 1, reason: `stall exit (dead flow, ${cfg.stallExitConfirmSec}s confirm)`, stallPending: null };
+    } else if (stallPending != null) stallPending = null;
+  } else stallPending = null;
+  return { fraction: 0, reason: null, stallPending };
 }
 
 function profileAgg(closes, opened) {
@@ -161,7 +173,7 @@ function freshState(fire, profile) {
     remainingFrac: 1, peakRatio: 1, peakMove: 1,
     tp1Done: false, tp2Done: false, tp1Arm: null,
     stallSince: null, stopArmedTs: null, floorChecks: 0, floorSince: null,
-    probationSince: null, moveHist: [], exitPending: {}, slLadder: null, flowHist: [],
+    probationSince: null, moveHist: [], exitPending: {}, stallPending: null, flowHist: [],
     killZone: null, postTp1PeakMove: null, deadflowArmed: false,
     pathClass: null, killZoneOverlay: false,
     realizedSol: 0, sells: 0, legs: [],
@@ -316,6 +328,7 @@ export class ConfluenceSignal {
         let d = null;
         if (s.profile === 'scalp') {
           d = scalpExit(s, mark, cfg, nowTs);
+          if ('stallPending' in d) s.stallPending = d.stallPending;
         } else {
           d = evaluateExit(s, mark, cfg, nowTs);
           // thread the decision's state outputs back exactly like
@@ -335,7 +348,7 @@ export class ConfluenceSignal {
           if ('killZone' in d) s.killZone = d.killZone;
           if ('postTp1PeakMove' in d) s.postTp1PeakMove = d.postTp1PeakMove;
           if ('deadflowArmed' in d) s.deadflowArmed = d.deadflowArmed;
-          if ('slLadder' in d) s.slLadder = d.slLadder;
+          if ('stallPending' in d) s.stallPending = d.stallPending;
           if (d.pathClass) { s.pathClass = d.pathClass; s.killZoneOverlay = !!d.killZoneOverlay; }
         }
         this._dirty = true;
