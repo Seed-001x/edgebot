@@ -414,6 +414,23 @@ export function loadConfig(env = process.env) {
     stopFlowVeto: num(env, 'STOP_FLOW_VETO', 1),          // 1 = buyers absorbing the dip vetoes a confirmed stop (0 = off)
     stopXcheck: num(env, 'STOP_XCHECK', 1),               // 1 = a full exit needs a corroborating instant re-quote (bad-print guard)
     stopXcheckPct: num(env, 'STOP_XCHECK_PCT', 0.20),     // re-quote may differ from the triggering mark by at most this fraction
+    // SL LADDER (user 2026-10-16, "the SL ladder" — dictated 17:53–18:05 EDT, built
+    // the same evening at his order): a NEW live downside exit in exits.js (section
+    // 3b2), separate from the STRIPped stop family above. ONE probation clock per
+    // position (pre-TP1 + middle stages, judged on the fee-aware net `gain`):
+    // breaching the arm line starts the clock; deeper prints spend it faster.
+    slLadder: num(env, 'SL_LADDER', 1),                   // 1 = live (the user's explicit "built and implemented" order); 0 = fully off, engine behaves as before this build
+    slArmPct: num(env, 'SL_ARM_PCT', 0.10),               // ARM: first check at/below −this net gain starts probation (soft deadline + slSoftSec, hard cap + slCapSec — his "3 total minutes"); a check back above the line disarms outright
+    slSoftSec: num(env, 'SL_SOFT_SEC', 120),              // soft deadline from the arm: at expiry, still ≤ −slHandoffPct sells; inside the limbo the flow handoff judges instead
+    slCapSec: num(env, 'SL_CAP_SEC', 180),                // hard cap from the arm: at expiry any still-armed position sells — the probation's outer bound, handoff included
+    slDeepPct: num(env, 'SL_DEEP_PCT', 0.20),             // DEEP rung: first check at/below −this starts the snap-back test and clamps the hard cap to arm + slDeepCapSec
+    slSnapbackSec: num(env, 'SL_SNAPBACK_SEC', 15),       // snap-back window: still at/below −slDeepPct when it lapses sells in full; one print back above the deep line passes the test
+    slDeepCapSec: num(env, 'SL_DEEP_CAP_SEC', 124),       // the hard cap once deep has printed — his "2m04s" of probation at −20%
+    slPenaltyPct: num(env, 'SL_PENALTY_PCT', 0.25),       // PENALTY rung: first check at/below −this (once per arm) takes slPenaltySec off both deadlines
+    slPenaltySec: num(env, 'SL_PENALTY_SEC', 60),         // ...the penalty itself (a deadline never drops below now + 10s)
+    slFinalPct: num(env, 'SL_FINAL_PCT', 0.30),           // FINAL rung: first check at/below −this starts a flat slFinalSec countdown — only a full recovery above the arm line inside it saves the position
+    slFinalSec: num(env, 'SL_FINAL_SEC', 10),             // ...the final countdown
+    slHandoffPct: num(env, 'SL_HANDOFF_PCT', 0.15),       // the limbo line: at/below −this at soft expiry sells; above it (after a deep print, or at soft expiry) the flow handoff judges — the undertaker's conjunction (buysM5 ≤ 1, sellsM5 > 3× buysM5) with NO 10-minute age gate
     dipStopPct: num(env, 'DIP_STOP_PCT', 0.05),           // sell if PRICE drops this far below entry (0 = off)
     stallSec: num(env, 'STALL_SEC', 60),                  // entry stall: sell if price never breaks out within this many seconds of entry (0 = off)
     stallBandPct: num(env, 'STALL_BAND_PCT', 0.05),       // entry range half-width: at stallSec the price must be OUTSIDE entry ± this or the position sells (user 2026-10-13 endpoint version)
@@ -526,6 +543,18 @@ export function validateConfig(cfg) {
   if (cfg.stopHardConfirmChecks < 1 || cfg.stopHardConfirmChecks > 10) errs.push('STOP_HARD_CONFIRM_CHECKS must be between 1 and 10');
   if (cfg.stopHardConfirmSec < 0 || cfg.stopHardConfirmSec > 60) errs.push('STOP_HARD_CONFIRM_SEC must be between 0 and 60');
   if (cfg.stopGraceSec < 0 || cfg.stopGraceSec > 120) errs.push('STOP_GRACE_SEC must be between 0 and 120');
+  if (cfg.slLadder < 0 || cfg.slLadder > 1) errs.push('SL_LADDER must be 0 or 1');
+  if (cfg.slArmPct <= 0 || cfg.slArmPct >= 1) errs.push('SL_ARM_PCT must be between 0 and 1');
+  if (cfg.slDeepPct <= 0 || cfg.slDeepPct >= 1) errs.push('SL_DEEP_PCT must be between 0 and 1');
+  if (cfg.slPenaltyPct <= 0 || cfg.slPenaltyPct >= 1) errs.push('SL_PENALTY_PCT must be between 0 and 1');
+  if (cfg.slFinalPct <= 0 || cfg.slFinalPct >= 1) errs.push('SL_FINAL_PCT must be between 0 and 1');
+  if (cfg.slHandoffPct <= 0 || cfg.slHandoffPct >= 1) errs.push('SL_HANDOFF_PCT must be between 0 and 1');
+  if (cfg.slSoftSec < 0 || cfg.slSoftSec > 3600) errs.push('SL_SOFT_SEC must be between 0 and 3600');
+  if (cfg.slCapSec < 0 || cfg.slCapSec > 3600) errs.push('SL_CAP_SEC must be between 0 and 3600');
+  if (cfg.slSnapbackSec < 0 || cfg.slSnapbackSec > 600) errs.push('SL_SNAPBACK_SEC must be between 0 and 600');
+  if (cfg.slDeepCapSec < 0 || cfg.slDeepCapSec > 3600) errs.push('SL_DEEP_CAP_SEC must be between 0 and 3600');
+  if (cfg.slPenaltySec < 0 || cfg.slPenaltySec > 600) errs.push('SL_PENALTY_SEC must be between 0 and 600');
+  if (cfg.slFinalSec < 0 || cfg.slFinalSec > 600) errs.push('SL_FINAL_SEC must be between 0 and 600');
   if (cfg.stopXcheckPct < 0.05 || cfg.stopXcheckPct > 0.9) errs.push('STOP_XCHECK_PCT must be between 0.05 and 0.9');
   if (cfg.extMaxFromBase < 0 || cfg.extMaxFromBase > 20) errs.push('EXT_MAX_FROM_BASE must be between 0 and 20 (0 = off)');
   if (cfg.paceRelax < 0 || cfg.paceRelax > 1) errs.push('PACE_RELAX must be 0 or 1');

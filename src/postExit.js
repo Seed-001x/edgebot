@@ -170,6 +170,7 @@ export class PairedShadowExits {
         if ('probationSince' in d) s.probationSince = d.probationSince;
         if ('moveHist' in d) s.moveHist = d.moveHist;
         if ('exitPending' in d) s.exitPending = d.exitPending;
+        if ('slLadder' in d) s.slLadder = d.slLadder;
         if ('tp1Arm' in d) s.tp1Arm = d.tp1Arm;
         if (!(d.fraction > 0)) continue;
         s.realizedSol += d.fraction * valueSol;

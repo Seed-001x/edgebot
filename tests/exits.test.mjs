@@ -539,7 +539,7 @@ const protPos = (o = {}) => pos({ protected: NOW - 60000, ...o });
 test('strip + protect: the deep stop-family print holds for protected AND unprotected alike; protect still clears stop state', () => {
   const d = evaluateExit(protPos(), mark(0.011), cfg, NOW);   // move 0.55 — deep in the old dip-stop / floor / grace territory
   assert.equal(d.fraction, 0);
-  assert.equal(d.protectedBlock, null);                       // nothing left in that family to suppress — the strip, not the flag, holds it
+  assert.equal(d.protectedBlock, 'SL ladder');                // the STRIPPED family still reports nothing (the strip holds it) — but this print is deep in the SL ladder's territory, the ladder is LIVE (user 2026-10-16), and protect suppresses it and says so
   assert.equal(d.stopArmedTs, null);
   assert.equal(d.floorChecks, 0);
   const ctl = evaluateExit(pos(), mark(0.011), cfg, NOW);     // control: unprotected holds too now
@@ -559,7 +559,7 @@ test('strip + protect: stale hard-floor counters are cleared under the flag; the
   const p = protPos({ floorChecks: 1, floorSince: NOW - 10000 });
   const d = evaluateExit(p, mark(0.011, { buysM5: 1, sellsM5: 1 }), c, NOW);
   assert.equal(d.fraction, 0);
-  assert.equal(d.protectedBlock, null);
+  assert.equal(d.protectedBlock, 'SL ladder');                // the floor counters report nothing (stripped) — the suppressed live rule on this print is the SL ladder (user 2026-10-16)
   assert.equal(d.floorChecks, 0); assert.equal(d.floorSince, null);
   const ctl = evaluateExit(pos({ floorChecks: 1, floorSince: NOW - 10000 }), mark(0.011, { buysM5: 1, sellsM5: 1 }), c, NOW);
   assert.equal(ctl.fraction, 0); assert.equal(ctl.reason, null); // control: no second-check sell exists anymore
@@ -582,7 +582,7 @@ test('protect: a bleed pending is left exactly as it was — still armed, still 
   assert.equal(d.exitPending.bleed, NOW - 5000);              // bleed pending preserved to the tick
   assert.equal(d.exitPending.ratchet, undefined);             // only the ratchet pending was dropped
   assert.deepEqual(d.exitConfirmEvents, []);
-  assert.equal(d.protectedBlock, null);                       // nothing was suppressed — the bleed proceeded normally
+  assert.equal(d.protectedBlock, 'SL ladder');                // the bleed itself proceeded normally (pending preserved above) — what the flag suppressed on this print is the SL ladder: net −10.6% sits just past its −10% arm line (user 2026-10-16)
 });
 test('strip + protect: the bleed print cannot fire, protected or not', () => {
   const p = protPos({ entryTs: NOW - 200 * S, moveHist: hist([60, 0.92]), exitPending: {} });

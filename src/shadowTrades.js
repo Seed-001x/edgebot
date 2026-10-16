@@ -97,7 +97,7 @@ export class ShadowTrades {
         remainingFrac: 1, peakRatio: 1, peakMove: 1,
         tp1Done: false, tp2Done: false, tp1Arm: null,
         stallSince: null, stopArmedTs: null, floorChecks: 0, floorSince: null,
-        probationSince: null, moveHist: [], exitPending: {}, flowHist: [],
+        probationSince: null, moveHist: [], exitPending: {}, slLadder: null, flowHist: [],
         realizedSol: 0, sells: 0, legs: [],
         lastValueSol: sizeSol, lastTickTs: 0,
         marks: 0, firstMarkTs: null, lastMarkTs: null,
@@ -161,6 +161,7 @@ export class ShadowTrades {
         if ('probationSince' in d) s.probationSince = d.probationSince;
         if ('moveHist' in d) s.moveHist = d.moveHist;
         if ('exitPending' in d) s.exitPending = d.exitPending;
+        if ('slLadder' in d) s.slLadder = d.slLadder;
         if ('tp1Arm' in d) s.tp1Arm = d.tp1Arm;
         this._dirty = true;
         if (!(d.fraction > 0)) continue;
