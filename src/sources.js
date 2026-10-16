@@ -5,7 +5,7 @@
 // This is the fix for the old bot's addrs.slice(0,120) problem.
 
 import { fetchJson, SOL_MINT } from './util.js';
-import { relayRoute } from './relayFetch.js';
+import { relayRoute, relayRoutePump } from './relayFetch.js';
 
 const DS = 'https://api.dexscreener.com';
 const GT = 'https://api.geckoterminal.com/api/v2';
@@ -157,7 +157,12 @@ async function jupList(cfg, path) {
 }
 
 async function pumpMovers(limit = 50) {
-  const j = await fetchJson(`${PF}/coins?offset=0&limit=${limit}&sort=last_trade_timestamp&order=DESC&includeNsfw=false`);
+  // Via the pump relay when configured (2026-10-16 fix — same disease as
+  // gradWatch): this direct v3 call was Cloudflare-403'd from the bot's host,
+  // so the pump-movers-api source silently returned 0 in every cycle while
+  // its relay-routed siblings returned 50-100.
+  const { url, headers } = relayRoutePump(`${PF}/coins?offset=0&limit=${limit}&sort=last_trade_timestamp&order=DESC&includeNsfw=false`);
+  const j = await fetchJson(url, { headers: { origin: 'https://pump.fun', referer: 'https://pump.fun/', 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36', ...headers } });
   return (Array.isArray(j) ? j : []).filter(c => c && c.mint && !c.is_banned).map(c => c.mint);
 }
 

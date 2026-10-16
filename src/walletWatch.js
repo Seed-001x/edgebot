@@ -28,7 +28,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fetchJson } from './util.js';
-import { relayRoute } from './relayFetch.js';
+import { relayRoute, relayRoutePump } from './relayFetch.js';
 import { flowRpc, parseWalletBuys, parseWalletSells, FLOW_DUST_SOL } from './flowWatch.js';
 
 export const BASELINE = { runnerShare: 0.218, crashShare: 0.381, r60Median: -0.375 };
@@ -139,7 +139,11 @@ export function computeOutcome(candles, entryTs) {
 }
 
 async function defaultCoinFacts(mint) {
-  const j = await fetchJson(`${PF}/coins/${mint}`, { timeout: 8000 });
+  // Via the pump relay when configured (2026-10-16, same direct-v3 disease as
+  // gradWatch/pumpMovers: a direct call is Cloudflare-403'd from the bot's
+  // host and the coin facts silently came back null).
+  const { url, headers } = relayRoutePump(`${PF}/coins/${mint}`);
+  const j = await fetchJson(url, { headers, timeout: 8000 });
   if (!j || !j.mint) return null;
   return { creator: j.creator || null, createdTs: Number(j.created_timestamp) || null, symbol: j.symbol || null };
 }
