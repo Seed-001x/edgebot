@@ -22,6 +22,7 @@ import { postCallout } from './callout.js';
 import { CalloutLab } from './calloutLab.js';
 import { FlowExits } from './flowExits.js';
 import { StructureWatch } from './structureWatch.js';
+import { StaircaseSignal } from './staircaseSignal.js';
 import { ScanLab, buildScanCard } from './scanLab.js';
 import { ShadowSeller } from './shadowSeller.js';
 import { snapshotFeatures, externalExit } from './learn.js';
@@ -48,7 +49,8 @@ export class Bot {
     this.journal = new Journal(cfg.dataDir, { now: this.now });
     this.calloutLab = new CalloutLab({ cfg, journal: this.journal, now: this.now }); // Callout Shadow Lab (record-only): journals would-calls + scores them as a follower would have fared; can never post, sign, or trade
     this.flowExits = new FlowExits({ cfg, journal: this.journal, now: this.now, positionState: (id) => this._flowExitPosState(id), log: console.log }); // Flow-Exit Watcher (record-only): polls the wallet that triggered a flow entry for its trim/exit and scores the race at close; no decision reads it
-    this.structureWatch = new StructureWatch({ cfg, journal: this.journal, now: this.now, fetchHolders: (mint) => this._dasHolderSample(mint), log: console.log }); // Structure Watch (record-only): seeds every signaled mint into an hours-long staircase + holder-series watch with would-enter marks at confirmed higher lows; holder reads ride the same knob-respecting DAS helper as gate sampling; no decision reads it
+    this.staircaseSignal = new StaircaseSignal({ cfg, journal: this.journal, now: this.now, log: console.log }); // Staircase-3 Shadow Signal (record-only, user 2026-10-16): every structure-watch mark at ordinal >= 3 is ALSO journaled as a named shadow signal, scored by the watch's forward scores joined at read time (/staircase); nothing reads it into any decision
+    this.structureWatch = new StructureWatch({ cfg, journal: this.journal, now: this.now, fetchHolders: (mint) => this._dasHolderSample(mint), log: console.log, onMark: (rec) => { try { this.staircaseSignal.noteMark(rec); } catch { /* observer only — never disturb the watch */ } } }); // Structure Watch (record-only): seeds every signaled mint into an hours-long staircase + holder-series watch with would-enter marks at confirmed higher lows; holder reads ride the same knob-respecting DAS helper as gate sampling; no decision reads it
     this.scanLab = new ScanLab({ cfg, journal: this.journal, now: this.now, log: console.log }); // Scan Ledger scorer (record-only): r15/r60 after each finalized scan session; no decision reads it
     this.scanFold = new Map(); // Scan Ledger: mint -> live watch-session fold (cheap scalars only; finalized into the journal by _scanSweep)
     this.lastScanSweepTs = 0;
@@ -941,6 +943,15 @@ export class Bot {
    *  the FULL structure_watch.jsonl (see structureWatch.js; ~60s cached there). */
   structureWatchCard() {
     try { return this.structureWatch.scorecard(); } catch { return { enabled: false }; }
+  }
+
+  /** Read-only /staircase payload — the Staircase-3 Shadow Signal card
+   *  (record-only, user 2026-10-16): ordinal >= 3 marks journaled as named
+   *  shadow signals, forward scores joined at read time from the structure
+   *  journal (see staircaseSignal.js). ready = 30 finalized. */
+  staircaseCard() {
+    try { return this.staircaseSignal ? this.staircaseSignal.card() : { enabled: false }; }
+    catch { return { enabled: false }; }
   }
 
   /** Read-only /scanledger payload — the Scan Ledger (record-only, user

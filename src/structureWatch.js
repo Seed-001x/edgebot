@@ -246,10 +246,11 @@ export class StructureWatch {
    * fetchHolders is ONE Helius DAS call per invocation — the credit meter
    * (holderSamples) counts invocations at sample time.
    */
-  constructor({ cfg = {}, journal = null, now = () => Date.now(), fetchCandles = null, resolvePool = null, fetchHolders = null, log = null } = {}) {
+  constructor({ cfg = {}, journal = null, now = () => Date.now(), fetchCandles = null, resolvePool = null, fetchHolders = null, log = null, onMark = null } = {}) {
     this.cfg = cfg;
     this.journal = journal;
     this.now = now;
+    this.onMark = onMark; // Staircase-3 shadow-signal tap (record-only): invoked with each journaled mark AFTER the watch's own append; the watch reads nothing back from it
     this.fetchCandles = fetchCandles || defaultFetchCandles;
     this.resolvePool = resolvePool || defaultResolvePool;
     this.fetchHolders = fetchHolders || ((mint) => fetchHolderCount(mint, { rpcUrls: (cfg && cfg.rpcUrls) || [], now: this.now() }));
@@ -445,6 +446,7 @@ export class StructureWatch {
       };
       w.marks.set(markId, rec);
       this._append(rec);
+      if (this.onMark) { try { this.onMark(rec); } catch { /* observer only — the shadow signal can never disturb the watch */ } }
       if (this.log) this.log(`[structurewatch] ${w.rec.symbol || w.rec.mint}: higher low #${w.ordinal} confirmed (${m.lowPrev} → ${m.lowNew}) — would-enter mark, record only`);
     }
   }

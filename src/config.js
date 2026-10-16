@@ -68,6 +68,12 @@ export function loadConfig(env = process.env) {
     shadowSellerMinN: num(env, 'SHADOW_SELLER_MIN_N', 8),     // bucket samples required before the bucket may fire (below = no opinion = hold)
     shadowSellerPriorK: num(env, 'SHADOW_SELLER_PRIOR_K', 10), // smoothing prior: phantom flat samples pulling every bucket's EV toward 0
     shadowSellerRefitMin: num(env, 'SHADOW_SELLER_REFIT_MIN', 15), // evidence table refit cadence (boot + this often, lazily on the observe path)
+    // Staircase-3 Shadow Signal (user order 2026-10-16, RECORD-ONLY): every
+    // Structure Watch mark at ordinal >= 3 is ALSO journaled as a named
+    // shadow signal (the study's finding: median +208% forward peak over 154
+    // finalized marks) and scored by the watch's own forward scores, joined
+    // at read time (/staircase). No path reads it back into a decision.
+    staircaseSignal: num(env, 'STAIRCASE_SIGNAL', 1),        // 1 = staircase-3 shadow signal on (0 = no records, card off)
     // D4 cold-market streak pause (user 2026-10-13, his design over his agent's timer version):
     // N straight red closes pause new entries; the bot keeps scanning and resumes ITSELF only
     // when market breadth (share of sampled coins green on the hour) recovers and stays
@@ -601,6 +607,7 @@ export function validateConfig(cfg) {
   if (cfg.shadowSellerMinN < 1) errs.push('SHADOW_SELLER_MIN_N must be >= 1');
   if (cfg.shadowSellerPriorK < 0) errs.push('SHADOW_SELLER_PRIOR_K must be >= 0');
   if (cfg.shadowSellerRefitMin < 1) errs.push('SHADOW_SELLER_REFIT_MIN must be >= 1');
+  if (cfg.staircaseSignal < 0 || cfg.staircaseSignal > 1) errs.push('STAIRCASE_SIGNAL must be 0 or 1');
   if (cfg.ratchetFlowWindowSec < 1 || cfg.ratchetFlowWindowSec > 120) errs.push('RATCHET_FLOW_WINDOW_SEC must be 1..120');
   if (cfg.ratchetFlowSellShare < 0 || cfg.ratchetFlowSellShare > 1) errs.push('RATCHET_FLOW_SELL_SHARE must be between 0 and 1');
   if (cfg.ratchetFlowMinSellSol < 0) errs.push('RATCHET_FLOW_MIN_SELL_SOL must be >= 0');

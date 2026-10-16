@@ -315,6 +315,16 @@ export function startServer(bot, port) {
       if (!bot.shadowSellerCard) return json(res, 200, { enabled: false });
       return json(res, 200, bot.shadowSellerCard());
     }
+    if (req.method === 'GET' && u.pathname === '/staircase') {
+      // Staircase-3 Shadow Signal (record-only, user 2026-10-16): the
+      // structure study's headline finding minted as a named signal —
+      // every mark at ordinal >= 3 (3rd-or-later confirmed higher low)
+      // journaled to staircase_signals.jsonl and outcome-tracked by the
+      // watch's own forward scores, split fresh (3–5) vs deep (6+)
+      // ordinals; ready at 30 finalized. Nothing here gates or trades.
+      if (!bot.staircaseCard) return json(res, 200, { enabled: false });
+      return json(res, 200, bot.staircaseCard());
+    }
     if (req.method === 'POST' && u.pathname === '/positions/notp') {
       let body = '';
       req.on('data', c => { body += c; if (body.length > 2000) req.destroy(); });
