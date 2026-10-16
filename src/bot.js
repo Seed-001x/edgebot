@@ -23,6 +23,7 @@ import { CalloutLab } from './calloutLab.js';
 import { FlowExits } from './flowExits.js';
 import { StructureWatch } from './structureWatch.js';
 import { ScanLab, buildScanCard } from './scanLab.js';
+import { ShadowSeller } from './shadowSeller.js';
 import { snapshotFeatures, externalExit } from './learn.js';
 
 import { PostExitTracker, PairedShadowExits } from './postExit.js';
@@ -59,6 +60,7 @@ export class Bot {
     this.lastTrades = foldLastTrades(this.journal.trades); // ran-rebuy block: most recent closed trade per mint, rebuilt from the journal so trades closed before this deploy (e.g. BOOT, 2026-10-14) anchor the rule on its first boot; ensureClose keeps it current
     this.postExit = new PostExitTracker(cfg.dataDir, this.now); // 5-min post-exit price tracker (observer only)
     this.paired = new PairedShadowExits(cfg.dataDir, this.now); // D1: virtual would-be exits paired to manual exits (observer only)
+    this.shadowSeller = new ShadowSeller({ cfg, journal: this.journal, now: this.now, log: console.log, postExitOf: (id) => (this.postExit && this.postExit.done || []).find(x => x.id === id) || null }); // Shadow Seller (record-only, user 2026-10-16): a LEARNED exit judge — buckets each open position's state and journals its first would-sell when the bot's own completed history says holding from that state paid worse than the mark; pairs against the ladder's actual outcome at close. No ladder rules, no borrowed thresholds; can never sell
     this.streamEvalAt = new Map(); // mint -> ts of last stream-judge evaluation (v2 throttle, mirrors fastEvalAt)
     this.shadowStreamState = new Map(); // shadow virtual id -> stream-judge state (kept Bot-side: the virtual's own serialized state stays untouched)
     this.shadowTrades = new ShadowTrades(cfg.dataDir, this.now, { // trade-grade shadow (record-only): virtual positions for gate-passing shadow signals, run through the real exit stack
@@ -277,6 +279,10 @@ export class Bot {
       const v = this.latest.get(pos.mint);
       this.postExit.watch({ id: pos.id, mint: pos.mint, symbol: pos.symbol, setup: pos.setup, exitTs: full.ts || this.now(), exitPriceUsd: v && v.price > 0 ? v.price : (pos.entryPrice || null), reason: full.reason || null, manual: !!full.manual, pnlSol: full.pnlSol ?? null });
     } catch { /* observer only — never disturb trading */ }
+    // Shadow Seller pairing (record-only): if the learned judge would-fired
+    // on this position, pair it against what the ladder actually did with
+    // the same remainder from fire time to this close.
+    try { if (this.shadowSeller) this.shadowSeller.noteClose(pos, full); } catch { /* observer only — never disturb trading */ }
     try {
       this.stats.closesSinceReport = (this.stats.closesSinceReport || 0) + 1;
       if (this.stats.closesSinceReport >= (this.cfg.reportEveryTrades || 10)) this.makeTradeReport();
@@ -943,6 +949,15 @@ export class Bot {
    *  ScanLab score map. */
   scanLedgerCard() {
     try { return buildScanCard(this.journal.scanSessions || [], (id) => this.scanLab ? this.scanLab.scoreOf(id) : null, this.now()); }
+    catch { return { enabled: false }; }
+  }
+
+  /** Read-only /shadowseller payload — the Shadow Seller (record-only, user
+   *  2026-10-16): the learned judge's would-fires paired against the ladder's
+   *  actual outcomes on the same remainders, with post-exit moves joined at
+   *  read time. ready = 30 paired fires. */
+  shadowSellerCard() {
+    try { return this.shadowSeller ? this.shadowSeller.card() : { enabled: false }; }
     catch { return { enabled: false }; }
   }
 
@@ -2088,6 +2103,14 @@ export class Bot {
       const basis = pos.entrySol * pos.remainingFrac;
       const base = pos.entryRoundTrip > 0 ? pos.entryRoundTrip : 1;
       if (basis > 0) this.judgeRatchetShadow(pos, (valueSol / basis) / base, n);
+    }
+    // Shadow Seller (record-only): the learned judge reads the same check —
+    // same realizable mark, the position's just-updated peak and flowHist —
+    // and journals its first would-sell per position when its evidence table
+    // (built from the bot's own completed history) condemns the bucket. It
+    // only ever writes journal records; the ladder's decision above is untouched.
+    if (valueSol != null) {
+      try { if (this.shadowSeller) this.shadowSeller.observe(pos, { valueSol, view: v, n }); } catch { /* observer only — never disturb trading */ }
     }
     // +20% progress callout: let the timeline know it's climbing (once per position)
     if (valueSol != null && !pos.climbCalloutDone) {

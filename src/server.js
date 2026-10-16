@@ -307,6 +307,14 @@ export function startServer(bot, port) {
       if (!bot.scanLedgerCard) return json(res, 200, { enabled: false });
       return json(res, 200, bot.scanLedgerCard());
     }
+    if (req.method === 'GET' && u.pathname === '/shadowseller') {
+      // Shadow Seller (record-only, user 2026-10-16): the learned exit
+      // judge's would-fires paired against the ladder's actual outcomes on
+      // the same remainders — totals { fires, paired, shadowWins, deltaSol },
+      // recent pairings with post-exit moves joined, ready at 30 paired.
+      if (!bot.shadowSellerCard) return json(res, 200, { enabled: false });
+      return json(res, 200, bot.shadowSellerCard());
+    }
     if (req.method === 'POST' && u.pathname === '/positions/notp') {
       let body = '';
       req.on('data', c => { body += c; if (body.length > 2000) req.destroy(); });

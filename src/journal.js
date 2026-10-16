@@ -58,7 +58,7 @@ export class Journal {
   constructor(dir, { now = Date.now } = {}) {
     this.now = now;
     this.dir = dir;
-    this.f = { sig: path.join(dir, 'signals.jsonl'), out: path.join(dir, 'outcomes.jsonl'), trades: path.join(dir, 'trades.jsonl'), fb: path.join(dir, 'feedback.jsonl'), ticks: path.join(dir, 'ticks.jsonl'), manual: path.join(dir, 'manual_exits.jsonl'), reports: path.join(dir, 'trade_reports.jsonl'), rshadow: path.join(dir, 'ratchet_shadow.jsonl'), pend: path.join(dir, 'outcome_pending.json'), scan: path.join(dir, 'scans.jsonl'), sses: path.join(dir, 'scan_sessions.jsonl'), cshadow: path.join(dir, 'callout_shadow.jsonl'), rsig: path.join(dir, 'resignal_shadow.jsonl'), fexit: path.join(dir, 'flow_exits.jsonl'), swatch: path.join(dir, 'structure_watch.jsonl') };
+    this.f = { sig: path.join(dir, 'signals.jsonl'), out: path.join(dir, 'outcomes.jsonl'), trades: path.join(dir, 'trades.jsonl'), fb: path.join(dir, 'feedback.jsonl'), ticks: path.join(dir, 'ticks.jsonl'), manual: path.join(dir, 'manual_exits.jsonl'), reports: path.join(dir, 'trade_reports.jsonl'), rshadow: path.join(dir, 'ratchet_shadow.jsonl'), pend: path.join(dir, 'outcome_pending.json'), scan: path.join(dir, 'scans.jsonl'), sses: path.join(dir, 'scan_sessions.jsonl'), cshadow: path.join(dir, 'callout_shadow.jsonl'), rsig: path.join(dir, 'resignal_shadow.jsonl'), fexit: path.join(dir, 'flow_exits.jsonl'), swatch: path.join(dir, 'structure_watch.jsonl'), ssell: path.join(dir, 'shadow_sell.jsonl') };
     this._pendDirty = false;   // outcome-tracking progress changed since the last save
     this._pendSavedAt = 0;
     try { fs.mkdirSync(dir, { recursive: true }); } catch { /* ignore */ }
@@ -76,6 +76,8 @@ export class Journal {
     for (const ss of readTail(this.f.sses, KEEP)) this.scanSessions.push(ss);
     this.ratchet = [];   // ratchet_shadow.jsonl tail for the read-only /ratchetshadow endpoint (records are rare — a 500 tail spans months)
     for (const r of readTail(this.f.rshadow, 500)) this.ratchet.push(r);
+    this.shadowSells = []; // Shadow Seller (2026-10-16): would-fire + paired records for the read-only /shadowseller endpoint — the capped tail feeds the card and the judge's fire-once/pairing rebuild at boot
+    for (const r of readTail(this.f.ssell, KEEP)) this.shadowSells.push(r);
     this.resignalFired = new Set();   // answered-resignal shadow: mark keys that already produced a record (rebuilt from resignal_shadow.jsonl in boot())
     this._rsigCache = null; this._rsigCacheTs = 0;
     this.boot();
@@ -185,6 +187,8 @@ export class Journal {
   flowExit(rec) { this.append(this.f.fexit, rec); return rec; }
   /** Structure Watch record (seed / sample / mark / mark-score / end / skip) — append-only, observer only (see structureWatch.js). No in-memory tail; the watch folds the full file itself. */
   structure(rec) { this.append(this.f.swatch, rec); return rec; }
+  /** Shadow Seller record (fire / paired) — observer only, append-only; the capped in-memory tail feeds the /shadowseller card and the judge's boot rebuild of fired/pending state (see shadowSeller.js). */
+  shadowSell(rec) { this.shadowSells.push(rec); if (this.shadowSells.length > KEEP) this.shadowSells.shift(); this.append(this.f.ssell, rec); return rec; }
 
   /** The resignal matcher, run on every freshly journaled signal (fail-silent
    *  at the call site): if the mint carries a user mark on an EARLIER signal

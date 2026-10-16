@@ -55,6 +55,19 @@ export function loadConfig(env = process.env) {
     // history. Nothing in trading reads the ledger. 0 disables it entirely.
     scanLedger: num(env, 'SCAN_LEDGER', 1),                 // 1 = scan ledger on
     scanSessionIdleSec: num(env, 'SCAN_SESSION_IDLE_SEC', 600), // a watch session finalizes after this long with no fresh view (or at 3h old)
+    // Shadow Seller (user order 2026-10-16, RECORD-ONLY): a LEARNED exit judge
+    // with no ladder rules and no borrowed thresholds — it buckets each open
+    // position's state (peak band × drawdown band × buy-share-trend sign),
+    // looks the bucket up in an evidence table built from the bot's own
+    // completed history (journal closes + tick paths: did HOLDING from that
+    // state beat the mark on the table?), and journals the first would-sell
+    // per position when the evidence says holding paid worse. Fires are
+    // paired against the ladder's actual outcome on the same remainder at
+    // close (/shadowseller). It can never sell, gate, or touch live logic.
+    shadowSeller: num(env, 'SHADOW_SELLER', 1),              // 1 = shadow seller on (0 = fully off: no observing, no records)
+    shadowSellerMinN: num(env, 'SHADOW_SELLER_MIN_N', 8),     // bucket samples required before the bucket may fire (below = no opinion = hold)
+    shadowSellerPriorK: num(env, 'SHADOW_SELLER_PRIOR_K', 10), // smoothing prior: phantom flat samples pulling every bucket's EV toward 0
+    shadowSellerRefitMin: num(env, 'SHADOW_SELLER_REFIT_MIN', 15), // evidence table refit cadence (boot + this often, lazily on the observe path)
     // D4 cold-market streak pause (user 2026-10-13, his design over his agent's timer version):
     // N straight red closes pause new entries; the bot keeps scanning and resumes ITSELF only
     // when market breadth (share of sampled coins green on the hour) recovers and stays
@@ -584,6 +597,10 @@ export function validateConfig(cfg) {
   if (cfg.beTriggerPct < 0 || cfg.beTriggerPct >= 1) errs.push('BE_TRIGGER_PCT must be between 0 and 1');
   if (cfg.beArmPct > 0 && cfg.beTriggerPct >= cfg.beArmPct) errs.push('BE_TRIGGER_PCT must be below BE_ARM_PCT when the break-even ratchet is on');
   if (cfg.ratchetShadow < 0 || cfg.ratchetShadow > 1) errs.push('RATCHET_SHADOW must be 0 or 1');
+  if (cfg.shadowSeller < 0 || cfg.shadowSeller > 1) errs.push('SHADOW_SELLER must be 0 or 1');
+  if (cfg.shadowSellerMinN < 1) errs.push('SHADOW_SELLER_MIN_N must be >= 1');
+  if (cfg.shadowSellerPriorK < 0) errs.push('SHADOW_SELLER_PRIOR_K must be >= 0');
+  if (cfg.shadowSellerRefitMin < 1) errs.push('SHADOW_SELLER_REFIT_MIN must be >= 1');
   if (cfg.ratchetFlowWindowSec < 1 || cfg.ratchetFlowWindowSec > 120) errs.push('RATCHET_FLOW_WINDOW_SEC must be 1..120');
   if (cfg.ratchetFlowSellShare < 0 || cfg.ratchetFlowSellShare > 1) errs.push('RATCHET_FLOW_SELL_SHARE must be between 0 and 1');
   if (cfg.ratchetFlowMinSellSol < 0) errs.push('RATCHET_FLOW_MIN_SELL_SOL must be >= 0');
