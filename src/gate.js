@@ -8,6 +8,7 @@
 // where rigging lives) and only warns for older, high-volume ones.
 
 import { fetchJson } from './util.js';
+import { relayRoute } from './relayFetch.js';
 import { rpc } from './curveChain.js';
 
 const RC = 'https://api.rugcheck.xyz/v1';
@@ -429,7 +430,8 @@ async function resolveRanPool(mint) {
   // GT top pool first (the wallet detectors'/callout scorer's discipline);
   // DexScreener's deepest pair as the fallback for mints GT hasn't ranked.
   try {
-    const j = await fetchJson(`${GT_RAN}/networks/solana/tokens/${mint}`, { timeout: 12000 });
+    const { url, headers } = relayRoute(`${GT_RAN}/networks/solana/tokens/${mint}`);
+    const j = await fetchJson(url, { timeout: 12000, headers });
     const pools = j && j.data && j.data.relationships && j.data.relationships.top_pools && j.data.relationships.top_pools.data;
     if (pools && pools.length) {
       const id = String(pools[0].id || '');
@@ -455,7 +457,8 @@ async function defaultRanCandles(mint, entryTs, now) {
   const byTs = new Map();
   let before = Math.floor(now / 1000) + 60;
   for (let page = 0; page < 4; page++) {
-    const j = await fetchJson(`${GT_RAN}/networks/solana/pools/${pool}/ohlcv/minute?limit=1000&before_timestamp=${before}`, { timeout: 15000 });
+    const { url, headers } = relayRoute(`${GT_RAN}/networks/solana/pools/${pool}/ohlcv/minute?limit=1000&before_timestamp=${before}`);
+    const j = await fetchJson(url, { timeout: 15000, headers });
     const list = j && j.data && j.data.attributes && j.data.attributes.ohlcv_list;
     if (!list || !list.length) break;
     let oldest = Infinity;

@@ -18,6 +18,7 @@
 // thesis:null with a thesisSource note instead of throwing.
 import fs from 'node:fs';
 import { fetchJson, mean, median, round } from './util.js';
+import { relayRoute } from './relayFetch.js';
 import { buildThesis } from './callout.js';
 
 export const CALLOUT_TRIGGERS = ['entry', 'tp1', 'tp2', 'tp3', 'confluence', 'devlaunch', 'graduation'];
@@ -174,7 +175,8 @@ async function defaultFetchCandles(pool, fromTs, toTs) {
   const byTs = new Map();
   let before = Math.floor(toTs / 1000) + 60;
   for (let page = 0; page < 4; page++) {
-    const j = await fetchJson(`${GT}/networks/solana/pools/${pool}/ohlcv/minute?limit=1000&before_timestamp=${before}`, { timeout: 15000 });
+    const { url, headers } = relayRoute(`${GT}/networks/solana/pools/${pool}/ohlcv/minute?limit=1000&before_timestamp=${before}`);
+    const j = await fetchJson(url, { timeout: 15000, headers });
     const list = j && j.data && j.data.attributes && j.data.attributes.ohlcv_list;
     if (!list || !list.length) break;
     let oldest = Infinity;
@@ -186,7 +188,8 @@ async function defaultFetchCandles(pool, fromTs, toTs) {
 }
 
 async function defaultResolvePool(mint) {
-  const j = await fetchJson(`${GT}/networks/solana/tokens/${mint}`, { timeout: 12000 });
+  const { url, headers } = relayRoute(`${GT}/networks/solana/tokens/${mint}`);
+  const j = await fetchJson(url, { timeout: 12000, headers });
   const pools = j && j.data && j.data.relationships && j.data.relationships.top_pools && j.data.relationships.top_pools.data;
   if (!pools || !pools.length) return null;
   const id = String(pools[0].id || '');

@@ -5,6 +5,7 @@
 // This is the fix for the old bot's addrs.slice(0,120) problem.
 
 import { fetchJson, SOL_MINT } from './util.js';
+import { relayRoute } from './relayFetch.js';
 
 const DS = 'https://api.dexscreener.com';
 const GT = 'https://api.geckoterminal.com/api/v2';
@@ -161,7 +162,8 @@ async function pumpMovers(limit = 50) {
 }
 
 async function gtPools(path) {
-  const j = await fetchJson(`${GT}/${path}`);
+  const { url, headers } = relayRoute(`${GT}/${path}`);
+  const j = await fetchJson(url, { headers });
   const out = [];
   for (const p of (j && j.data) || []) {
     const id = p.relationships && p.relationships.base_token && p.relationships.base_token.data && p.relationships.base_token.data.id;
