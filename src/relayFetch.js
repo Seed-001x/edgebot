@@ -29,3 +29,22 @@ export function relayRoute(url, env = process.env) {
   if (env.PUMP_RELAY_KEY) headers['x-relay-key'] = env.PUMP_RELAY_KEY;
   return { url: `${env.PUMP_RELAY}${env.PUMP_RELAY.includes('?') ? '&' : '?'}url=${encodeURIComponent(url)}`, headers };
 }
+
+export const PF_HOST = 'frontend-api-v3.pump.fun';
+
+/**
+ * Same routing for pump.fun's frontend API — the host gradWatch polls.
+ * Added 2026-10-16 (user-ordered fix): gradWatch fetched the v3 API directly
+ * and Cloudflare 403'd every poll from the bot's host (stats read polls 0 /
+ * "HTTP 403" while the relay-routed coin lists worked). Only the v3 host is
+ * rewritten; relay unset -> the original URL and no extra headers.
+ */
+export function relayRoutePump(url, env = process.env) {
+  if (!env || !env.PUMP_RELAY) return { url, headers: {} };
+  let host = null;
+  try { host = new URL(url).hostname; } catch { /* unparseable -> direct */ }
+  if (host !== PF_HOST) return { url, headers: {} };
+  const headers = {};
+  if (env.PUMP_RELAY_KEY) headers['x-relay-key'] = env.PUMP_RELAY_KEY;
+  return { url: `${env.PUMP_RELAY}${env.PUMP_RELAY.includes('?') ? '&' : '?'}url=${encodeURIComponent(url)}`, headers };
+}

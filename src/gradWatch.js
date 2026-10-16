@@ -35,6 +35,7 @@
 // Fail-open throughout: a failed poll logs and retries next cycle, never throws.
 
 import { fetchJson } from './util.js';
+import { relayRoutePump } from './relayFetch.js';
 
 const PF = 'https://frontend-api-v3.pump.fun';
 // Recently completed coins, freshest trade activity first. Verified live
@@ -51,7 +52,11 @@ const PF_HEADERS = {
 };
 
 async function fetchGradRows() {
-  const j = await fetchJson(GRAD_QUERY, { headers: PF_HEADERS, timeout: 10000, throwOnError: true });
+  // Via the pump relay when configured (2026-10-16 fix): direct calls to the
+  // v3 API are Cloudflare-403'd from the bot's host — every poll failed and
+  // the graduation feed sat dark while the relay-routed lists worked.
+  const { url, headers } = relayRoutePump(GRAD_QUERY);
+  const j = await fetchJson(url, { headers: { ...PF_HEADERS, ...headers }, timeout: 10000, throwOnError: true });
   return Array.isArray(j) ? j : [];
 }
 

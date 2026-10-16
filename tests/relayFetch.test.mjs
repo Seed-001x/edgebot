@@ -64,3 +64,37 @@ test('default env is process.env, read at call time', () => {
     if (savedKey === undefined) delete process.env.PUMP_RELAY_KEY; else process.env.PUMP_RELAY_KEY = savedKey;
   }
 });
+
+import { relayRoutePump, PF_HOST } from '../src/relayFetch.js';
+
+const PF_URL = 'https://frontend-api-v3.pump.fun/coins?offset=0&limit=100&sort=last_trade_timestamp&order=DESC&includeNsfw=false&complete=true';
+
+test('pump: relay unset -> original URL, no relay header', () => {
+  const r = relayRoutePump(PF_URL, {});
+  assert.equal(r.url, PF_URL);
+  assert.deepEqual(r.headers, {});
+});
+
+test('pump: relay set + key -> relay URL with encoded url param and x-relay-key header', () => {
+  const r = relayRoutePump(PF_URL, { PUMP_RELAY: 'https://w.dev/', PUMP_RELAY_KEY: 'k' });
+  assert.equal(r.url, `https://w.dev/?url=${encodeURIComponent(PF_URL)}`);
+  assert.equal(r.headers['x-relay-key'], 'k');
+});
+
+test('pump: the grad query params survive encoding intact', () => {
+  const r = relayRoutePump(PF_URL, { PUMP_RELAY: 'https://w.dev/' });
+  assert.equal(new URL(r.url).searchParams.get('url'), PF_URL);
+});
+
+test('pump: non-v3 hosts are never rewritten (GT host, dexscreener, pump web)', () => {
+  for (const u of ['https://api.geckoterminal.com/api/v2/x', 'https://api.dexscreener.com/latest/dex/tokens/X', 'https://pump.fun/coin/abc']) {
+    const r = relayRoutePump(u, { PUMP_RELAY: 'https://w.dev/', PUMP_RELAY_KEY: 'k' });
+    assert.equal(r.url, u);
+    assert.deepEqual(r.headers, {});
+  }
+});
+
+test('pump: PF_HOST is the v3 API host gradWatch polls', () => {
+  assert.equal(PF_HOST, 'frontend-api-v3.pump.fun');
+  assert.ok(PF_URL.startsWith(`https://${PF_HOST}/`));
+});
