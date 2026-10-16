@@ -29,6 +29,14 @@ export function loadConfig(env = process.env) {
     lossHalveFactor: num(env, 'LOSS_HALVE_FACTOR', 0.5), // size multiplier once the brake trips
     wipeHaltFrac: num(env, 'WIPE_HALT_FRAC', 0.90),     // one close losing this fraction of its stake → HALT
     haltDownSol: num(env, 'HALT_DOWN_SOL', 0),          // balance halt: once armed (baseline = wallet equity at first check), halt if equity falls this much below the baseline; 0 = off. Set 0.09 by user 2026-10-13 for overnight — user corrected: BALANCE, not day P&L.
+    // Reconcile drop guard (user order 2026-10-16, the WORLD orphan): a position is
+    // only booked as sold-outside-the-bot when its token balance reads zero SUSTAINED —
+    // never inside the post-entry grace window (a fresh fill's token account can read
+    // as zero across RPC nodes for seconds), and only after the zero has persisted
+    // across separate checks spanning the confirm window. One racing 0n read dropped
+    // WORLD 5s after its fill while the tokens never left the wallet.
+    reconcileGraceSec: num(env, 'RECONCILE_GRACE_SEC', 120),     // no reconcile drop younger than this
+    reconcileConfirmSec: num(env, 'RECONCILE_CONFIRM_SEC', 60),  // zero must persist at least this long
     // D4 cold-market streak pause (user 2026-10-13, his design over his agent's timer version):
     // N straight red closes pause new entries; the bot keeps scanning and resumes ITSELF only
     // when market breadth (share of sampled coins green on the hour) recovers and stays

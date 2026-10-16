@@ -198,8 +198,7 @@ export class Bot {
       for (const p of [...this.positions]) {
         try {
           const bal = await this.exec.tokenBalance(p.mint);
-          if (bal === 0n) await this.closeExternal(p, 'reconcile: tokens no longer in wallet (manual sell)');
-          else if (bal != null) p.tokensRaw = bal.toString();
+          if (this._reconcileZeroConfirmed(p, bal, this.now())) await this.closeExternal(p, 'reconcile: tokens no longer in wallet (manual sell)');
         } catch (e) { this.err('reconcile', e); }
       }
       this.savePositions();
@@ -514,6 +513,29 @@ export class Bot {
     return p;
   }
 
+  // Reconcile drop guard (user order 2026-10-16, the WORLD orphan): a zero
+  // token-balance read is evidence, not proof — a fresh fill's token account
+  // can read as zero across RPC nodes for seconds, and an empty RPC response
+  // parses to 0n too. WORLD was dropped 5s after its buy on one such read;
+  // the tokens never left the wallet, the position fell off the books, and
+  // the exit stack never managed it through its run. So a position counts as
+  // externally sold only when (a) it is older than the post-entry grace
+  // window AND (b) the zero has persisted across separate checks spanning at
+  // least the confirm window. zeroBalSince is stamped on the first post-grace
+  // zero sighting (persisted with the position) and cleared by any non-zero
+  // read. Returns true when the caller should drop the position now; also
+  // keeps p.tokensRaw fresh on live reads, as the call sites did before.
+  _reconcileZeroConfirmed(p, bal, now) {
+    if (bal !== 0n) {
+      if (bal != null) p.tokensRaw = bal.toString();
+      if (p.zeroBalSince) delete p.zeroBalSince;
+      return false;
+    }
+    if (now - (p.entryTs || 0) < (this.cfg.reconcileGraceSec ?? 120) * 1000) return false;
+    if (!p.zeroBalSince) { p.zeroBalSince = now; return false; }
+    return now - p.zeroBalSince >= (this.cfg.reconcileConfirmSec ?? 60) * 1000;
+  }
+
   // Tokens left the wallet outside the bot. P&L comes from the chain when the user's sell
   // transactions parse (marked pnlSource 'chain'), else an estimate from the last sell
   // quote (marked estimated) — and it counts toward the daily loss cap either way.
@@ -547,9 +569,9 @@ export class Bot {
     for (const p of [...this.positions]) {
       try {
         const bal = await this.exec.tokenBalance(p.mint);
-        if (bal === 0n) {
+        if (this._reconcileZeroConfirmed(p, bal, this.now())) {
           if (await this.closeExternal(p, 'reconcile: sold outside bot (manual sell)')) console.log(`[reconcile] dropped ${p.symbol} (not in wallet)`);
-        } else if (bal != null) p.tokensRaw = bal.toString();
+        }
       } catch (e) { /* RPC flaky — skip, don't drop on error */ }
     }
     this.savePositions();
