@@ -133,6 +133,11 @@ export function buildScanCard(sessions, scoreOf, now = Date.now()) {
       signaledPct: all.length ? round(100 * signaled / all.length, 1) : 0,
     },
     recent: all.slice(-100).reverse().map(join),
+    signaledSessions: all
+      .filter(s => s.signaled)
+      .sort((a, b) => (b.lastTs || 0) - (a.lastTs || 0))
+      .slice(0, 100)
+      .map(join),
     nearMisses: all
       .filter(s => !s.signaled && (s.samples || 0) >= 5)
       .sort((a, b) => (b.runFromFirst || 0) - (a.runFromFirst || 0))
