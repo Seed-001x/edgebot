@@ -74,6 +74,13 @@ export function loadConfig(env = process.env) {
     // finalized marks) and scored by the watch's own forward scores, joined
     // at read time (/staircase). No path reads it back into a decision.
     staircaseSignal: num(env, 'STAIRCASE_SIGNAL', 1),        // 1 = staircase-3 shadow signal on (0 = no records, card off)
+    // Staircase-3 LIVE (user order 2026-10-16, "flip it live" — shadow study
+    // continues untouched): when 1, an ordinal>=3 mark ALSO routes a live
+    // entry attempt through the exact standard onSignal pipeline
+    // (Bot._evalStaircase) — same gates, risk, sizing, exits as every setup.
+    // 0 = marks stay shadow-only (the pre-flip world). Default 0 in code;
+    // the live env carries the user's flip.
+    staircaseLive: num(env, 'STAIRCASE_LIVE', 0),            // 0 = staircase live entries off (1 = on)
     // D4 cold-market streak pause (user 2026-10-13, his design over his agent's timer version):
     // N straight red closes pause new entries; the bot keeps scanning and resumes ITSELF only
     // when market breadth (share of sampled coins green on the hour) recovers and stays
@@ -608,6 +615,7 @@ export function validateConfig(cfg) {
   if (cfg.shadowSellerPriorK < 0) errs.push('SHADOW_SELLER_PRIOR_K must be >= 0');
   if (cfg.shadowSellerRefitMin < 1) errs.push('SHADOW_SELLER_REFIT_MIN must be >= 1');
   if (cfg.staircaseSignal < 0 || cfg.staircaseSignal > 1) errs.push('STAIRCASE_SIGNAL must be 0 or 1');
+  if (cfg.staircaseLive < 0 || cfg.staircaseLive > 1) errs.push('STAIRCASE_LIVE must be 0 or 1');
   if (cfg.ratchetFlowWindowSec < 1 || cfg.ratchetFlowWindowSec > 120) errs.push('RATCHET_FLOW_WINDOW_SEC must be 1..120');
   if (cfg.ratchetFlowSellShare < 0 || cfg.ratchetFlowSellShare > 1) errs.push('RATCHET_FLOW_SELL_SHARE must be between 0 and 1');
   if (cfg.ratchetFlowMinSellSol < 0) errs.push('RATCHET_FLOW_MIN_SELL_SOL must be >= 0');

@@ -50,7 +50,7 @@ export class Bot {
     this.calloutLab = new CalloutLab({ cfg, journal: this.journal, now: this.now }); // Callout Shadow Lab (record-only): journals would-calls + scores them as a follower would have fared; can never post, sign, or trade
     this.flowExits = new FlowExits({ cfg, journal: this.journal, now: this.now, positionState: (id) => this._flowExitPosState(id), log: console.log }); // Flow-Exit Watcher (record-only): polls the wallet that triggered a flow entry for its trim/exit and scores the race at close; no decision reads it
     this.staircaseSignal = new StaircaseSignal({ cfg, journal: this.journal, now: this.now, log: console.log }); // Staircase-3 Shadow Signal (record-only, user 2026-10-16): every structure-watch mark at ordinal >= 3 is ALSO journaled as a named shadow signal, scored by the watch's forward scores joined at read time (/staircase); nothing reads it into any decision
-    this.structureWatch = new StructureWatch({ cfg, journal: this.journal, now: this.now, fetchHolders: (mint) => this._dasHolderSample(mint), log: console.log, onMark: (rec) => { try { this.staircaseSignal.noteMark(rec); } catch { /* observer only — never disturb the watch */ } } }); // Structure Watch (record-only): seeds every signaled mint into an hours-long staircase + holder-series watch with would-enter marks at confirmed higher lows; holder reads ride the same knob-respecting DAS helper as gate sampling; no decision reads it
+    this.structureWatch = new StructureWatch({ cfg, journal: this.journal, now: this.now, fetchHolders: (mint) => this._dasHolderSample(mint), log: console.log, onMark: (rec) => { try { this.staircaseSignal.noteMark(rec); } catch { /* observer only — never disturb the watch */ } try { this._evalStaircase(rec); } catch { /* live tap (STAIRCASE_LIVE) — self-guarded, async, fail-silent: can never disturb the watch */ } } }); // Structure Watch (record-only): seeds every signaled mint into an hours-long staircase + holder-series watch with would-enter marks at confirmed higher lows; holder reads ride the same knob-respecting DAS helper as gate sampling; no decision reads it
     this.scanLab = new ScanLab({ cfg, journal: this.journal, now: this.now, log: console.log }); // Scan Ledger scorer (record-only): r15/r60 after each finalized scan session; no decision reads it
     this.scanFold = new Map(); // Scan Ledger: mint -> live watch-session fold (cheap scalars only; finalized into the journal by _scanSweep)
     this.lastScanSweepTs = 0;
@@ -1623,6 +1623,44 @@ export class Bot {
     this.journal.signal({ mint: v.address, symbol: v.symbol, setup: 'flow', decision: 'skipped', reasons, price: v.price, mc: v.mc, metrics, label: agg.label || null, fields: this._signalFields(v, metrics) });
     this.stats.flow.recordOnly = (this.stats.flow.recordOnly || 0) + 1;
     console.log(`[flow] ${v.symbol} recorded (not evaluated: ${reasons[0]}) — ${agg.label}`);
+  }
+
+  /**
+   * STAIRCASE-3 LIVE (user order 2026-10-16, "flip it live" — the shadow
+   * signal in staircaseSignal.js keeps journaling untouched; this is its
+   * live twin). An ordinal>=3 structure mark routes into the exact same
+   * onSignal pipeline as every setup — gates, risk, sizing, exits all
+   * unchanged — via the same guard shape as _evalFlow: fetch a fresh view,
+   * refuse a coin already held or signaled inside the per-mint cooldown,
+   * apply the eligible() tradability floor, then let the pipeline judge
+   * EVERY metric. Self-guarded on cfg.staircaseLive + ordinal, invoked from
+   * the watch's onMark seam for every mark, fail-silent by construction
+   * (fire-and-forget with its own catch). A mark whose view is missing is
+   * dropped and counted — marks recur on surviving coins, so the next
+   * higher low retries naturally. Kill switch: STAIRCASE_LIVE=0.
+   */
+  _evalStaircase(rec) {
+    if (!this.cfg.staircaseLive) return;
+    if (!rec || rec.type !== 'mark' || !rec.mint || !(rec.ordinal >= 3)) return;
+    const mint = rec.mint;
+    (async () => {
+      const n = this.now();
+      this.stats.staircase = this.stats.staircase || { evals: 0, noView: 0 };
+      this.stats.staircase.evals++;
+      const views = await this.d.fetchViews([mint]).catch(() => null);
+      const v = views && views.get(mint);
+      if (!v) { this.stats.staircase.noView++; console.log(`[staircase] ${rec.symbol || mint}: live eval dropped — no market view for higher low #${rec.ordinal}`); return; }
+      this.latest.set(mint, v); this.latestAt.set(mint, n); this.history.record(v, n);
+      if (this.positions.some(p => p.mint === mint)) return; // already holding — the shadow record carries the mark; nothing to decide
+      if (n - (this.lastSignal.get(mint) || 0) < this.cfg.signalCooldownMin * 60000) return; // signaled moments ago — the mark's shadow record is the trace; no re-judge spam
+      const metrics = { staircase: { ordinal: rec.ordinal, markId: rec.markId || null, watchId: rec.watchId || null, markPrice: rec.price ?? null, lowPrev: rec.lowPrev ?? null, lowNew: rec.lowNew ?? null } };
+      const sig = { setup: 'staircase', strength: rec.ordinal, metrics };
+      const el = eligible(v, this.cfg, n);
+      if (el.length) { this.skip(v, sig, el.map(r => `staircase-live: ${r}`), [], {}); return; }
+      this.lastSignal.set(mint, n);
+      console.log(`[staircase] ${v.symbol}: higher low #${rec.ordinal} — STAIRCASE-3 LIVE eval`);
+      await this.onSignal(v, sig);
+    })().catch(e => this.err('staircaseEval', e));
   }
 
   /** A flow trigger whose mint has no DexScreener view yet (a just-launched coin
