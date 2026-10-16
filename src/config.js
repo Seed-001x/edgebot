@@ -47,6 +47,14 @@ export function loadConfig(env = process.env) {
     adoptOrphans: num(env, 'ADOPT_ORPHANS', 1),          // 1 = adoption on
     adoptMinSol: num(env, 'ADOPT_MIN_SOL', 0.005),      // bag must be worth at least this (realizable) — below is dust
     adoptLookbackH: num(env, 'ADOPT_LOOKBACK_H', 168),  // only closes inside this window are candidates
+    // Scan Ledger (user order 2026-10-16, RECORD-ONLY): every coin the bot scans
+    // leaves a permanent session record (first/peak/last price + mc, biggest
+    // run while watched, whether it ever signaled) so coins that ran without
+    // ever signaling can be found and studied. The signal journal only ever
+    // held the ~10 that fired; the other ~750 evaporated with the in-memory
+    // history. Nothing in trading reads the ledger. 0 disables it entirely.
+    scanLedger: num(env, 'SCAN_LEDGER', 1),                 // 1 = scan ledger on
+    scanSessionIdleSec: num(env, 'SCAN_SESSION_IDLE_SEC', 600), // a watch session finalizes after this long with no fresh view (or at 3h old)
     // D4 cold-market streak pause (user 2026-10-13, his design over his agent's timer version):
     // N straight red closes pause new entries; the bot keeps scanning and resumes ITSELF only
     // when market breadth (share of sampled coins green on the hour) recovers and stays

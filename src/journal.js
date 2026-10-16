@@ -58,7 +58,7 @@ export class Journal {
   constructor(dir, { now = Date.now } = {}) {
     this.now = now;
     this.dir = dir;
-    this.f = { sig: path.join(dir, 'signals.jsonl'), out: path.join(dir, 'outcomes.jsonl'), trades: path.join(dir, 'trades.jsonl'), fb: path.join(dir, 'feedback.jsonl'), ticks: path.join(dir, 'ticks.jsonl'), manual: path.join(dir, 'manual_exits.jsonl'), reports: path.join(dir, 'trade_reports.jsonl'), rshadow: path.join(dir, 'ratchet_shadow.jsonl'), pend: path.join(dir, 'outcome_pending.json'), scan: path.join(dir, 'scans.jsonl'), cshadow: path.join(dir, 'callout_shadow.jsonl'), rsig: path.join(dir, 'resignal_shadow.jsonl'), fexit: path.join(dir, 'flow_exits.jsonl'), swatch: path.join(dir, 'structure_watch.jsonl') };
+    this.f = { sig: path.join(dir, 'signals.jsonl'), out: path.join(dir, 'outcomes.jsonl'), trades: path.join(dir, 'trades.jsonl'), fb: path.join(dir, 'feedback.jsonl'), ticks: path.join(dir, 'ticks.jsonl'), manual: path.join(dir, 'manual_exits.jsonl'), reports: path.join(dir, 'trade_reports.jsonl'), rshadow: path.join(dir, 'ratchet_shadow.jsonl'), pend: path.join(dir, 'outcome_pending.json'), scan: path.join(dir, 'scans.jsonl'), sses: path.join(dir, 'scan_sessions.jsonl'), cshadow: path.join(dir, 'callout_shadow.jsonl'), rsig: path.join(dir, 'resignal_shadow.jsonl'), fexit: path.join(dir, 'flow_exits.jsonl'), swatch: path.join(dir, 'structure_watch.jsonl') };
     this._pendDirty = false;   // outcome-tracking progress changed since the last save
     this._pendSavedAt = 0;
     try { fs.mkdirSync(dir, { recursive: true }); } catch { /* ignore */ }
@@ -72,6 +72,8 @@ export class Journal {
     this.seq = 0;
     this.scans = [];     // one compact record per discovery cycle (freeze work 1b)
     for (const sc of readTail(this.f.scan, 200)) this.scans.push(sc);
+    this.scanSessions = []; // Scan Ledger (2026-10-16): one record per coin watch session — the permanent trace of every scanned coin, signaled or not
+    for (const ss of readTail(this.f.sses, KEEP)) this.scanSessions.push(ss);
     this.ratchet = [];   // ratchet_shadow.jsonl tail for the read-only /ratchetshadow endpoint (records are rare — a 500 tail spans months)
     for (const r of readTail(this.f.rshadow, 500)) this.ratchet.push(r);
     this.resignalFired = new Set();   // answered-resignal shadow: mark keys that already produced a record (rebuilt from resignal_shadow.jsonl in boot())
@@ -386,6 +388,21 @@ export class Journal {
     this.scans.push(rec);
     if (this.scans.length > 200) this.scans.shift();
     this.append(this.f.scan, rec);
+  }
+
+  /** Scan Ledger session record (record-only, user 2026-10-16): one per
+   *  coin watch session, written by Bot._finalizeScanSession when a watched
+   *  coin goes idle or ages out — first/peak/last price + mc, the biggest
+   *  run while watched, and whether any detector ever signaled it (joined
+   *  at finalize from this.signals). Deliberately a SEPARATE file + array
+   *  from scan()/scans.jsonl above: those are per-discovery-cycle counts
+   *  (freeze work 1b) and mixing the two record types in one stream would
+   *  corrupt both consumers. Append-only; the in-memory tail feeds /scanledger. */
+  scanSession(rec) {
+    this.scanSessions.push(rec);
+    if (this.scanSessions.length > KEEP) this.scanSessions.shift();
+    this.append(this.f.sses, rec);
+    return rec;
   }
 
   signal({ mint, symbol, setup, decision, reasons = [], price, mc, metrics = null, warnings = [], label = null, gates = null, gatePass = null, fields = null, shadowGates = null, shadowGatePass = null }) {

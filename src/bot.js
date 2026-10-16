@@ -22,6 +22,7 @@ import { postCallout } from './callout.js';
 import { CalloutLab } from './calloutLab.js';
 import { FlowExits } from './flowExits.js';
 import { StructureWatch } from './structureWatch.js';
+import { ScanLab, buildScanCard } from './scanLab.js';
 import { snapshotFeatures, externalExit } from './learn.js';
 
 import { PostExitTracker, PairedShadowExits } from './postExit.js';
@@ -29,6 +30,10 @@ import { ShadowTrades } from './shadowTrades.js';
 import { WalletWatch } from './walletWatch.js';
 import { buildTradeReport } from './reports.js';
 import { configStamp } from './stamp.js';
+
+// Scan Ledger: a watch session finalizes at this age even if the coin is
+// still being viewed (a re-view afterward starts a fresh session).
+const SCAN_SESSION_MAX_MS = 3 * 3600e3;
 
 export class Bot {
   /**
@@ -43,6 +48,9 @@ export class Bot {
     this.calloutLab = new CalloutLab({ cfg, journal: this.journal, now: this.now }); // Callout Shadow Lab (record-only): journals would-calls + scores them as a follower would have fared; can never post, sign, or trade
     this.flowExits = new FlowExits({ cfg, journal: this.journal, now: this.now, positionState: (id) => this._flowExitPosState(id), log: console.log }); // Flow-Exit Watcher (record-only): polls the wallet that triggered a flow entry for its trim/exit and scores the race at close; no decision reads it
     this.structureWatch = new StructureWatch({ cfg, journal: this.journal, now: this.now, fetchHolders: (mint) => this._dasHolderSample(mint), log: console.log }); // Structure Watch (record-only): seeds every signaled mint into an hours-long staircase + holder-series watch with would-enter marks at confirmed higher lows; holder reads ride the same knob-respecting DAS helper as gate sampling; no decision reads it
+    this.scanLab = new ScanLab({ cfg, journal: this.journal, now: this.now, log: console.log }); // Scan Ledger scorer (record-only): r15/r60 after each finalized scan session; no decision reads it
+    this.scanFold = new Map(); // Scan Ledger: mint -> live watch-session fold (cheap scalars only; finalized into the journal by _scanSweep)
+    this.lastScanSweepTs = 0;
     this.journal.onStructureSignal = (rec) => { try { this.structureWatch.seed(rec); } catch { /* observer only — never disturb the signal path */ } }; // seeding seam: the Journal.signal() funnel (taken/skipped/shadow/flow alike)
     this.risk = new Risk(cfg, { dir: cfg.dataDir, now: this.now });
     this.closedIds = new Set(this.journal.trades.filter(t => t.type === 'close').map(t => t.id)); // journaling guarantee (ensureClose)
@@ -929,6 +937,15 @@ export class Bot {
     try { return this.structureWatch.scorecard(); } catch { return { enabled: false }; }
   }
 
+  /** Read-only /scanledger payload — the Scan Ledger (record-only, user
+   *  2026-10-16): totals + latest sessions + the near-miss list (biggest
+   *  runs while watched that never signaled), r15/r60 joined from the
+   *  ScanLab score map. */
+  scanLedgerCard() {
+    try { return buildScanCard(this.journal.scanSessions || [], (id) => this.scanLab ? this.scanLab.scoreOf(id) : null, this.now()); }
+    catch { return { enabled: false }; }
+  }
+
   /**
    * Read-only /ratchetshadow payload (record-only, like the layer itself):
    * counters off stats, aggregates over the journal's in-memory ratchet tail
@@ -1025,7 +1042,7 @@ export class Bot {
     let v = this.latest.get(mint);
     if (!v || n - (this.latestAt.get(mint) || 0) > 20000) {
       const views = await this.d.fetchViews([mint]).catch(() => null);
-      if (views && views.get(mint)) { v = views.get(mint); this.latest.set(mint, v); this.latestAt.set(mint, n); this.history.record(v, n); }
+      if (views && views.get(mint)) { v = views.get(mint); this.latest.set(mint, v); this.latestAt.set(mint, n); this.history.record(v, n); this._foldScan(v, n); }
     }
     if (!v) return;
     if (eligible(v, this.cfg, n).length) return; // same tradability floor the classic detectors apply
@@ -1105,6 +1122,70 @@ export class Bot {
     } catch (e) { this.err('discover', e); } finally { this.busy.discover = false; this.saveStats(); }
   }
 
+  // ------------------------------------------------------------ scan ledger
+  // Scan Ledger (user order 2026-10-16, RECORD-ONLY — nothing in trading
+  // branches on any of this): the signal journal only ever held coins where
+  // a detector fired (~10 of ~760 scanned); every other watched coin left
+  // no trace when its in-memory history evaporated. The ledger folds cheap
+  // scalars per watched mint wherever views already fold into History, and
+  // a throttled sweeper finalizes a session — idle past SCAN_SESSION_IDLE_SEC
+  // or 3h old — into the journal (scan_sessions.jsonl) with the signaled
+  // verdict joined from the signal journal at finalize time. A mint that
+  // re-enters the watch starts a NEW session: the ledger accumulates, which
+  // is the point — the study surface is every coin the bot ever scanned.
+  _foldScan(v, n) {
+    try {
+      if (!this.cfg.scanLedger || !v || !(v.price > 0) || !v.address) return;
+      let s = this.scanFold.get(v.address);
+      if (!s) {
+        s = { mint: v.address, symbol: v.symbol || null, firstTs: n, lastTs: n, samples: 0, firstPrice: v.price, firstMc: v.mc ?? null, peakPrice: v.price, peakMc: v.mc ?? null, peakTs: n, lastPrice: v.price, lastMc: v.mc ?? null, maxVolM5: v.volM5 ?? null };
+        this.scanFold.set(v.address, s);
+      }
+      s.lastTs = n;
+      s.samples++;
+      if (v.symbol) s.symbol = v.symbol;
+      s.lastPrice = v.price;
+      if (v.mc != null) s.lastMc = v.mc;
+      if (v.price > s.peakPrice) { s.peakPrice = v.price; s.peakTs = n; if (v.mc != null) s.peakMc = v.mc; }
+      if (v.volM5 != null && (s.maxVolM5 == null || v.volM5 > s.maxVolM5)) s.maxVolM5 = v.volM5;
+    } catch { /* record-only — never disturb the poll */ }
+  }
+
+  _finalizeScanSession(s) {
+    const inWin = (this.journal.signals || []).filter(g => g.mint === s.mint && g.ts >= s.firstTs && g.ts <= s.lastTs);
+    const rec = {
+      type: 'scan', id: `${s.mint.slice(0, 6)}-${s.firstTs}`, mint: s.mint, symbol: s.symbol,
+      firstTs: s.firstTs, lastTs: s.lastTs, durMin: Math.round((s.lastTs - s.firstTs) / 6000) / 10, samples: s.samples,
+      firstPrice: s.firstPrice, firstMc: s.firstMc, peakPrice: s.peakPrice, peakMc: s.peakMc, peakTs: s.peakTs,
+      lastPrice: s.lastPrice, lastMc: s.lastMc,
+      runFromFirst: s.firstPrice > 0 ? Math.round((s.peakPrice / s.firstPrice) * 1000) / 1000 : null,
+      maxVolM5: s.maxVolM5,
+      signaled: inWin.length > 0,
+      decisions: [...new Set(inWin.map(g => g.decision))],
+      setups: [...new Set(inWin.map(g => g.setup))],
+      stamp: this.cfgStamp,
+    };
+    this.journal.scanSession(rec);
+    try { if (this.scanLab) this.scanLab.register(rec); } catch { /* scorer is best-effort */ }
+    return rec;
+  }
+
+  /** Throttled (~30s) finalization sweep, ridden on the poll tick next to
+   *  the other observer ticks; also drives the ScanLab's housekeeping. */
+  _scanSweep(n) {
+    if (!this.cfg.scanLedger) return;
+    if (n - this.lastScanSweepTs < 30000) return;
+    this.lastScanSweepTs = n;
+    const idleMs = (this.cfg.scanSessionIdleSec ?? 600) * 1000;
+    for (const [mint, s] of [...this.scanFold]) {
+      if (n - s.lastTs >= idleMs || n - s.firstTs >= SCAN_SESSION_MAX_MS) {
+        this.scanFold.delete(mint);
+        try { this._finalizeScanSession(s); } catch { /* record-only */ }
+      }
+    }
+    try { if (this.scanLab) this.scanLab.tick(n); } catch { /* record-only */ }
+  }
+
   // ------------------------------------------------------------ outcome observer
   // Outcome observer (2026-10-14, RECORD-ONLY — can never trade, never touches
   // the watchlist, history, or latest-view maps the detectors read). The
@@ -1131,6 +1212,12 @@ export class Bot {
       const have = new Set(pend.map(p => p.mint));
       for (const vm of this.shadowTrades.pendingMints()) if (!have.has(vm.mint)) pend.push(vm);
     }
+    // Scan Ledger (record-only): mints with session scoring in flight join
+    // the fetch set too, so r15/r60 never depend on watch residence either.
+    if (this.scanLab) {
+      const have = new Set(pend.map(p => p.mint));
+      for (const pm of this.scanLab.pendingMints()) if (!have.has(pm.mint)) pend.push(pm);
+    }
     const due = pend.filter(p => n - (this.outcomeSeenAt.get(p.mint) || 0) >= 25000).slice(0, 150);
     if (!due.length) return;
     this.stats.outcomeObs.ticks++;
@@ -1140,6 +1227,7 @@ export class Bot {
       for (const [mint, v] of views) {
         if (!v || !(v.price > 0)) continue;
         this.journal.observe(v);
+        try { if (this.scanLab) this.scanLab.observe(v, n); } catch { /* scan scorer — record-only */ }
         this.outcomeSeenAt.set(mint, n);
         this.stats.outcomeObs.views++;
       }
@@ -1161,7 +1249,7 @@ export class Bot {
     try {
       this.evictBlacklisted(); // marked coins never even get priced, let alone signal
       const mints = [...new Set([...this.watch.keys(), ...this.positions.map(p => p.mint)])];
-      if (!mints.length) { try { await this.outcomeTick(this.now()); } catch { /* observer only */ } try { await this._flowRetryTick(this.now()); } catch { /* record-only retry */ } try { await this.walletWatch.finalizeTick(this.now()); } catch { /* shadow outcomes */ } try { await this.calloutLab.tick(this.now()); } catch { /* shadow callouts */ } try { await this.flowExits.tick(this.now()); } catch { /* shadow flow exits */ } try { await this.structureWatch.tick(this.now()); } catch { /* shadow structure watch */ } return; }
+      if (!mints.length) { try { await this.outcomeTick(this.now()); } catch { /* observer only */ } try { await this._flowRetryTick(this.now()); } catch { /* record-only retry */ } try { await this.walletWatch.finalizeTick(this.now()); } catch { /* shadow outcomes */ } try { await this.calloutLab.tick(this.now()); } catch { /* shadow callouts */ } try { await this.flowExits.tick(this.now()); } catch { /* shadow flow exits */ } try { await this.structureWatch.tick(this.now()); } catch { /* shadow structure watch */ } try { this._scanSweep(this.now()); } catch { /* scan ledger */ } return; }
       const views = await this.d.fetchViews(mints);
       const n = this.now();
       // D4 (user 2026-10-13): market breadth — the share of sampled coins green on the hour —
@@ -1184,8 +1272,10 @@ export class Bot {
         this.latest.set(mint, v);
         this.latestAt.set(mint, n);
         this.history.record(v, n);
+        this._foldScan(v, n);
         this._noteGraduation(mint, v, n);
         this.journal.observe(v);
+        try { if (this.scanLab) this.scanLab.observe(v, n); } catch { /* scan scorer — record-only */ }
         this.outcomeSeenAt.set(mint, n); // the trading poll just fed the outcome tracker for this mint
         if (this.positions.some(p => p.mint === mint)) continue;
         if (tickCfg.churnEnabled) this._updateChurnPins(mint, n);
@@ -1226,6 +1316,7 @@ export class Bot {
       try { await this.calloutLab.tick(n); } catch { /* shadow callouts */ }
       try { await this.flowExits.tick(n); } catch { /* shadow flow exits */ }
       try { await this.structureWatch.tick(n); } catch { /* shadow structure watch */ }
+      try { this._scanSweep(n); } catch { /* scan ledger */ }
       candidates.sort((a, b) => b.sig.strength - a.sig.strength);
       for (const c of candidates.slice(0, this.cfg.maxSignalsPerTick)) {
         this.lastSignal.set(c.v.address, this.now());

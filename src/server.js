@@ -298,6 +298,15 @@ export function startServer(bot, port) {
       if (!pg) return json(res, 200, all);
       return json(res, 200, { total: all.length, offset: pg.offset, limit: pg.limit, items: all.slice(pg.offset, pg.offset + pg.limit) });
     }
+    if (req.method === 'GET' && u.pathname === '/scanledger') {
+      // Scan Ledger (record-only, user 2026-10-16): the per-coin watch-session
+      // ledger — totals, latest 100 sessions, and the near-miss list (biggest
+      // runs while watched that never signaled) with r15/r60 joined when
+      // scored. Deliberately NOT /scans: that route is the freeze-work-1b
+      // per-discovery-cycle records and its shape is pinned.
+      if (!bot.scanLedgerCard) return json(res, 200, { enabled: false });
+      return json(res, 200, bot.scanLedgerCard());
+    }
     if (req.method === 'POST' && u.pathname === '/positions/notp') {
       let body = '';
       req.on('data', c => { body += c; if (body.length > 2000) req.destroy(); });
