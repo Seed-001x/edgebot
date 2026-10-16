@@ -39,7 +39,7 @@ export function startServer(bot, port) {
   // ADMIN_KEY set (local/tests), everything behaves as before.
   const ADMIN_KEY = process.env.ADMIN_KEY || '';
   if (!ADMIN_KEY) console.log('[server] ADMIN_KEY not set — write endpoints are OPEN');
-  const GUARDED = new Set(['/feedback', '/feedback/clear', '/feedback/note', '/exittag', '/temprules', '/positions/clear', '/positions/notp', '/protect', '/unprotect', '/takeover', '/release', '/ladderoff', '/ladderon', '/halt', '/resume', '/risk/reset']);
+  const GUARDED = new Set(['/feedback', '/feedback/clear', '/feedback/note', '/exittag', '/temprules', '/positions/clear', '/positions/notp', '/protect', '/unprotect', '/takeover', '/release', '/ladderoff', '/ladderon', '/tp1at', '/tp1clear', '/halt', '/resume', '/risk/reset']);
   const srv = http.createServer((req, res) => {
     const u = new URL(req.url, 'http://x');
     // CORS preflight
@@ -440,6 +440,40 @@ export function startServer(bot, port) {
           if (r === null) return json(res, 404, { error: 'no open position for that mint' });
           if (r === false) return json(res, 404, { error: 'position ladder is not off' });
           return json(res, 200, { ok: true, ladderOff: null, position: snap(r) });
+        } catch { return json(res, 400, { error: 'invalid JSON' }); }
+      });
+      return;
+    }
+    // POST /tp1at {mint|symbol, pct} — the per-coin TP1 override (user
+    // 2026-10-16 19:12 EDT, "arm tp1 to hit at 50% / not 20%-60% / just for
+    // this coin"): pct is a net-gain fraction (0.5 = +50%). While set on a
+    // pre-TP1 position, exits.js section 3 bypasses the adaptive TP1
+    // machinery for that coin and banks cfg.tp1Frac flat at the line; later
+    // stages are unchanged. The value lives on the persisted position
+    // record and is spent when the position closes, when its TP1 fires, or
+    // when cleared — POST /tp1clear {mint|symbol}, or /tp1at with pct 0.
+    if (req.method === 'POST' && (u.pathname === '/tp1at' || u.pathname === '/tp1clear')) {
+      let body = '';
+      req.on('data', c => { body += c; if (body.length > 2000) req.destroy(); });
+      req.on('end', () => {
+        try {
+          const { mint, symbol, pct } = JSON.parse(body || '{}');
+          const key = mint || symbol;
+          if (!key) return json(res, 400, { error: 'mint required' });
+          const snap = (p) => ({ id: p.id, symbol: p.symbol, mint: p.mint, setup: p.setup, entrySol: p.entrySol, remainingFrac: p.remainingFrac, protected: p.protected || null, takenOver: p.takenOver || null, ladderOff: p.ladderOff || null, tp1AtPct: p.tp1AtPct ?? null });
+          const clear = () => {
+            const r = bot.tp1ClearPosition ? bot.tp1ClearPosition(key) : null;
+            if (r === null) return json(res, 404, { error: 'no open position for that mint' });
+            if (r === false) return json(res, 404, { error: 'position has no TP1 override' });
+            return json(res, 200, { ok: true, tp1AtPct: null, position: snap(r) });
+          };
+          if (u.pathname === '/tp1clear') return clear();
+          if (pct === 0) return clear(); // /tp1at with pct 0 clears, like the sibling route
+          const v = Number(pct);
+          if (!Number.isFinite(v) || v <= 0 || v > 3) return json(res, 400, { error: 'pct must be a number in (0, 3] — a net-gain fraction, 0.5 = +50%' });
+          const pos = bot.tp1AtPosition ? bot.tp1AtPosition(key, v) : null;
+          if (!pos) return json(res, 404, { error: 'no open position for that mint' });
+          return json(res, 200, { ok: true, tp1AtPct: pos.tp1AtPct, position: snap(pos) });
         } catch { return json(res, 400, { error: 'invalid JSON' }); }
       });
       return;

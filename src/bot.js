@@ -587,6 +587,47 @@ export class Bot {
     return p;
   }
 
+  // TP1 OVERRIDE (user 2026-10-16 19:12 EDT, "arm tp1 to hit at 50% / not
+  // 20%-60% / just for this coin"): POST /tp1at pins one position's TP1 to a
+  // flat net-gain line (pos.tp1AtPct, a fraction — 0.5 = +50%). While set,
+  // exits.js section 3 bypasses the adaptive TP1 machinery for that position
+  // entirely and banks cfg.tp1Frac flat at the line; every later stage (TP2,
+  // TP2 rejection, the moonbag) is unchanged. The field lives ON the position
+  // record (persisted by savePositions, survives restarts) and is spent three
+  // ways: the position closes (the record goes with it — a rebuy starts
+  // unset), its TP1 fires (the booking seam in managePosition deletes it), or
+  // tp1ClearPosition clears it early and the adaptive machinery resumes.
+  // Setting a new value overwrites the old — it is a dial, not a latch.
+  tp1AtPosition(key, pct) {
+    const p = this.positions.find(x => x.mint === key || x.id === key || x.symbol === key);
+    if (!p) return null;
+    if (p.tp1AtPct !== pct) {
+      p.tp1AtPct = pct;
+      this.stats.tp1At = this.stats.tp1At || { set: 0, cleared: 0 };
+      this.stats.tp1At.set++;
+      console.log(`[tp1at] ${p.symbol} TP1 override set at +${Math.round(pct * 100)}% — adaptive TP1 bypassed for this coin until the line, a clear, or close`);
+    }
+    this.savePositions();
+    return p;
+  }
+
+  // Clears the TP1 override early (POST /tp1clear, or POST /tp1at with
+  // pct 0): the adaptive TP1 machinery resumes on the next checks. Returns
+  // the position when an override was cleared, false when the position
+  // exists but has none, null when no open position matches — the routes
+  // map those to 200 / 404 / 404, exactly like unprotect.
+  tp1ClearPosition(key) {
+    const p = this.positions.find(x => x.mint === key || x.id === key || x.symbol === key);
+    if (!p) return null;
+    if (!(p.tp1AtPct > 0)) return false;
+    delete p.tp1AtPct;
+    this.stats.tp1At = this.stats.tp1At || { set: 0, cleared: 0 };
+    this.stats.tp1At.cleared++;
+    this.savePositions();
+    console.log(`[tp1at] ${p.symbol} TP1 override cleared — adaptive TP1 resumed`);
+    return p;
+  }
+
   // Reconcile drop guard (user order 2026-10-16, the WORLD orphan): a zero
   // token-balance read is evidence, not proof — a fresh fill's token account
   // can read as zero across RPC nodes for seconds, and an empty RPC response
@@ -2451,6 +2492,7 @@ export class Bot {
     this.stats.exits++;
     if (decision.tp1) {
       pos.tp1Done = true; pos.remainingFrac *= (1 - decision.fraction);
+      delete pos.tp1AtPct; // a TP1 override (POST /tp1at) is spent by its fire — and by ANY TP1 fire, since tp1Done makes the field inert from here on
       // Two-path classification (user 2026-10-15): exits.js stamped the class from
       // the TP1 fire's realized gain — persist it on the position (the journal
       // records below pick it up via pos.pathClass) and count modest classifications.
@@ -2590,7 +2632,7 @@ export class Bot {
       limits: { tradeSol: this.risk.effectiveTradeSol(), maxPositions: this.cfg.maxPositions, dailyLossSol: this.cfg.dailyLossSol, maxTradesPerHour: this.cfg.maxTradesPerHour, tp1Pct: this.cfg.tp1Pct, tp1Frac: this.cfg.tp1Frac },
       watchlist: this.watch.size,
       pairedShadow: this.paired ? { pending: this.paired.pending.size, done: this.paired.done.length } : { pending: 0, done: 0 },
-      positions: this.positions.map(p => ({ id: p.id, symbol: p.symbol, mint: p.mint, setup: p.setup, entrySol: p.entrySol, remainingFrac: p.remainingFrac, peakRatio: +(p.peakRatio || 1).toFixed(2), heldMin: +((this.now() - p.entryTs) / 60000).toFixed(1), simulated: p.simulated, noTp: !!p.noTp, protected: p.protected || null, takenOver: p.takenOver || null, ladderOff: p.ladderOff || null, path: p.pathClass || null, slLadder: p.slLadder ? { armed: true, armTs: p.slLadder.armTs, deepest: +(p.slLadder.deepest || 0).toFixed(3), deadline: Math.min(...[p.slLadder.softDeadline, p.slLadder.hardDeadline, p.slLadder.snapDeadline, p.slLadder.finalDeadline].filter(x => x != null)), inHandoff: !!p.slLadder.inHandoff } : null })),
+      positions: this.positions.map(p => ({ id: p.id, symbol: p.symbol, mint: p.mint, setup: p.setup, entrySol: p.entrySol, remainingFrac: p.remainingFrac, peakRatio: +(p.peakRatio || 1).toFixed(2), heldMin: +((this.now() - p.entryTs) / 60000).toFixed(1), simulated: p.simulated, noTp: !!p.noTp, protected: p.protected || null, takenOver: p.takenOver || null, ladderOff: p.ladderOff || null, tp1AtPct: p.tp1AtPct ?? null, path: p.pathClass || null, slLadder: p.slLadder ? { armed: true, armTs: p.slLadder.armTs, deepest: +(p.slLadder.deepest || 0).toFixed(3), deadline: Math.min(...[p.slLadder.softDeadline, p.slLadder.hardDeadline, p.slLadder.snapDeadline, p.slLadder.finalDeadline].filter(x => x != null)), inHandoff: !!p.slLadder.inHandoff } : null })),
       // stats.shadowTrades is read from the tracker at read time so /state can
       // never show a stale report card between the maintained sync points
       // gtOutcomes is read from the gtFetch tallies at read time (same pattern

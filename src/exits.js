@@ -359,21 +359,46 @@ export function evaluateExit(pos, mark, cfg, now) {
   //    bank target slides up toward tp1AdaptMax; it fires at the ceiling, on a tp1Giveback rollover
   //    from the peak, or the moment strength fades. Gains are net of fees, as always here.
   if (!pos.tp1Done && !pos.noTp && cfg.tp1Frac > 0) {
-    if (tp1Arm == null && gain >= cfg.tp1Pct) tp1Arm = { ts: now, share: shareNow };
-    if (tp1Arm != null) {
-      let fire = null;
-      if (gain >= cfg.tp1AdaptMax) fire = `ceiling +${Math.round(cfg.tp1AdaptMax * 100)}%`;
-      else if (peakGain - gain >= cfg.tp1Giveback) fire = 'rollover';
-      else if (!strong) fire = 'strength faded';
-      if (fire) {
-        // Two-path classification (user 2026-10-15, variant c): the fire's realized
-        // gain — the same `gain` this sell record prints — picks the remainder's
-        // path: inside [modestMinPct, modestMaxPct] → MODEST; above → LADDER;
-        // below → LADDER plus the kill-zone overlay (4e). Stamped on the decision
-        // for bot.js to persist on the position and journal on this sell + the close.
+    // TP1 OVERRIDE (user 2026-10-16 19:12 EDT, "arm tp1 to hit at 50% / not
+    // 20%-60% / just for this coin"): pos.tp1AtPct (set via POST /tp1at,
+    // bot.js owns the field) pins THIS position's TP1 to one flat line.
+    // While set, the adaptive machinery below is fully bypassed for the
+    // position — any arm it carried is dropped, and no ceiling / rollover /
+    // strength-fade fire can sell before the line. At the line, TP1 banks
+    // cfg.tp1Frac flat and advances stages exactly as an adaptive fire does
+    // (the same pathClass / killZoneOverlay derivation off the realized
+    // gain rides the decision). The fire spends the override: bot.js clears
+    // the field when it books any TP1, and this section's !tp1Done gate
+    // already makes a stale value on a middle-stage position inert. TPs
+    // judge under protect, so the override does too; takeover returned
+    // long before this section, so a taken-over position's override simply
+    // never fires. Nothing else reads the field — the SL ladder, the
+    // undertaker and every other position are untouched.
+    if (pos.tp1AtPct > 0) {
+      tp1Arm = null; // the adaptive arm does not survive into the override window
+      if (gain >= pos.tp1AtPct) {
         const pathClass = gain > cfg.modestMaxPct ? 'ladder' : (gain >= cfg.modestMinPct ? 'modest' : 'ladder');
         const killZoneOverlay = gain < cfg.modestMinPct;
-        return { ...out(cfg.tp1Frac, `TP1 +${(gain * 100).toFixed(0)}% (adaptive: ${fire})`), tp1: true, tp1Arm: null, pathClass, killZoneOverlay };
+        return { ...out(cfg.tp1Frac, `TP1 +${Math.round(pos.tp1AtPct * 100)}% (override)`), tp1: true, tp1Arm: null, pathClass, killZoneOverlay };
+      }
+      // below the override line: nothing TP1-related arms or fires this check
+    } else {
+      if (tp1Arm == null && gain >= cfg.tp1Pct) tp1Arm = { ts: now, share: shareNow };
+      if (tp1Arm != null) {
+        let fire = null;
+        if (gain >= cfg.tp1AdaptMax) fire = `ceiling +${Math.round(cfg.tp1AdaptMax * 100)}%`;
+        else if (peakGain - gain >= cfg.tp1Giveback) fire = 'rollover';
+        else if (!strong) fire = 'strength faded';
+        if (fire) {
+          // Two-path classification (user 2026-10-15, variant c): the fire's realized
+          // gain — the same `gain` this sell record prints — picks the remainder's
+          // path: inside [modestMinPct, modestMaxPct] → MODEST; above → LADDER;
+          // below → LADDER plus the kill-zone overlay (4e). Stamped on the decision
+          // for bot.js to persist on the position and journal on this sell + the close.
+          const pathClass = gain > cfg.modestMaxPct ? 'ladder' : (gain >= cfg.modestMinPct ? 'modest' : 'ladder');
+          const killZoneOverlay = gain < cfg.modestMinPct;
+          return { ...out(cfg.tp1Frac, `TP1 +${(gain * 100).toFixed(0)}% (adaptive: ${fire})`), tp1: true, tp1Arm: null, pathClass, killZoneOverlay };
+        }
       }
     }
   }
