@@ -46,6 +46,7 @@ export class Bot {
     this.journal.onStructureSignal = (rec) => { try { this.structureWatch.seed(rec); } catch { /* observer only — never disturb the signal path */ } }; // seeding seam: the Journal.signal() funnel (taken/skipped/shadow/flow alike)
     this.risk = new Risk(cfg, { dir: cfg.dataDir, now: this.now });
     this.closedIds = new Set(this.journal.trades.filter(t => t.type === 'close').map(t => t.id)); // journaling guarantee (ensureClose)
+    this.adoptScan = new Map(); // orphan adoption: mint -> ts of last balance check (throttles re-reads of closed mints)
     for (const t of this.journal.trades) if (t.type === 'close' && t.mint) this.risk.seedClosed(t.mint, t.ts); // re-entry block survives restarts/deploys
     this.lastTrades = foldLastTrades(this.journal.trades); // ran-rebuy block: most recent closed trade per mint, rebuilt from the journal so trades closed before this deploy (e.g. BOOT, 2026-10-14) anchor the rule on its first boot; ensureClose keeps it current
     this.postExit = new PostExitTracker(cfg.dataDir, this.now); // 5-min post-exit price tracker (observer only)
@@ -155,7 +156,7 @@ export class Bot {
     try {
       if (this.journal) {
         this.stats.signals = this.journal.signals.length;
-        this.stats.entries = this.journal.trades.filter(t => t.type === 'open').length;
+        this.stats.entries = this.journal.trades.filter(t => t.type === 'open' && !t.adopted).length;
         this.stats.exits = this.journal.trades.filter(t => t.type === 'close').length;
       }
     } catch {}
@@ -202,6 +203,9 @@ export class Bot {
         } catch (e) { this.err('reconcile', e); }
       }
       this.savePositions();
+      // and pick orphan bags back up (a deploy restart is exactly when a
+      // dropped-while-down bag would otherwise stay invisible)
+      await this._adoptOrphans(this.now());
     }
     return { solBalance: sol, openPositions: this.positions.length };
   }
@@ -565,16 +569,103 @@ export class Bot {
 
   // Periodic reconcile: drop positions whose tokens left the wallet (manual sells)
   async reconcilePositions() {
-    if (!this.cfg.realMode || !this.positions.length) return;
-    for (const p of [...this.positions]) {
-      try {
-        const bal = await this.exec.tokenBalance(p.mint);
-        if (this._reconcileZeroConfirmed(p, bal, this.now())) {
-          if (await this.closeExternal(p, 'reconcile: sold outside bot (manual sell)')) console.log(`[reconcile] dropped ${p.symbol} (not in wallet)`);
-        }
-      } catch (e) { /* RPC flaky — skip, don't drop on error */ }
+    if (!this.cfg.realMode) return;
+    if (this.positions.length) {
+      for (const p of [...this.positions]) {
+        try {
+          const bal = await this.exec.tokenBalance(p.mint);
+          if (this._reconcileZeroConfirmed(p, bal, this.now())) {
+            if (await this.closeExternal(p, 'reconcile: sold outside bot (manual sell)')) console.log(`[reconcile] dropped ${p.symbol} (not in wallet)`);
+          }
+        } catch (e) { /* RPC flaky — skip, don't drop on error */ }
+      }
+      this.savePositions();
     }
+    // the other half: pick orphan bags back up (runs even when the books are
+    // flat — that is exactly the state an orphan leaves behind)
+    await this._adoptOrphans(this.now());
+  }
+
+  // Orphan adoption (user order 2026-10-16): the drop guard keeps the bot
+  // from losing a position it still holds; this covers the case where the
+  // books lost one anyway. Candidates are journal-driven — a mint whose last
+  // journal event is a close, with the original buy on record — because every
+  // bag the bot owns arrived through a journaled buy, and foreign transfers
+  // in must never be adopted. A candidate is adopted only when the wallet
+  // still holds the mint and its realizable value clears the dust floor;
+  // the position is reconstructed from the original open + the close's
+  // decision record (entry snapshot, decimals, fill) and judged from
+  // adoption forward (peak starts at the adoption mark).
+  _orphanCandidates(now) {
+    const lookback = (this.cfg.adoptLookbackH ?? 168) * 3600e3;
+    const lastEvent = new Map(); // mint -> { kind, open, close }
+    for (const t of this.journal.trades) {
+      if (t.type === 'open' && !t.adopted) {
+        const e = lastEvent.get(t.mint) || {};
+        e.kind = 'open'; e.open = t; lastEvent.set(t.mint, e);
+      } else if (t.type === 'close') {
+        const e = lastEvent.get(t.mint) || {};
+        e.kind = 'close'; e.close = t; lastEvent.set(t.mint, e);
+      }
+    }
+    const openNow = new Set(this.positions.map(p => p.mint));
+    const out = [];
+    for (const [mint, e] of lastEvent) {
+      if (e.kind !== 'close' || !e.open || !e.close) continue;
+      if (openNow.has(mint)) continue;
+      if (now - (e.close.ts || 0) > lookback) continue;
+      out.push({ mint, open: e.open, close: e.close });
+    }
+    return out;
+  }
+
+  async _adoptOrphans(now) {
+    if (!this.cfg.realMode || !(this.cfg.adoptOrphans ?? 1)) return;
+    for (const cand of this._orphanCandidates(now)) {
+      try { await this._tryAdopt(cand, now); } catch (e) { this.err('adopt', e); }
+    }
+  }
+
+  async _tryAdopt({ mint, open, close }, now) {
+    // respect the position cap — a later pass retries when a slot frees
+    if (this.positions.length >= (this.cfg.maxPositions || 1)) return false;
+    const last = this.adoptScan.get(mint) || 0;
+    if (now - last < 300_000) return false; // one balance read per mint per 5 min
+    this.adoptScan.set(mint, now);
+    const bal = await this.exec.tokenBalance(mint).catch(() => null);
+    if (bal == null || bal === 0n) return false;
+    const entryTokens = Number(open.tokensRaw || close.tokensRaw || 0);
+    if (!(entryTokens > 0)) return false;
+    const remainingFrac = Math.min(1, Number(bal) / entryTokens);
+    if (!(remainingFrac > 0)) return false;
+    let valueSol = null;
+    try { valueSol = await this.exec.markValue(mint, bal.toString()); } catch { return false; }
+    if (valueSol == null || !(valueSol >= (this.cfg.adoptMinSol ?? 0.005))) return false; // dust stays dust
+    let rtRatio = 0.97; // the standard birth spread, when a fresh round-trip can't be measured
+    try { const rt = await this.exec.roundTrip(mint, Math.max(0.001, Math.min(valueSol, this.cfg.tradeSol || valueSol))); if (rt && rt.ratio > 0) rtRatio = rt.ratio; } catch { /* keep the estimate */ }
+    const basis = (open.entrySol || 0) * remainingFrac;
+    const ratio0 = basis > 0 ? (valueSol / basis) / rtRatio : 1;
+    const snap = close.entry || null;
+    // banks the original position already made stay banked (journal sells on its id)
+    const sells = this.journal.trades.filter(t => t.type === 'sell' && t.id === open.id);
+    const pos = {
+      id: `${mint.slice(0, 6)}-${now}`, mint, symbol: open.symbol || close.symbol || mint.slice(0, 6), setup: open.setup || close.setup || 'pop',
+      entryTs: open.ts || now, entrySol: open.entrySol || 0, tokensRaw: bal.toString(), entryTokensRaw: String(open.tokensRaw || bal.toString()), remainingFrac, peakRatio: Math.max(1, ratio0), tp1Done: sells.some(t => (t.reason || '').startsWith('TP1')), tp2Done: sells.some(t => (t.reason || '').startsWith('TP2')), tp1Arm: null, flowHist: [], suspectUnbookedSell: false,
+      entryPrice: snap ? snap.price ?? null : null, entryMc: snap ? snap.mc ?? null : null, realizedSol: 0, simulated: false, sigBuy: open.sig || null, markFails: 0,
+      stamp: this.cfgStamp, gates: { adopted: true }, gatePass: null, decimals: close.decimals ?? null,
+      entryFillSol: open.entryFillSol ?? close.entryFillSol ?? null, solUsdEntry: null, ticks: [],
+      entryVolH1: snap ? snap.volH1 || 0 : 0,
+      entryRoundTrip: rtRatio, peakMove: Math.max(1, ratio0), stopArmedTs: null, floorChecks: 0, floorSince: null, probationSince: null, moveHist: [], exitPending: {}, feesSol: this.cfg.txFeeSol || 0,
+      bw: { tracked: null, supply: 0, creator: null, weights: linkedWeights(null), snaps: [], vals: [], lastTs: 0, trimmed: false },
+      entry: snap, lastTickTs: 0, lastChainTs: 0, chainDropStrikes: 0,
+      adopted: true, adoptedTs: now, adoptOf: close.id || null, lastValueSol: valueSol,
+    };
+    this.positions.push(pos);
     this.savePositions();
+    this.enteredMints.add(mint); this.saveEnteredMints();
+    this.journal.trade({ type: 'open', adopted: true, id: pos.id, mint, symbol: pos.symbol, setup: pos.setup, entrySol: pos.entrySol, sig: open.sig || null, simulated: false, ts: now, stamp: pos.stamp, tokensRaw: pos.tokensRaw, entryFillSol: pos.entryFillSol, entryFillUsd: null, reason: `adopted orphan bag — closed as "${(close.reason || '').slice(0, 60)}" but ${valueSol.toFixed(4)} SOL of tokens remained in the wallet` });
+    console.log(`[adopt] ${pos.symbol}: picked an orphan bag back up — ${valueSol.toFixed(4)} SOL realizable, ${(remainingFrac * 100).toFixed(0)}% of the original buy, was closed as "${(close.reason || '').slice(0, 50)}"`);
+    return true;
   }
 
   // ------------------------------------------------------------ discovery

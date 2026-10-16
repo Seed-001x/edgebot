@@ -135,3 +135,116 @@ test('reconcile: a null balance (shadow / unknown) never drops and never stamps'
   assert.equal(bot._reconcileZeroConfirmed(p, null, T0), false);
   assert.equal(p.zeroBalSince, undefined);
 });
+
+// ---- Orphan adoption (user order 2026-10-16): reconcile also picks bags
+// back up. WORLD's bag sat in the wallet for 4+ hours because nothing ever
+// looked; these tests pin the adoption side against the same journal shape.
+function adoptRig(cfgOver = {}) {
+  const cfg = testCfg({ realMode: true, maxPositions: 2, ...cfgOver });
+  const clock = { t: T0 + 4 * 3600e3 };
+  const state = { bal: 0n, value: 0.0252, balReads: 0 };
+  const exec = {
+    tokenBalance: async () => { state.balReads++; return state.bal; },
+    markValue: async () => state.value,
+    roundTrip: async () => ({ ratio: 0.97 }),
+    solBalance: async () => 1,
+  };
+  const bot = new Bot(cfg, { now: () => clock.t, exec });
+  const open = { type: 'open', id: 'MINT1-1', mint: 'MINT1', symbol: 'WORLD', setup: 'pop', entrySol: 0.025, tokensRaw: '1000000', entryFillSol: 2.5e-8, sig: 'SIGBUY', ts: T0 };
+  const close = { type: 'close', id: 'MINT1-1', mint: 'MINT1', symbol: 'WORLD', setup: 'pop', entrySol: 0.025, tokensRaw: '1000000', decimals: 6, reason: 'reconcile: sold outside bot (manual sell) — P&L est. from last quote', entry: { price: 0.0003, mc: 286632, volH1: 1000 }, ts: T0 + 5000 };
+  bot.journal.trades.push(open, close);
+  return { cfg, clock, state, bot, open, close };
+}
+
+test('adopt: the WORLD shape — flat books, bag still in the wallet — is picked back up', async () => {
+  const { clock, state, bot } = adoptRig();
+  state.bal = 1000000n; // the whole bag never left
+  await bot.reconcilePositions();
+  assert.equal(bot.positions.length, 1);
+  const p = bot.positions[0];
+  assert.equal(p.adopted, true);
+  assert.equal(p.adoptOf, 'MINT1-1');
+  assert.equal(p.entrySol, 0.025);
+  assert.equal(p.remainingFrac, 1);
+  assert.equal(p.entryTs, T0, 'age judges from the original entry');
+  assert.ok(p.peakRatio > 1.03 && p.peakRatio < 1.05, `peak starts at the adoption mark (got ${p.peakRatio})`);
+  assert.equal(p.entryMc, 286632, 'entry snapshot restored from the close record');
+  const rec = bot.journal.trades[bot.journal.trades.length - 1];
+  assert.equal(rec.type, 'open');
+  assert.equal(rec.adopted, true);
+  assert.equal(clock.t - (p.adoptedTs || 0), 0);
+});
+
+test('adopt: dust stays dust — a bag under the value floor is not adopted', async () => {
+  const { state, bot } = adoptRig();
+  state.bal = 1000000n;
+  state.value = 0.001; // < ADOPT_MIN_SOL 0.005
+  await bot.reconcilePositions();
+  assert.equal(bot.positions.length, 0);
+});
+
+test('adopt: a truly empty wallet adopts nothing', async () => {
+  const { state, bot } = adoptRig();
+  state.bal = 0n;
+  await bot.reconcilePositions();
+  assert.equal(bot.positions.length, 0);
+});
+
+test('adopt: the position cap defers adoption until a slot frees', async () => {
+  const { state, bot } = adoptRig({ maxPositions: 1 });
+  bot.positions = [{ id: 'other', mint: 'OTHER', symbol: 'OTHER', entryTs: T0, entrySol: 0.025 }];
+  state.bal = 1000000n;
+  await bot.reconcilePositions();
+  assert.equal(bot.positions.length, 1);
+  assert.equal(bot.positions[0].mint, 'OTHER');
+  bot.positions = [];
+  bot.adoptScan.clear();
+  await bot.reconcilePositions();
+  assert.equal(bot.positions.length, 1);
+  assert.equal(bot.positions[0].mint, 'MINT1');
+});
+
+test('adopt: balance re-reads are throttled to one per mint per 5 minutes', async () => {
+  const { clock, state, bot } = adoptRig();
+  state.bal = 0n;
+  await bot.reconcilePositions();
+  await bot.reconcilePositions();
+  assert.equal(state.balReads, 1);
+  clock.t += 300_001;
+  await bot.reconcilePositions();
+  assert.equal(state.balReads, 2);
+});
+
+test('adopt: a TP1 the original position banked stays banked, and the remainder fraction is the balance share', async () => {
+  const { state, bot, open } = adoptRig();
+  bot.journal.trades.push({ type: 'sell', id: open.id, mint: 'MINT1', symbol: 'WORLD', reason: 'TP1 (adaptive) — banked 40%', ts: T0 + 60_000 });
+  state.bal = 600000n; // 60% of the original buy remains
+  state.value = 0.015;
+  await bot.reconcilePositions();
+  assert.equal(bot.positions.length, 1);
+  assert.equal(bot.positions[0].tp1Done, true);
+  assert.equal(bot.positions[0].tp2Done, false);
+  assert.equal(bot.positions[0].remainingFrac, 0.6);
+});
+
+test('adopt: ADOPT_ORPHANS=0 disables adoption entirely', async () => {
+  const { state, bot } = adoptRig({ adoptOrphans: 0 });
+  state.bal = 1000000n;
+  await bot.reconcilePositions();
+  assert.equal(bot.positions.length, 0);
+});
+
+test('adopt: the boot path adopts too (deploy-restart orphan)', async () => {
+  const { state, bot } = adoptRig();
+  state.bal = 1000000n;
+  await bot.start();
+  assert.equal(bot.positions.length, 1);
+  assert.equal(bot.positions[0].adopted, true);
+});
+
+test('adopt: shipped defaults are on / 0.005 SOL floor / 168h lookback', () => {
+  const cfg = testCfg({});
+  assert.equal(cfg.adoptOrphans, 1);
+  assert.equal(cfg.adoptMinSol, 0.005);
+  assert.equal(cfg.adoptLookbackH, 168);
+});

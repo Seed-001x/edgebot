@@ -37,6 +37,16 @@ export function loadConfig(env = process.env) {
     // WORLD 5s after its fill while the tokens never left the wallet.
     reconcileGraceSec: num(env, 'RECONCILE_GRACE_SEC', 120),     // no reconcile drop younger than this
     reconcileConfirmSec: num(env, 'RECONCILE_CONFIRM_SEC', 60),  // zero must persist at least this long
+    // Orphan adoption (user order 2026-10-16, the second half of the WORLD fix):
+    // reconcile also picks bags back UP — a mint the bot itself bought (journal
+    // open) whose position was closed off the books while tokens remain in the
+    // wallet at real value is re-adopted as a position and managed by the exit
+    // stack again. Journal-driven on purpose: every bag the bot owns arrived
+    // through a journaled buy, and the mint-filter balance read is the reliable
+    // one (programId enumeration proved broken on public/Helius RPCs).
+    adoptOrphans: num(env, 'ADOPT_ORPHANS', 1),          // 1 = adoption on
+    adoptMinSol: num(env, 'ADOPT_MIN_SOL', 0.005),      // bag must be worth at least this (realizable) — below is dust
+    adoptLookbackH: num(env, 'ADOPT_LOOKBACK_H', 168),  // only closes inside this window are candidates
     // D4 cold-market streak pause (user 2026-10-13, his design over his agent's timer version):
     // N straight red closes pause new entries; the bot keeps scanning and resumes ITSELF only
     // when market breadth (share of sampled coins green on the hour) recovers and stays
