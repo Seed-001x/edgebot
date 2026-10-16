@@ -536,6 +536,57 @@ export class Bot {
     return p;
   }
 
+  // LADDER-OFF switch (user 2026-10-16 19:09 EDT, "create a switch to switch
+  // off this SL system for this coin or any coin I choose to do it on so it
+  // could be done quick"): a per-position flag set via POST /ladderoff that
+  // silences ONLY the SL ladder (exits.js 3b2) for that one coin —
+  // deliberately NARROWER than protect, which also touches the stop family,
+  // the ratchet and the kill zone. While set, the ladder does not arm, track
+  // or fire for the position, and any armed probation record drops the
+  // moment the flag lands (here, and again in exits.js state prep, so a
+  // stale record can never execute). Everything else — the TP banks, TP2
+  // rejection, the undertaker, the moonbag exits, liquidity death — judges
+  // exactly as normal. The flag lives ON the position record (persisted by
+  // savePositions, so it survives restarts), holds for the life of the
+  // position with no expiry, and clears only when the position closes (the
+  // record goes with it — a rebuy starts with the ladder on) or when
+  // ladderOnPosition clears it early. Re-setting an already-off position is
+  // a no-op that does not double-count the set.
+  ladderOffPosition(key) {
+    const p = this.positions.find(x => x.mint === key || x.id === key || x.symbol === key);
+    if (!p) return null;
+    if (!p.ladderOff) {
+      p.ladderOff = this.now();
+      p.slLadder = null; // an armed probation record dies with the flip — nothing ladder-shaped may execute under the flag
+      this.stats.ladderOff = this.stats.ladderOff || { set: 0, cleared: 0 };
+      this.stats.ladderOff.set++;
+      console.log(`[ladder-off] ${p.symbol} SL ladder OFF at ${new Date(p.ladderOff).toISOString()} — the ladder will not judge this coin until /ladderon or close`);
+    }
+    this.savePositions();
+    return p;
+  }
+
+  // Clears the ladder-off flag early (POST /ladderon). Resuming invents no
+  // state and re-runs no gate from the toggle moment: the ladder re-derives
+  // from the position's real age on the next checks — a coin already past
+  // SL_MIN_AGE_SEC engages fresh on its next breach exactly as the
+  // engagement gate judges any position of that age, and a younger coin is
+  // still gated from its entry stamp. Returns the position when a flag was
+  // cleared, false when the position exists but its ladder is already on,
+  // null when no open position matches — the route maps those to
+  // 200 / 404 / 404, exactly like unprotect.
+  ladderOnPosition(key) {
+    const p = this.positions.find(x => x.mint === key || x.id === key || x.symbol === key);
+    if (!p) return null;
+    if (!p.ladderOff) return false;
+    delete p.ladderOff;
+    this.stats.ladderOff = this.stats.ladderOff || { set: 0, cleared: 0 };
+    this.stats.ladderOff.cleared++;
+    this.savePositions();
+    console.log(`[ladder-off] ${p.symbol} SL ladder back ON — judging resumes under the normal rules from the position's real age`);
+    return p;
+  }
+
   // Reconcile drop guard (user order 2026-10-16, the WORLD orphan): a zero
   // token-balance read is evidence, not proof — a fresh fill's token account
   // can read as zero across RPC nodes for seconds, and an empty RPC response
@@ -2539,7 +2590,7 @@ export class Bot {
       limits: { tradeSol: this.risk.effectiveTradeSol(), maxPositions: this.cfg.maxPositions, dailyLossSol: this.cfg.dailyLossSol, maxTradesPerHour: this.cfg.maxTradesPerHour, tp1Pct: this.cfg.tp1Pct, tp1Frac: this.cfg.tp1Frac },
       watchlist: this.watch.size,
       pairedShadow: this.paired ? { pending: this.paired.pending.size, done: this.paired.done.length } : { pending: 0, done: 0 },
-      positions: this.positions.map(p => ({ id: p.id, symbol: p.symbol, mint: p.mint, setup: p.setup, entrySol: p.entrySol, remainingFrac: p.remainingFrac, peakRatio: +(p.peakRatio || 1).toFixed(2), heldMin: +((this.now() - p.entryTs) / 60000).toFixed(1), simulated: p.simulated, noTp: !!p.noTp, protected: p.protected || null, takenOver: p.takenOver || null, path: p.pathClass || null, slLadder: p.slLadder ? { armed: true, armTs: p.slLadder.armTs, deepest: +(p.slLadder.deepest || 0).toFixed(3), deadline: Math.min(...[p.slLadder.softDeadline, p.slLadder.hardDeadline, p.slLadder.snapDeadline, p.slLadder.finalDeadline].filter(x => x != null)), inHandoff: !!p.slLadder.inHandoff } : null })),
+      positions: this.positions.map(p => ({ id: p.id, symbol: p.symbol, mint: p.mint, setup: p.setup, entrySol: p.entrySol, remainingFrac: p.remainingFrac, peakRatio: +(p.peakRatio || 1).toFixed(2), heldMin: +((this.now() - p.entryTs) / 60000).toFixed(1), simulated: p.simulated, noTp: !!p.noTp, protected: p.protected || null, takenOver: p.takenOver || null, ladderOff: p.ladderOff || null, path: p.pathClass || null, slLadder: p.slLadder ? { armed: true, armTs: p.slLadder.armTs, deepest: +(p.slLadder.deepest || 0).toFixed(3), deadline: Math.min(...[p.slLadder.softDeadline, p.slLadder.hardDeadline, p.slLadder.snapDeadline, p.slLadder.finalDeadline].filter(x => x != null)), inHandoff: !!p.slLadder.inHandoff } : null })),
       // stats.shadowTrades is read from the tracker at read time so /state can
       // never show a stale report card between the maintained sync points
       // gtOutcomes is read from the gtFetch tallies at read time (same pattern

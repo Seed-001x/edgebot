@@ -39,7 +39,7 @@ export function startServer(bot, port) {
   // ADMIN_KEY set (local/tests), everything behaves as before.
   const ADMIN_KEY = process.env.ADMIN_KEY || '';
   if (!ADMIN_KEY) console.log('[server] ADMIN_KEY not set — write endpoints are OPEN');
-  const GUARDED = new Set(['/feedback', '/feedback/clear', '/feedback/note', '/exittag', '/temprules', '/positions/clear', '/positions/notp', '/protect', '/unprotect', '/takeover', '/release', '/halt', '/resume', '/risk/reset']);
+  const GUARDED = new Set(['/feedback', '/feedback/clear', '/feedback/note', '/exittag', '/temprules', '/positions/clear', '/positions/notp', '/protect', '/unprotect', '/takeover', '/release', '/ladderoff', '/ladderon', '/halt', '/resume', '/risk/reset']);
   const srv = http.createServer((req, res) => {
     const u = new URL(req.url, 'http://x');
     // CORS preflight
@@ -407,6 +407,39 @@ export function startServer(bot, port) {
           if (r === null) return json(res, 404, { error: 'no open position for that mint' });
           if (r === false) return json(res, 404, { error: 'position is not taken over' });
           return json(res, 200, { ok: true, takenOver: null, position: snap(r) });
+        } catch { return json(res, 400, { error: 'invalid JSON' }); }
+      });
+      return;
+    }
+    // POST /ladderoff {mint|symbol} — the per-coin SL-ladder kill switch (user
+    // 2026-10-16 19:09 EDT, "create a switch to switch off this SL system for
+    // this coin or any coin I choose to do it on so it could be done quick"):
+    // while the flag is set on the open position, exits.js section 3b2 does not
+    // arm, track or fire for that coin — and NOTHING else is suppressed: the TP
+    // banks, TP2 rejection, the undertaker, the moonbag exits and liquidity
+    // death judge exactly as normal (deliberately narrower than /protect). Any
+    // armed ladder state drops the moment the flag lands. The flag lives on the
+    // persisted position record, survives restarts, and clears only when the
+    // position closes or POST /ladderon clears it; resuming invents no state —
+    // the ladder re-derives from the position's real age on the next checks.
+    if (req.method === 'POST' && (u.pathname === '/ladderoff' || u.pathname === '/ladderon')) {
+      let body = '';
+      req.on('data', c => { body += c; if (body.length > 2000) req.destroy(); });
+      req.on('end', () => {
+        try {
+          const { mint, symbol } = JSON.parse(body || '{}');
+          const key = mint || symbol;
+          if (!key) return json(res, 400, { error: 'mint required' });
+          const snap = (p) => ({ id: p.id, symbol: p.symbol, mint: p.mint, setup: p.setup, entrySol: p.entrySol, remainingFrac: p.remainingFrac, protected: p.protected || null, takenOver: p.takenOver || null, ladderOff: p.ladderOff || null });
+          if (u.pathname === '/ladderoff') {
+            const pos = bot.ladderOffPosition ? bot.ladderOffPosition(key) : null;
+            if (!pos) return json(res, 404, { error: 'no open position for that mint' });
+            return json(res, 200, { ok: true, ladderOff: pos.ladderOff, position: snap(pos) });
+          }
+          const r = bot.ladderOnPosition ? bot.ladderOnPosition(key) : null;
+          if (r === null) return json(res, 404, { error: 'no open position for that mint' });
+          if (r === false) return json(res, 404, { error: 'position ladder is not off' });
+          return json(res, 200, { ok: true, ladderOff: null, position: snap(r) });
         } catch { return json(res, 400, { error: 'invalid JSON' }); }
       });
       return;

@@ -215,13 +215,23 @@ export function evaluateExit(pos, mark, cfg, now) {
   // other missing-field case in this engine. SL_MIN_AGE_SEC = 0 disables
   // the gate outright (the ladder exactly as first built).
   const slTooYoung = (cfg.slMinAgeSec || 0) > 0 && pos.entryTs != null && (now - pos.entryTs) < cfg.slMinAgeSec * 1000;
+  // LADDER-OFF switch (user 2026-10-16 19:09 EDT, "switch off this SL system
+  // for this coin or any coin I choose"): pos.ladderOff is the per-coin flag
+  // set via POST /ladderoff (bot.js owns the flag). While set, the SL ladder
+  // is absent for THIS position only — nothing arms, tracks or fires — and
+  // any carried probation record drops in the scope line below, so no rung
+  // deadline can execute under the flag. Deliberately narrower than
+  // protect: no other section reads this flag, so the TP banks, TP2
+  // rejection, the undertaker, the moonbag exits and liquidity death all
+  // judge exactly as normal.
+  const ladderOff = !!pos.ladderOff;
   // Scope, enforced here so no section below has to re-check it: the ladder
   // exists only while its switch is on and the position is pre-moonbag —
   // reaching TP2 (or flipping SL_LADDER off, or still being inside the
   // engagement gate) drops any carried state, and a check back above the
   // arm line DISARMS outright (mirrors the grace stop's stopArmedTs reset
   // above): re-arming needs a fresh breach.
-  if (!(cfg.slLadder > 0) || pos.tp2Done || slTooYoung) slLadder = null;
+  if (!(cfg.slLadder > 0) || pos.tp2Done || slTooYoung || ladderOff) slLadder = null;
   else if (slLadder && gain > -cfg.slArmPct) { slLadder = null; slLadderEvents.push({ type: 'disarmed' }); }
   // PROTECT switch (user 2026-10-15, "just the stop loss… no ratchet", "no SL until I
   // say"): a one-time, per-position flag set via POST /protect while the user rides a
@@ -443,10 +453,14 @@ export function evaluateExit(pos, mark, cfg, now) {
   //      — no EXIT_CONFIRM window on top. PROTECT silences it like the rest
   //      of the stop family (noteBlock; its state was already dropped in
   //      the protect block); TAKEOVER returned long before this section.
+  //      LADDER-OFF (pos.ladderOff, POST /ladderoff — user 2026-10-16
+  //      19:09 EDT) removes this section for the one coin entirely: state
+  //      prep already dropped its record and the gate below never enters,
+  //      while every other section judges untouched.
   //      Placement is after the banks (3/3a/3b) by the owner's spec: the
   //      ladder never pre-empts a TP bank on the same check, and the
   //      undertaker (5) remains the backstop behind it.
-  if (cfg.slLadder > 0 && !pos.tp2Done) {
+  if (cfg.slLadder > 0 && !pos.tp2Done && !ladderOff) {
     if (prot) {
       if (gain <= -cfg.slArmPct) noteBlock('SL ladder'); // PROTECT: suppressed — reported, never armed, never fired
     } else if (!slTooYoung && (slLadder || gain <= -cfg.slArmPct)) {
