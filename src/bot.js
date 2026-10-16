@@ -95,7 +95,7 @@ export class Bot {
     this.posFile = path.join(cfg.dataDir, 'positions.json');
     this.positions = this.loadPositions();
     this.busy = { discover: false, poll: false, pos: false };
-    this.stats = { discoverTicks: 0, pollTicks: 0, positionTicks: 0, signals: 0, entries: 0, exits: 0, errors: 0, lastError: null, sourceCounts: {}, lastDiscoverTs: 0, lastPollTs: 0, closesSinceReport: 0, lastReportTs: 0, reportIndex: 0, tempRules: null, fastPop: { fires: 0 }, ratchetShadow: { wouldFire: 0, completed: 0 }, exitConfirm: { confirmed: 0, cancelled: 0 }, shadowSignals: {}, liveFeed: { connected: false, events: 0, added: 0, reconnects: 0, lastEventTs: 0, lastError: null } };
+    this.stats = { discoverTicks: 0, pollTicks: 0, positionTicks: 0, signals: 0, entries: 0, exits: 0, errors: 0, lastError: null, sourceCounts: {}, lastDiscoverTs: 0, lastPollTs: 0, closesSinceReport: 0, lastReportTs: 0, reportIndex: 0, tempRules: null, fastPop: { fires: 0 }, ratchetShadow: { wouldFire: 0, completed: 0 }, exitConfirm: { confirmed: 0, cancelled: 0 }, shadowSignals: {}, tickJournal: { records: 0, lastTs: 0 }, liveFeed: { connected: false, events: 0, added: 0, reconnects: 0, lastEventTs: 0, lastError: null } };
     this.statsFile = path.join(cfg.dataDir, 'stats.json');
     this.entryTimes = []; // timestamps of entries (for pace keeper)
     this.PACE_TARGET = 120; // target trades per hour (2 per min)
@@ -2076,6 +2076,49 @@ export class Bot {
     return bundleDecision(r, this.cfg, bw.trimmed);
   }
 
+  /** Position-tick journal (RECORD-ONLY, user 2026-10-16): one compact record
+   *  per position check of exactly what the bot itself saw when it judged —
+   *  the realizable quote ratio and net gain as evaluateExit computes them,
+   *  the stage the position judged under, the running peak, and the
+   *  flow/market fields already in hand at the check (5m buy share, buy/sell
+   *  counts, mc). Until now these marks lived only in memory (pos.flowHist,
+   *  capped at 45 and discarded at close), so the bracket classifier's
+   *  features existed nowhere (measurement pass 2026-10-16, workstream D).
+   *  The record is built ONLY from values the check already holds — it never
+   *  fetches — and a field the check doesn't have is null, never invented.
+   *  NOTHING reads position_ticks.jsonl back: no decision path may consume
+   *  it. TICK_JOURNAL=0 disables. Fail-silent like every observer here: a
+   *  journaling fault must never disturb the position loop. */
+  _tickJournal(pos, v, valueSol, n) {
+    if (!this.cfg.tickJournal) return;
+    try {
+      const basis = pos.entrySol * pos.remainingFrac;
+      const ratio = valueSol != null && basis > 0 ? valueSol / basis : null;
+      // net gain exactly as exits.js judges it: quote ratio minus the round-trip fee fraction
+      const feeFrac = basis > 0 ? (3 * (this.cfg.txFeeSol || 0)) / basis : 0;
+      const buys = v && v.buysM5 != null ? v.buysM5 : null;
+      const sells = v && v.sellsM5 != null ? v.sellsM5 : null;
+      const tx = (buys != null || sells != null) ? (buys || 0) + (sells || 0) : null;
+      this.journal.positionTick({
+        ts: n, id: pos.id, mint: pos.mint, symbol: pos.symbol,
+        stage: pos.tp2Done ? 'moonbag' : pos.tp1Done ? 'middle' : 'preTp1',
+        heldMin: +((n - pos.entryTs) / 60000).toFixed(2),
+        ratio: ratio != null ? +ratio.toFixed(4) : null,
+        gainPct: ratio != null ? +((ratio - 1 - feeFrac) * 100).toFixed(2) : null,
+        peakRatio: +(pos.peakRatio || 1).toFixed(4),
+        valueSol: valueSol != null ? +valueSol.toFixed(6) : null,
+        buyShare: tx > 0 && buys != null ? +(buys / tx).toFixed(3) : null,
+        buysM5: buys, sellsM5: sells, txM5: tx,
+        mc: v && v.mc != null ? v.mc : null,
+        liq: v && v.liq != null ? v.liq : null,
+        volH1: v && v.volH1 != null ? v.volH1 : null,
+      });
+      this.stats.tickJournal = this.stats.tickJournal || { records: 0, lastTs: 0 };
+      this.stats.tickJournal.records++;
+      this.stats.tickJournal.lastTs = n;
+    } catch { /* record-only — never disturb trading */ }
+  }
+
   async managePosition(pos, solUsd) {
     const n = this.now();
     const v = this.latest.get(pos.mint) || {};
@@ -2127,7 +2170,7 @@ export class Bot {
       if (pos.takenOver) decision = { fraction: 0, reason: null, newPeak: pos.peakRatio, takenOver: true };
       // no sell quote at all: after repeated failures, try to exit anyway — a coin we can't price is a coin we can't leave
       else if (pos.markFails >= 4) decision = { fraction: 1, reason: `no sell quote for ${pos.markFails} ticks`, newPeak: pos.peakRatio };
-      else return;
+      else { this._tickJournal(pos, v, null, n); return; }
     } else {
       const markNow = { valueSol, liqUsd: v.liq != null ? v.liq : null, buysM5: v.buysM5 != null ? v.buysM5 : null, sellsM5: v.sellsM5 || 0, solUsd, volH1: v.volH1 || 0 };
       // flow history for the adaptive TP1's strength test: this position's own marks, every check
@@ -2137,6 +2180,10 @@ export class Bot {
       decision = evaluateExit(pos, markNow, this.cfg, n);
     }
     pos.peakRatio = decision.newPeak || pos.peakRatio;
+    // position-tick journal (record-only): this check's mark, recorded AFTER the
+    // peak update so peakRatio in the record includes this check — the write
+    // sits beside the other observers and feeds no decision (see _tickJournal).
+    this._tickJournal(pos, v, valueSol, n);
     if (decision.newPeakMove != null) pos.peakMove = decision.newPeakMove;
     if ('stallSince' in decision) pos.stallSince = decision.stallSince;
     if ('stopArmedTs' in decision) pos.stopArmedTs = decision.stopArmedTs;

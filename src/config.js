@@ -411,6 +411,7 @@ export function loadConfig(env = process.env) {
     beArmPct: num(env, 'BE_ARM_PCT', 0.05),               // break-even ratchet ARM (user 2026-10-14, "Build it — arm at +5%"): once a pre-TP1 position's peak realizable move reaches +this, the trade can no longer become a loser; 0 = ratchet off
     beTriggerPct: num(env, 'BE_TRIGGER_PCT', 0.02),       // ...an armed position sells in full when the move falls back to +this — the cushion above break-even exists so the executed fill lands at true scratch after the sell's own slippage (user approved +1-2%)
     ratchetShadow: num(env, 'RATCHET_SHADOW', 1),         // shadow flow judge for the ratchet (user 2026-10-14): RECORD-ONLY — watches held positions' streamed flow and journals where a flow trigger WOULD have fired vs where the price trigger did (ratchet_shadow.jsonl). There is no live mode: this can never sell. 0 = fully off (no held-mint subscriptions for it, no records)
+    tickJournal: num(env, 'TICK_JOURNAL', 1),             // position-tick journal (user 2026-10-16): RECORD-ONLY — every position check (~4s) appends ONE compact record of what the bot itself saw when it judged that position (quote ratio, net gain, stage, peak, 5m buy share / buy / sell counts, mc) to position_ticks.jsonl. It is the prerequisite dataset for the bracket-classifier question: until now those marks lived only in memory (pos.flowHist) and died with the process (measurement pass 2026-10-16, workstream D). There is no live mode: NOTHING reads this journal back, no decision path consumes it, and it can never sell. 0 = fully off (no records, no counter)
     ratchetFlowWindowSec: num(env, 'RATCHET_FLOW_WINDOW_SEC', 15), // ...the rolling stream window the shadow judge reads
     ratchetFlowSellShare: num(env, 'RATCHET_FLOW_SELL_SHARE', 0.70), // ...would-fire needs sells to be at least this share of the window's traded SOL
     ratchetFlowMinSellSol: num(env, 'RATCHET_FLOW_MIN_SELL_SOL', 1.0), // ...AND at least this much SOL of sells in the window (one whale taking profit is not an exit wave)
@@ -610,6 +611,7 @@ export function validateConfig(cfg) {
   if (cfg.beTriggerPct < 0 || cfg.beTriggerPct >= 1) errs.push('BE_TRIGGER_PCT must be between 0 and 1');
   if (cfg.beArmPct > 0 && cfg.beTriggerPct >= cfg.beArmPct) errs.push('BE_TRIGGER_PCT must be below BE_ARM_PCT when the break-even ratchet is on');
   if (cfg.ratchetShadow < 0 || cfg.ratchetShadow > 1) errs.push('RATCHET_SHADOW must be 0 or 1');
+  if (cfg.tickJournal < 0 || cfg.tickJournal > 1) errs.push('TICK_JOURNAL must be 0 or 1');
   if (cfg.shadowSeller < 0 || cfg.shadowSeller > 1) errs.push('SHADOW_SELLER must be 0 or 1');
   if (cfg.shadowSellerMinN < 1) errs.push('SHADOW_SELLER_MIN_N must be >= 1');
   if (cfg.shadowSellerPriorK < 0) errs.push('SHADOW_SELLER_PRIOR_K must be >= 0');
