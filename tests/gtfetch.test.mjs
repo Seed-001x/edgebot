@@ -47,6 +47,19 @@ test('gtfetch: relay env routes through the relay with the key header', async ()
   assert.equal(f.calls[0].opts.headers['x-relay-key'], 'k');
 });
 
+test('gtfetch: GT_ROUTE=direct bypasses the relay even when PUMP_RELAY is set; GT_ROUTE=relay keeps it', async () => {
+  reset();
+  const relayEnv = { ...FAST, PUMP_RELAY: 'https://w.dev/', PUMP_RELAY_KEY: 'k' };
+  const f1 = stubSeq([resp(200, candles())]);
+  await fetchGtJson(GT_URL, { consumer: 'discover', expect: 'ohlcv', env: { ...relayEnv, GT_ROUTE: 'direct' }, fetchImpl: f1 });
+  assert.equal(f1.calls[0].url, GT_URL, 'direct mode requests the raw GT URL');
+  assert.equal(f1.calls[0].opts.headers['x-relay-key'], undefined, 'direct mode sends no relay key header');
+  const f2 = stubSeq([resp(200, candles())]);
+  await fetchGtJson(GT_URL, { consumer: 'discover', expect: 'ohlcv', env: { ...relayEnv, GT_ROUTE: 'relay' }, fetchImpl: f2 });
+  assert.equal(f2.calls[0].url, `https://w.dev/?url=${encodeURIComponent(GT_URL)}`, 'relay mode still routes via the relay');
+  assert.equal(f2.calls[0].opts.headers['x-relay-key'], 'k');
+});
+
 test('gtfetch: 429 is retried and a later success is the final class', async () => {
   reset();
   const f = stubSeq([resp(429), resp(429), resp(200, candles())]);

@@ -25,6 +25,11 @@
 //   GT_MAX_ATTEMPTS  attempts per logical call (default 3, clamped 1..5)
 //   GT_BACKOFF_MS    backoff base; delay before attempt n+1 is
 //                    base * 2^(n-1) * (0.5 + random), capped at 5s (default 350)
+//   GT_ROUTE         'relay' (default) = route via the pump relay; 'direct'
+//                    = straight to api.geckoterminal.com, no relay hop.
+//                    Counters / retry / pacer are identical in both modes;
+//                    only GT traffic is affected (pump.fun relay routing
+//                    lives in relayRoutePump and is untouched by this knob).
 //
 // Outcome classes: ok | http429 | http404 | httpOther (see lastStatus) |
 // timeout | networkError | empty (200 but no candles, OHLCV calls only) |
@@ -138,7 +143,8 @@ export async function fetchGtJson(url, opts = {}) {
     const v = Number(env && env.GT_BACKOFF_MS);
     return Number.isFinite(v) && v >= 0 ? v : 350;
   })();
-  const { url: routedUrl, headers: relayHeaders } = relayRoute(url, env);
+  const gtDirect = String((env && env.GT_ROUTE) || '').toLowerCase() === 'direct';
+  const { url: routedUrl, headers: relayHeaders } = gtDirect ? { url, headers: {} } : relayRoute(url, env);
   const mergedHeaders = { accept: 'application/json', 'user-agent': 'edgebot/1.0', ...relayHeaders, ...headers };
 
   let cls = 'networkError', status = null, json = null;
