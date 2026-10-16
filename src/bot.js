@@ -1275,7 +1275,7 @@ export class Bot {
     try {
       this.evictBlacklisted(); // marked coins never even get priced, let alone signal
       const mints = [...new Set([...this.watch.keys(), ...this.positions.map(p => p.mint)])];
-      if (!mints.length) { try { await this.outcomeTick(this.now()); } catch { /* observer only */ } try { await this._flowRetryTick(this.now()); } catch { /* record-only retry */ } try { await this.walletWatch.finalizeTick(this.now()); } catch { /* shadow outcomes */ } try { await this.calloutLab.tick(this.now()); } catch { /* shadow callouts */ } try { await this.flowExits.tick(this.now()); } catch { /* shadow flow exits */ } try { await this.structureWatch.tick(this.now()); } catch { /* shadow structure watch */ } try { this._scanSweep(this.now()); } catch { /* scan ledger */ } return; }
+      if (!mints.length) { try { await this.outcomeTick(this.now()); } catch { /* observer only */ } try { await this._flowRetryTick(this.now()); } catch { /* record-only retry */ } try { await this._staircaseRetryTick(this.now()); } catch { /* staircase retry */ } try { await this.walletWatch.finalizeTick(this.now()); } catch { /* shadow outcomes */ } try { await this.calloutLab.tick(this.now()); } catch { /* shadow callouts */ } try { await this.flowExits.tick(this.now()); } catch { /* shadow flow exits */ } try { await this.structureWatch.tick(this.now()); } catch { /* shadow structure watch */ } try { this._scanSweep(this.now()); } catch { /* scan ledger */ } return; }
       const views = await this.d.fetchViews(mints);
       const n = this.now();
       // D4 (user 2026-10-13): market breadth — the share of sampled coins green on the hour —
@@ -1338,6 +1338,7 @@ export class Bot {
       // so checkpoints stop depending on watchlist residence.
       try { await this.outcomeTick(n); } catch { /* observer only */ }
       try { await this._flowRetryTick(n); } catch { /* record-only retry */ }
+      try { await this._staircaseRetryTick(n); } catch { /* staircase retry */ }
       try { await this.walletWatch.finalizeTick(n); } catch { /* shadow outcomes */ }
       try { await this.calloutLab.tick(n); } catch { /* shadow callouts */ }
       try { await this.flowExits.tick(n); } catch { /* shadow flow exits */ }
@@ -1645,22 +1646,72 @@ export class Bot {
     const mint = rec.mint;
     (async () => {
       const n = this.now();
-      this.stats.staircase = this.stats.staircase || { evals: 0, noView: 0 };
+      this.stats.staircase = this.stats.staircase || { evals: 0, noView: 0, retries: 0 };
       this.stats.staircase.evals++;
       const views = await this.d.fetchViews([mint]).catch(() => null);
       const v = views && views.get(mint);
-      if (!v) { this.stats.staircase.noView++; console.log(`[staircase] ${rec.symbol || mint}: live eval dropped — no market view for higher low #${rec.ordinal}`); return; }
-      this.latest.set(mint, v); this.latestAt.set(mint, n); this.history.record(v, n);
-      if (this.positions.some(p => p.mint === mint)) return; // already holding — the shadow record carries the mark; nothing to decide
-      if (n - (this.lastSignal.get(mint) || 0) < this.cfg.signalCooldownMin * 60000) return; // signaled moments ago — the mark's shadow record is the trace; no re-judge spam
-      const metrics = { staircase: { ordinal: rec.ordinal, markId: rec.markId || null, watchId: rec.watchId || null, markPrice: rec.price ?? null, lowPrev: rec.lowPrev ?? null, lowNew: rec.lowNew ?? null } };
-      const sig = { setup: 'staircase', strength: rec.ordinal, metrics };
-      const el = eligible(v, this.cfg, n);
-      if (el.length) { this.skip(v, sig, el.map(r => `staircase-live: ${r}`), [], {}); return; }
-      this.lastSignal.set(mint, n);
-      console.log(`[staircase] ${v.symbol}: higher low #${rec.ordinal} — STAIRCASE-3 LIVE eval`);
-      await this.onSignal(v, sig);
+      if (!v) {
+        // Marks confirm in candle-close clusters — exactly when the process
+        // is busiest — and the first live sample proved a single instant
+        // fetch unreliable there (28/28 evals no-viewed at fire time while
+        // the same call succeeded in sweeps). Queue and retry off-cluster
+        // for up to 5 minutes, the _evalFlow discipline.
+        this.stats.staircase.noView++;
+        this._queueStaircaseRetry(rec, n);
+        return;
+      }
+      await this._evalStaircaseWithView(rec, v, n);
     })().catch(e => this.err('staircaseEval', e));
+  }
+
+  /** The judged half of a staircase live eval: a fresh view exists, so run
+   *  the guards and route into onSignal. Shared by the fire-time path and
+   *  the retry tick. */
+  async _evalStaircaseWithView(rec, v, n) {
+    const mint = rec.mint;
+    this.latest.set(mint, v); this.latestAt.set(mint, n); this.history.record(v, n);
+    if (this.positions.some(p => p.mint === mint)) return; // already holding — the shadow record carries the mark; nothing to decide
+    if (n - (this.lastSignal.get(mint) || 0) < this.cfg.signalCooldownMin * 60000) return; // signaled moments ago — the mark's shadow record is the trace; no re-judge spam
+    const metrics = { staircase: { ordinal: rec.ordinal, markId: rec.markId || null, watchId: rec.watchId || null, markPrice: rec.price ?? null, lowPrev: rec.lowPrev ?? null, lowNew: rec.lowNew ?? null } };
+    const sig = { setup: 'staircase', strength: rec.ordinal, metrics };
+    const el = eligible(v, this.cfg, n);
+    if (el.length) { this.skip(v, sig, el.map(r => `staircase-live: ${r}`), [], {}); return; }
+    this.lastSignal.set(mint, n);
+    console.log(`[staircase] ${v.symbol}: higher low #${rec.ordinal} — STAIRCASE-3 LIVE eval`);
+    await this.onSignal(v, sig);
+  }
+
+  /** A staircase mark whose mint had no market view at fire time: queue it
+   *  and retry for up to 5 minutes instead of dropping it silently (the
+   *  flow path's _queueFlowRetry pattern). A newer mark for the same mint
+   *  supersedes the queued record; the retry window stays anchored to the
+   *  first queueing. */
+  _queueStaircaseRetry(rec, n) {
+    this.staircasePending = this.staircasePending || new Map();
+    const cur = this.staircasePending.get(rec.mint);
+    if (cur) { cur.rec = rec; return; }
+    this.staircasePending.set(rec.mint, { rec, firstTs: n, nextAt: n + 20000 });
+  }
+
+  async _staircaseRetryTick(n) {
+    if (!this.staircasePending || !this.staircasePending.size) return;
+    for (const [mint, p] of [...this.staircasePending]) {
+      if (n - p.firstTs > 5 * 60000) {
+        this.staircasePending.delete(mint);
+        this.stats.staircase = this.stats.staircase || { evals: 0, noView: 0, retries: 0 };
+        this.stats.staircase.noViewFinal = (this.stats.staircase.noViewFinal || 0) + 1;
+        console.log(`[staircase] ${p.rec.symbol || mint}: live eval dropped — no market view within 5m of higher low #${p.rec.ordinal}`);
+        continue;
+      }
+      if (n < p.nextAt) continue;
+      p.nextAt = n + 20000;
+      this.stats.staircase.retries = (this.stats.staircase.retries || 0) + 1;
+      const views = await this.d.fetchViews([mint]).catch(() => null);
+      const v = views && views.get(mint);
+      if (!v) continue; // still no view — the next tick retries until the window closes
+      this.staircasePending.delete(mint);
+      await this._evalStaircaseWithView(p.rec, v, n);
+    }
   }
 
   /** A flow trigger whose mint has no DexScreener view yet (a just-launched coin

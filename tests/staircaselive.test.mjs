@@ -84,13 +84,41 @@ test('staircase live: per-mint signal cooldown suppresses a second mark moments 
   assert.equal(calls[1].sig.metrics.staircase.ordinal, 5);
 });
 
-test('staircase live: missing view drops the eval, counted, no call', async () => {
+test('staircase live: missing view queues a retry instead of dropping the mark', async () => {
   const { bot, views, calls } = rig();
   views.delete('MINTS');
   bot._evalStaircase(MARK);
   await flush();
   assert.equal(calls.length, 0);
   assert.equal(bot.stats.staircase.noView, 1);
+  assert.ok(bot.staircasePending.has('MINTS'), 'mark is queued for retry, not dropped');
+});
+
+test('staircase live: retry tick lands the eval once the view appears', async () => {
+  const { bot, clock, views, calls } = rig();
+  views.delete('MINTS');
+  bot._evalStaircase(MARK);
+  await flush();
+  assert.equal(calls.length, 0);
+  views.set('MINTS', view({ address: 'MINTS', symbol: 'STAIR' }));
+  clock.t += 20000; // first retry slot
+  await bot._staircaseRetryTick(clock.t);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].sig.setup, 'staircase');
+  assert.equal(bot.staircasePending.has('MINTS'), false);
+  assert.equal(bot.stats.staircase.retries, 1);
+});
+
+test('staircase live: a mark that never gets a view expires after 5 minutes, counted once', async () => {
+  const { bot, clock, views, calls } = rig();
+  views.delete('MINTS');
+  bot._evalStaircase(MARK);
+  await flush();
+  clock.t += 5 * 60000 + 1;
+  await bot._staircaseRetryTick(clock.t);
+  assert.equal(calls.length, 0);
+  assert.equal(bot.staircasePending.has('MINTS'), false);
+  assert.equal(bot.stats.staircase.noViewFinal, 1);
 });
 
 test('staircase live: eligible() failure journals a skipped staircase signal, no onSignal', async () => {
