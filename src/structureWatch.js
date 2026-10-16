@@ -29,7 +29,7 @@
 // (the Bot passes its knob-respecting _dasHolderSample as fetchHolders).
 import fs from 'node:fs';
 import { fetchJson, median, round } from './util.js';
-import { relayRoute } from './relayFetch.js';
+import { fetchGtJson } from './gtFetch.js';
 import { fetchHolderCount } from './gate.js';
 
 const GT = 'https://api.geckoterminal.com/api/v2';
@@ -203,8 +203,7 @@ async function defaultFetchCandles(pool, fromTs, toTs) {
   const byTs = new Map();
   let before = Math.floor(toTs / 1000) + 300;
   for (let page = 0; page < 4; page++) {
-    const { url, headers } = relayRoute(`${GT}/networks/solana/pools/${pool}/ohlcv/minute?aggregate=5&limit=1000&before_timestamp=${before}`);
-    const j = await fetchJson(url, { timeout: 15000, headers });
+    const j = await fetchGtJson(`${GT}/networks/solana/pools/${pool}/ohlcv/minute?aggregate=5&limit=1000&before_timestamp=${before}`, { consumer: 'structureWatch', timeout: 15000, expect: 'ohlcv' });
     const list = j && j.data && j.data.attributes && j.data.attributes.ohlcv_list;
     if (!list || !list.length) break;
     let oldest = Infinity;
@@ -219,8 +218,7 @@ async function defaultResolvePool(mint) {
   // GT top pool first (the wallet detectors'/callout scorer's discipline);
   // DexScreener's deepest pair as the fallback for mints GT hasn't ranked.
   try {
-    const { url, headers } = relayRoute(`${GT}/networks/solana/tokens/${mint}`);
-    const j = await fetchJson(url, { timeout: 12000, headers });
+    const j = await fetchGtJson(`${GT}/networks/solana/tokens/${mint}`, { consumer: 'structureWatch', timeout: 12000 });
     const pools = j && j.data && j.data.relationships && j.data.relationships.top_pools && j.data.relationships.top_pools.data;
     if (pools && pools.length) {
       const id = String(pools[0].id || '');

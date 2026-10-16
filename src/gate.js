@@ -8,7 +8,7 @@
 // where rigging lives) and only warns for older, high-volume ones.
 
 import { fetchJson } from './util.js';
-import { relayRoute } from './relayFetch.js';
+import { fetchGtJson, recordGtOutcome } from './gtFetch.js';
 import { rpc } from './curveChain.js';
 
 const RC = 'https://api.rugcheck.xyz/v1';
@@ -430,8 +430,7 @@ async function resolveRanPool(mint) {
   // GT top pool first (the wallet detectors'/callout scorer's discipline);
   // DexScreener's deepest pair as the fallback for mints GT hasn't ranked.
   try {
-    const { url, headers } = relayRoute(`${GT_RAN}/networks/solana/tokens/${mint}`);
-    const j = await fetchJson(url, { timeout: 12000, headers });
+    const j = await fetchGtJson(`${GT_RAN}/networks/solana/tokens/${mint}`, { consumer: 'ranRebuy', timeout: 12000 });
     const pools = j && j.data && j.data.relationships && j.data.relationships.top_pools && j.data.relationships.top_pools.data;
     if (pools && pools.length) {
       const id = String(pools[0].id || '');
@@ -457,8 +456,7 @@ async function defaultRanCandles(mint, entryTs, now) {
   const byTs = new Map();
   let before = Math.floor(now / 1000) + 60;
   for (let page = 0; page < 4; page++) {
-    const { url, headers } = relayRoute(`${GT_RAN}/networks/solana/pools/${pool}/ohlcv/minute?limit=1000&before_timestamp=${before}`);
-    const j = await fetchJson(url, { timeout: 15000, headers });
+    const j = await fetchGtJson(`${GT_RAN}/networks/solana/pools/${pool}/ohlcv/minute?limit=1000&before_timestamp=${before}`, { consumer: 'ranRebuy', timeout: 15000, expect: 'ohlcv' });
     const list = j && j.data && j.data.attributes && j.data.attributes.ohlcv_list;
     if (!list || !list.length) break;
     let oldest = Infinity;
@@ -501,11 +499,16 @@ export async function ranRebuyCheck(prior, { mult = 5, hours = 3, now = Date.now
     store.set(prior.mint, meas);
   }
   const peakTxt = `${meas.peakRatio.toFixed(1)}x`;
+  if (!meas.covered) recordGtOutcome('ranRebuy', 'partialCoverage');
   if (meas.peakRatio >= mult) {
-    return { ...base, pass: false, lookupFailed: false, peakRatio: +meas.peakRatio.toFixed(3), reason: `already ran ${fmtX(mult)}+ since our entry (peak ${peakTxt}), rebuy blocked until ${fmtUntil(base.blockedUntil)}` };
+    return { ...base, pass: false, lookupFailed: false, partialCoverage: !meas.covered, peakRatio: +meas.peakRatio.toFixed(3), reason: `already ran ${fmtX(mult)}+ since our entry (peak ${peakTxt}), rebuy blocked until ${fmtUntil(base.blockedUntil)}` };
   }
   if (!meas.covered) {
-    return { ...base, pass: true, lookupFailed: true, peakRatio: +meas.peakRatio.toFixed(3), reason: `peak since our entry only partly measurable (candles start after the entry; saw ${peakTxt}) — passed open (fail-open)` };
+    // Partial coverage is a DATA-SHAPE outcome, not a failed lookup (the
+    // candles arrived; they just start after the entry — pool migration).
+    // Since 2026-10-16 it books as partialCoverage, NOT lookupFailed, so the
+    // failure counter measures network truth only (GT investigation).
+    return { ...base, pass: true, lookupFailed: false, partialCoverage: true, peakRatio: +meas.peakRatio.toFixed(3), reason: `peak since our entry only partly measurable (candles start after the entry; saw ${peakTxt}) — passed open (fail-open)` };
   }
   return { ...base, pass: true, lookupFailed: false, peakRatio: +meas.peakRatio.toFixed(3), reason: `peaked ${peakTxt} since our entry — under the ${fmtX(mult)} ran line` };
 }

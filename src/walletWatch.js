@@ -28,7 +28,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fetchJson } from './util.js';
-import { relayRoute, relayRoutePump } from './relayFetch.js';
+import { relayRoutePump } from './relayFetch.js';
+import { fetchGtJson } from './gtFetch.js';
 import { flowRpc, parseWalletBuys, parseWalletSells, FLOW_DUST_SOL } from './flowWatch.js';
 
 export const BASELINE = { runnerShare: 0.218, crashShare: 0.381, r60Median: -0.375 };
@@ -151,8 +152,7 @@ async function defaultCoinFacts(mint) {
 async function defaultCandles(pool, entryTs) {
   if (!pool) return [];
   const before = Math.floor((entryTs + 62 * 60000) / 1000);
-  const { url, headers } = relayRoute(`${GT}/networks/solana/pools/${pool}/ohlcv/minute?limit=100&before_timestamp=${before}`);
-  const j = await fetchJson(url, { timeout: 12000, headers });
+  const j = await fetchGtJson(`${GT}/networks/solana/pools/${pool}/ohlcv/minute?limit=100&before_timestamp=${before}`, { consumer: 'walletWatch', timeout: 12000, expect: 'ohlcv' });
   const list = j && j.data && j.data.attributes && j.data.attributes.ohlcv_list;
   if (!Array.isArray(list)) return [];
   return list.map(r => [r[0], r[1], r[2], r[3], r[4], r[5]]).sort((a, b) => a[0] - b[0]);

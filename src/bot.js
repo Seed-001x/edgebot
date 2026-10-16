@@ -31,6 +31,7 @@ import { PostExitTracker, PairedShadowExits } from './postExit.js';
 import { ShadowTrades } from './shadowTrades.js';
 import { WalletWatch } from './walletWatch.js';
 import { buildTradeReport } from './reports.js';
+import { gtOutcomesSnapshot } from './gtFetch.js';
 import { configStamp } from './stamp.js';
 
 // Scan Ledger: a watch session finalizes at this age even if the coin is
@@ -1786,8 +1787,9 @@ export class Bot {
     {
       const rr = await this._ranRebuyVerdict(v, n);
       if (rr) {
-        this.stats.ranRebuy = this.stats.ranRebuy || { blocked: 0, lookupFailed: 0 };
+        this.stats.ranRebuy = this.stats.ranRebuy || { blocked: 0, lookupFailed: 0, partialCoverage: 0 };
         if (rr.lookupFailed) this.stats.ranRebuy.lookupFailed++;
+        if (rr.partialCoverage) this.stats.ranRebuy.partialCoverage = (this.stats.ranRebuy.partialCoverage || 0) + 1;
         checks.ranRebuy = { pass: !!rr.pass, reason: rr.reason || null, peakRatio: rr.peakRatio ?? null, blockedUntil: rr.blockedUntil ?? null };
         if (!rr.pass) {
           this.stats.ranRebuy.blocked++;
@@ -2437,7 +2439,9 @@ export class Bot {
       positions: this.positions.map(p => ({ id: p.id, symbol: p.symbol, mint: p.mint, setup: p.setup, entrySol: p.entrySol, remainingFrac: p.remainingFrac, peakRatio: +(p.peakRatio || 1).toFixed(2), heldMin: +((this.now() - p.entryTs) / 60000).toFixed(1), simulated: p.simulated, noTp: !!p.noTp, protected: p.protected || null, takenOver: p.takenOver || null, path: p.pathClass || null })),
       // stats.shadowTrades is read from the tracker at read time so /state can
       // never show a stale report card between the maintained sync points
-      stats: this.shadowTrades ? { ...this.stats, shadowTrades: this.shadowTrades.totalsView() } : this.stats,
+      // gtOutcomes is read from the gtFetch tallies at read time (same pattern
+      // as shadowTrades) so /state never shows a stale split between syncs
+      stats: { ...this.stats, gtOutcomes: gtOutcomesSnapshot(), ...(this.shadowTrades ? { shadowTrades: this.shadowTrades.totalsView() } : {}) },
     };
   }
 }

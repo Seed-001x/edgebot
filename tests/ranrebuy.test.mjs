@@ -111,10 +111,15 @@ test('ranrebuy: partial candle coverage — a >= 5x print still blocks; a sub-5x
   // in it is still since-entry, so the 6.2x print is a true positive...
   const hot = await run(prior(), series(T0 - 2 * H, ENTRY * 6.2, { startOffsetMin: 30 }));
   assert.equal(hot.pass, false);
+  assert.equal(hot.lookupFailed, false);
+  assert.equal(hot.partialCoverage, true, 'the blocking read still records that coverage was partial');
   // ...but a 3x peak in the same partial window cannot prove the coin never ran.
   const cold = await run(prior(), series(T0 - 2 * H, ENTRY * 3, { startOffsetMin: 30 }));
   assert.equal(cold.pass, true);
-  assert.equal(cold.lookupFailed, true);
+  // Since 2026-10-16 partial coverage is its own accounting class, NOT a
+  // lookup failure — the candles arrived fine (GT investigation fix).
+  assert.equal(cold.lookupFailed, false);
+  assert.equal(cold.partialCoverage, true);
   assert.match(cold.reason, /partly measurable/);
 });
 
