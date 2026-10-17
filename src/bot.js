@@ -56,7 +56,7 @@ export class Bot {
     this.staircaseSignal = new StaircaseSignal({ cfg, journal: this.journal, now: this.now, log: console.log }); // Staircase-3 Shadow Signal (record-only, user 2026-10-16): every structure-watch mark at ordinal >= 3 is ALSO journaled as a named shadow signal, scored by the watch's forward scores joined at read time (/staircase); nothing reads it into any decision
     this.structureWatch = new StructureWatch({ cfg, journal: this.journal, now: this.now, fetchHolders: (mint) => this._dasHolderSample(mint), log: console.log, onMark: (rec) => { try { this.staircaseSignal.noteMark(rec); } catch { /* observer only — never disturb the watch */ } try { this._evalStaircase(rec); } catch { /* live tap (STAIRCASE_LIVE) — self-guarded, async, fail-silent: can never disturb the watch */ } } }); // Structure Watch (record-only): seeds every signaled mint into an hours-long staircase + holder-series watch with would-enter marks at confirmed higher lows; holder reads ride the same knob-respecting DAS helper as gate sampling; no decision reads it
     this.bottomWatch = new BottomWatch({ cfg, journal: this.journal, dir: cfg.dataDir, now: this.now, log: console.log, wasExited: (mint) => this.journal.trades.some(t => t.type === 'close' && t.mint === mint), fetchCandles: (pool, fromTs, toTs) => this.structureWatch.fetchCandles(pool, fromTs, toTs), resolvePool: (mint) => this.structureWatch.resolvePool(mint) }); // Bottom Tracker (record-only, user 2026-10-16): episodes on watched coins dumped >= BOTTOM_DROP_PCT off their sampled peak; a 'first move off the bottom' mark once the low holds quiet and price + flow turn up; forward-scored by the structure watch's own candle tailer (/bottomwatch); fed from the poll + outcome-observer view streams — no sampler of its own, no decision reads it
-    this.rangeWatch = new RangeWatch({ cfg, journal: this.journal, dir: cfg.dataDir, now: this.now, log: console.log, wasExited: (mint) => this.journal.trades.some(t => t.type === 'close' && t.mint === mint), isHeld: (mint) => this.positions.some(p => p.mint === mint), fetchCandles: (pool, fromTs, toTs) => this.structureWatch.fetchCandles(pool, fromTs, toTs), resolvePool: (mint) => this.structureWatch.resolvePool(mint) }); // Range Study (record-only, owner 2026-10-16): a tight sideways base held over the trailing window journals one mark per range episode to range_marks.jsonl; forward-scored by the structure watch's own candle tailer (/rangewatch) — expanded / broke down / ranged; fed from the poll + outcome-observer view streams — no sampler of its own, no decision reads it
+    this.rangeWatch = new RangeWatch({ cfg, journal: this.journal, dir: cfg.dataDir, now: this.now, log: console.log, wasExited: (mint) => this.journal.trades.some(t => t.type === 'close' && t.mint === mint), isHeld: (mint) => this.positions.some(p => p.mint === mint), onMark: (rec) => { try { this._evalRange(rec); } catch { /* live tap (RANGE_LIVE) — self-guarded, async, fail-silent: can never disturb the study */ } }, fetchCandles: (pool, fromTs, toTs) => this.structureWatch.fetchCandles(pool, fromTs, toTs), resolvePool: (mint) => this.structureWatch.resolvePool(mint) }); // Range Study (owner 2026-10-16): a tight sideways base held over the trailing window journals one mark per range episode to range_marks.jsonl; forward-scored by the structure watch's own candle tailer (/rangewatch) — expanded / broke down / ranged; fed from the poll + outcome-observer view streams — no sampler of its own. Marks ALSO route live entries via the onMark tap (RANGE_LIVE, default on — his correction: "None of this is shadow btw — Real")
     this.scanLab = new ScanLab({ cfg, journal: this.journal, now: this.now, log: console.log }); // Scan Ledger scorer (record-only): r15/r60 after each finalized scan session; no decision reads it
     this.scanFold = new Map(); // Scan Ledger: mint -> live watch-session fold (cheap scalars only; finalized into the journal by _scanSweep)
     this.lastScanSweepTs = 0;
@@ -1057,12 +1057,20 @@ export class Bot {
     catch { return { enabled: false }; }
   }
 
-  /** Read-only /rangewatch payload — the Range Study card (record-only,
-   *  owner 2026-10-16): tight sideways bases journaled one mark per
-   *  episode, forward-scored with the structure tailer and classed
-   *  expanded / broke down / ranged; ready = 30 finalized. */
+  /** Read-only /rangewatch payload — the Range Study card (owner
+   *  2026-10-16): tight sideways bases journaled one mark per episode,
+   *  forward-scored with the structure tailer and classed expanded /
+   *  broke down / ranged; ready = 30 finalized. The aggregates stay
+   *  mark-based; liveRouting rides along as a note (RANGE_LIVE evals +
+   *  the 'range' signal journal's fired/taken counts). */
   rangeWatchCard() {
-    try { return this.rangeWatch ? this.rangeWatch.card() : { enabled: false }; }
+    try {
+      const card = this.rangeWatch ? this.rangeWatch.card() : { enabled: false };
+      if (!card || card.enabled === false) return card;
+      const sigs = (this.journal.signals || []).filter(s => s.setup === 'range');
+      const st = this.stats.range || {};
+      return { ...card, liveRouting: { live: !!this.cfg.rangeLive, evals: st.evals || 0, retries: st.retries || 0, noView: st.noView || 0, noViewFinal: st.noViewFinal || 0, signals: sigs.length, taken: sigs.filter(s => s.decision === 'taken').length } };
+    }
     catch { return { enabled: false }; }
   }
 
@@ -1459,7 +1467,7 @@ export class Bot {
     try {
       this.evictBlacklisted(); // marked coins never even get priced, let alone signal
       const mints = [...new Set([...this.watch.keys(), ...this.positions.map(p => p.mint)])];
-      if (!mints.length) { try { await this.outcomeTick(this.now()); } catch { /* observer only */ } try { await this._flowRetryTick(this.now()); } catch { /* record-only retry */ } try { await this._staircaseRetryTick(this.now()); } catch { /* staircase retry */ } try { await this._walletRetryTick(this.now()); } catch { /* wallet-live retry */ } try { await this.walletWatch.finalizeTick(this.now()); } catch { /* shadow outcomes */ } try { await this.calloutLab.tick(this.now()); } catch { /* shadow callouts */ } try { await this.flowExits.tick(this.now()); } catch { /* shadow flow exits */ } try { await this.structureWatch.tick(this.now()); } catch { /* shadow structure watch */ } try { await this.bottomWatch.tick(this.now()); } catch { /* shadow bottom tracker */ } try { await this.rangeWatch.tick(this.now()); } catch { /* shadow range study */ } try { this._scanSweep(this.now()); } catch { /* scan ledger */ } return; }
+      if (!mints.length) { try { await this.outcomeTick(this.now()); } catch { /* observer only */ } try { await this._flowRetryTick(this.now()); } catch { /* record-only retry */ } try { await this._staircaseRetryTick(this.now()); } catch { /* staircase retry */ } try { await this._rangeRetryTick(this.now()); } catch { /* range-live retry */ } try { await this._walletRetryTick(this.now()); } catch { /* wallet-live retry */ } try { await this.walletWatch.finalizeTick(this.now()); } catch { /* shadow outcomes */ } try { await this.calloutLab.tick(this.now()); } catch { /* shadow callouts */ } try { await this.flowExits.tick(this.now()); } catch { /* shadow flow exits */ } try { await this.structureWatch.tick(this.now()); } catch { /* shadow structure watch */ } try { await this.bottomWatch.tick(this.now()); } catch { /* shadow bottom tracker */ } try { await this.rangeWatch.tick(this.now()); } catch { /* shadow range study */ } try { this._scanSweep(this.now()); } catch { /* scan ledger */ } return; }
       const views = await this.d.fetchViews(mints);
       const n = this.now();
       // D4 (user 2026-10-13): market breadth — the share of sampled coins green on the hour —
@@ -1537,6 +1545,7 @@ export class Bot {
       try { await this.outcomeTick(n); } catch { /* observer only */ }
       try { await this._flowRetryTick(n); } catch { /* record-only retry */ }
       try { await this._staircaseRetryTick(n); } catch { /* staircase retry */ }
+      try { await this._rangeRetryTick(n); } catch { /* range-live retry */ }
       try { await this._walletRetryTick(n); } catch { /* wallet-live retry */ }
       try { await this.walletWatch.finalizeTick(n); } catch { /* shadow outcomes */ }
       try { await this.calloutLab.tick(n); } catch { /* shadow callouts */ }
@@ -2023,6 +2032,97 @@ export class Bot {
       if (!v) continue; // still no view — the next tick retries until the window closes
       this.staircasePending.delete(mint);
       await this._evalStaircaseWithView(p.rec, v, n);
+    }
+  }
+
+  /**
+   * RANGE LIVE (owner correction 2026-10-16, minutes after the Range
+   * Study shipped as a shadow: "None of this is shadow btw — Real"). A
+   * range mark — a tight sideways base that held the full trailing
+   * window, the range intact by construction at the mark moment —
+   * routes into the exact same onSignal pipeline as every setup:
+   * gates, risk, sizing, exits all unchanged. The guard shape mirrors
+   * _evalStaircase exactly: fetch a fresh view, refuse a coin already
+   * held or signaled inside the per-mint cooldown, apply the eligible()
+   * tradability floor (a floor failure journals a skipped 'range'
+   * signal), then let the pipeline judge EVERY metric. The study in
+   * rangeWatch.js keeps journaling + forward-scoring untouched — this
+   * tap is the only bridge, wired as the watch's onMark dep and
+   * self-guarded on cfg.rangeLive (default 1, his order), invoked for
+   * every mark, fail-silent by construction. A mark whose view is
+   * missing queues and retries off-cluster for up to 5 minutes (the
+   * _evalFlow/_evalStaircase discipline). The entry is judged at the
+   * MARK moment — the eval is anchored to the mark record and the one
+   * mark per episode is the only trigger; later expansion never
+   * re-judges. Kill switch: RANGE_LIVE=0 (study reverts to pure
+   * record-only: marks + scores, zero signal records).
+   */
+  _evalRange(rec) {
+    if (!this.cfg.rangeLive) return;
+    if (!rec || rec.type !== 'mark' || !rec.mint) return;
+    const mint = rec.mint;
+    (async () => {
+      const n = this.now();
+      this.stats.range = this.stats.range || { evals: 0, noView: 0, retries: 0 };
+      this.stats.range.evals++;
+      const views = await this.d.fetchViews([mint]).catch(() => null);
+      const v = views && views.get(mint);
+      if (!v) {
+        this.stats.range.noView++;
+        this._queueRangeRetry(rec, n);
+        return;
+      }
+      await this._evalRangeWithView(rec, v, n);
+    })().catch(e => this.err('rangeEval', e));
+  }
+
+  /** The judged half of a range live eval: a fresh view exists, so run
+   *  the guards and route into onSignal. Shared by the fire-time path
+   *  and the retry tick. */
+  async _evalRangeWithView(rec, v, n) {
+    const mint = rec.mint;
+    this.latest.set(mint, v); this.latestAt.set(mint, n); this.history.record(v, n);
+    if (this.positions.some(p => p.mint === mint)) return; // already holding — the study record carries the mark; nothing to decide
+    if (n - (this.lastSignal.get(mint) || 0) < this.cfg.signalCooldownMin * 60000) return; // signaled moments ago — the mark's study record is the trace; no re-judge spam
+    const metrics = { range: { markId: rec.markId || null, episodeId: rec.episodeId || null, bandPct: rec.bandPct ?? null, tightness: rec.tightness ?? null, durationMin: rec.durationMin ?? null, rangeHi: rec.rangeHi ?? null, rangeLo: rec.rangeLo ?? null, rangeMid: rec.rangeMid ?? null, markMc: rec.markMc ?? null, markPrice: rec.markPrice ?? null } };
+    const sig = { setup: 'range', strength: rec.bandPct != null ? Math.max(1, Math.round(100 - rec.bandPct)) : 1, metrics };
+    const el = eligible(v, this.cfg, n);
+    if (el.length) { this.skip(v, sig, el.map(r => `range-live: ${r}`), [], {}); return; }
+    this.lastSignal.set(mint, n);
+    console.log(`[range] ${v.symbol}: range base held ${rec.durationMin}m at a ${rec.bandPct}% band — RANGE LIVE eval`);
+    await this.onSignal(v, sig);
+  }
+
+  /** A range mark whose mint had no market view at fire time: queue it
+   *  and retry for up to 5 minutes instead of dropping it silently (the
+   *  _queueStaircaseRetry pattern). A newer mark for the same mint
+   *  supersedes the queued record; the retry window stays anchored to
+   *  the first queueing. */
+  _queueRangeRetry(rec, n) {
+    this.rangePending = this.rangePending || new Map();
+    const cur = this.rangePending.get(rec.mint);
+    if (cur) { cur.rec = rec; return; }
+    this.rangePending.set(rec.mint, { rec, firstTs: n, nextAt: n + 20000 });
+  }
+
+  async _rangeRetryTick(n) {
+    if (!this.rangePending || !this.rangePending.size) return;
+    for (const [mint, p] of [...this.rangePending]) {
+      if (n - p.firstTs > 5 * 60000) {
+        this.rangePending.delete(mint);
+        this.stats.range = this.stats.range || { evals: 0, noView: 0, retries: 0 };
+        this.stats.range.noViewFinal = (this.stats.range.noViewFinal || 0) + 1;
+        console.log(`[range] ${p.rec.symbol || mint}: live eval dropped — no market view within 5m of the range mark`);
+        continue;
+      }
+      if (n < p.nextAt) continue;
+      p.nextAt = n + 20000;
+      this.stats.range.retries = (this.stats.range.retries || 0) + 1;
+      const views = await this.d.fetchViews([mint]).catch(() => null);
+      const v = views && views.get(mint);
+      if (!v) continue; // still no view — the next tick retries until the window closes
+      this.rangePending.delete(mint);
+      await this._evalRangeWithView(p.rec, v, n);
     }
   }
 

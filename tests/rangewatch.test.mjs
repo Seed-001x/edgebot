@@ -17,6 +17,7 @@ import path from 'node:path';
 import { RangeWatch, assessRange, classifyOutcome, foldRangeJournal, buildRangeCard, RANGE_READY_N, RANGE_EXPAND_FRAC, RANGE_BREAK_FRAC } from '../src/rangeWatch.js';
 import { Journal } from '../src/journal.js';
 import { Bot } from '../src/bot.js';
+import { Executor } from '../src/exec.js';
 import { loadConfig, validateConfig } from '../src/config.js';
 import { testCfg, view, tmp } from './helpers.mjs';
 
@@ -71,6 +72,13 @@ test('config: RANGE_WATCH defaults on, dials parse, junk rejected', () => {
   assert.ok(validateConfig(loadConfig({ RANGE_MAX_BAND_PCT: '0' })).some(e => e.includes('RANGE_MAX_BAND_PCT')));
   assert.ok(validateConfig(loadConfig({ RANGE_MAX_MIN_MOVE_PCT: '101' })).some(e => e.includes('RANGE_MAX_MIN_MOVE_PCT')));
   assert.ok(validateConfig(loadConfig({ RANGE_MIN_MC: '0' })).some(e => e.includes('RANGE_MIN_MC')));
+});
+
+test('config: RANGE_LIVE defaults ON (owner correction — "none of this is shadow"), parses, junk rejected', () => {
+  assert.equal(loadConfig({}).rangeLive, 1);
+  assert.equal(loadConfig({ RANGE_LIVE: '0' }).rangeLive, 0);
+  assert.equal(loadConfig({ RANGE_LIVE: '1' }).rangeLive, 1);
+  assert.ok(validateConfig(loadConfig({ RANGE_LIVE: '2' })).some(e => e.includes('RANGE_LIVE')));
 });
 
 // ---- pure assessor: the four legs ----
@@ -427,4 +435,181 @@ test('inertness: feeding the study never signals, never positions, writes only i
   off.bot.journal.signal(sigArgs);
   const read = (cfg) => fs.readFileSync(path.join(cfg.dataDir, 'signals.jsonl'), 'utf8').trim();
   assert.equal(read(on.cfg), read(off.cfg));
+});
+
+// ---- RANGE LIVE (owner correction 2026-10-16: "None of this is shadow
+// btw — Real"): a range mark ALSO routes a live entry attempt through
+// the standard pipeline (Bot._evalRange, the _evalStaircase guard shape).
+// These tests pin the routing and its guards — kill switch, already-
+// held, per-mint signal cooldown, missing view + retry, eligible()
+// floor — not the gates downstream of onSignal.
+const RMARK = { type: 'mark', ts: T0, mint: MINT, symbol: 'RNG', markId: 'rw-RangeM-1-m1', episodeId: 'rw-RangeM-1', bandPct: 4, tightness: 0.114, durationMin: 14.5, rangeHi: 20800, rangeLo: 20000, rangeMid: 20400, markMc: 20800, markPrice: 20.8 };
+
+function liveRig(over = {}, env = {}) {
+  const cfg = testCfg({ ...over }, env);
+  const clock = { t: T0 };
+  const views = new Map();
+  const exec = new Executor(cfg, { quote: async () => ({ outAmount: '1000000000', priceImpactPct: '0.01' }) });
+  const bot = new Bot(cfg, {
+    now: () => clock.t, exec,
+    discover: async () => Object.assign(new Map(), { counts: {} }),
+    fetchViews: async (mints) => new Map(mints.filter(m => views.has(m)).map(m => [m, views.get(m)])),
+    fetchSolUsd: async () => 150, fetchRug: async () => null, searchByName: async () => [],
+  });
+  const calls = [];
+  bot.onSignal = async (v, sig) => { calls.push({ v, sig }); };
+  views.set(MINT, view({ address: MINT, symbol: 'RNG' }));
+  return { bot, clock, views, calls };
+}
+const flush = async () => { await new Promise(r => setImmediate(r)); await new Promise(r => setImmediate(r)); };
+function feedBotRange(bot, clock, minutes, startIdx = 0) {
+  for (let i = 0; i <= Math.round(minutes * 2); i++) {
+    const price = PAT[(startIdx + i) % 4];
+    bot.rangeWatch.observe(view({ address: MINT, symbol: 'RNG', price, mc: price * 1000 }), clock.t);
+    clock.t += 30000;
+  }
+}
+
+test('range live: a qualifying mark routes ONE range signal into onSignal, mark context carried', async () => {
+  const { bot, clock, calls } = liveRig();
+  feedBotRange(bot, clock, 15);
+  await flush();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].sig.setup, 'range');
+  assert.equal(calls[0].sig.metrics.range.markId, 'rw-RangeM-' + (T0 + 15 * M) + '-m1');
+  assert.equal(calls[0].sig.metrics.range.bandPct, 4);
+  assert.equal(calls[0].sig.metrics.range.durationMin, 14.5);
+  assert.equal(bot.stats.range.evals, 1);
+  assert.equal(bot.lastSignal.get(MINT), T0 + 15 * M);
+  // the study layer is untouched: the mark journaled exactly as the shadow design wrote it
+  const recs = fs.readFileSync(path.join(bot.cfg.dataDir, 'range_marks.jsonl'), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l));
+  assert.equal(recs.filter(x => x.type === 'mark').length, 1);
+});
+
+test('range live: judged at the mark moment — later expansion never re-judges', async () => {
+  const { bot, clock, calls } = liveRig();
+  feedBotRange(bot, clock, 15);
+  await flush();
+  assert.equal(calls.length, 1);
+  // the coin now moons out of the range: no second eval, ever — the one
+  // mark per episode was the only trigger
+  for (const p of [26, 34, 45, 60, 80]) { bot.rangeWatch.observe(view({ address: MINT, symbol: 'RNG', price: p, mc: p * 1000 }), clock.t); clock.t += 30000; }
+  feedBotRange(bot, clock, 10, 1);   // and ranges again afterwards — still no re-judge (episode/rearm discipline)
+  await flush();
+  assert.equal(calls.length, 1);
+  assert.equal(bot.stats.range.evals, 1);
+});
+
+test('range live: RANGE_LIVE=0 reverts to the pure study — marks journal, zero signals, no evals', async () => {
+  const { bot, clock, calls } = liveRig({}, { RANGE_LIVE: '0' });
+  feedBotRange(bot, clock, 15);
+  await flush();
+  assert.equal(calls.length, 0);
+  assert.equal(bot.stats.range, undefined);
+  assert.equal(bot.journal.signals.length, 0);
+  const recs = fs.readFileSync(path.join(bot.cfg.dataDir, 'range_marks.jsonl'), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l));
+  assert.equal(recs.filter(x => x.type === 'mark').length, 1);   // the study half is fully intact
+  // and a signal journaled beside it is byte-identical to the live bot's
+  const on = liveRig();
+  on.clock.t = clock.t;   // same journal clock — the records, not the clocks, are what is compared
+  const sigArgs = { mint: MINT, symbol: 'RNG', setup: 'pop', decision: 'skipped', reasons: ['test'], price: 1, mc: 1000 };
+  bot.journal.signal(sigArgs);
+  on.bot.journal.signal(sigArgs);
+  const read = (cfg) => fs.readFileSync(path.join(cfg.dataDir, 'signals.jsonl'), 'utf8').trim();
+  assert.equal(read(bot.cfg), read(on.bot.cfg));
+});
+
+test('range live: kill switch via cfg — no eval, no call', async () => {
+  const { bot, calls } = liveRig({ rangeLive: 0 });
+  bot._evalRange(RMARK);
+  await flush();
+  assert.equal(calls.length, 0);
+  assert.equal(bot.stats.range, undefined);
+});
+
+test('range live: already holding the mint — no eval routed', async () => {
+  const { bot, calls } = liveRig();
+  bot.positions.push({ mint: MINT, symbol: 'RNG' });
+  bot._evalRange(RMARK);
+  await flush();
+  assert.equal(calls.length, 0);
+  assert.equal(bot.stats.range.evals, 1);   // evaluated, refused at the held guard
+});
+
+test('range live: per-mint signal cooldown suppresses a re-judge inside the window', async () => {
+  const { bot, clock, calls } = liveRig();
+  bot._evalRange(RMARK);
+  await flush();
+  assert.equal(calls.length, 1);
+  clock.t += 60000; // 1m later — inside the 10m signal cooldown
+  bot._evalRange({ ...RMARK, markId: 'rw-RangeM-2-m1', episodeId: 'rw-RangeM-2' });
+  await flush();
+  assert.equal(calls.length, 1);
+  clock.t += 10 * 60000; // cooldown over — a fresh mark judges fresh
+  bot._evalRange({ ...RMARK, markId: 'rw-RangeM-3-m1', episodeId: 'rw-RangeM-3' });
+  await flush();
+  assert.equal(calls.length, 2);
+});
+
+test('range live: missing view queues a retry instead of dropping the mark', async () => {
+  const { bot, views, calls } = liveRig();
+  views.delete(MINT);
+  bot._evalRange(RMARK);
+  await flush();
+  assert.equal(calls.length, 0);
+  assert.equal(bot.stats.range.noView, 1);
+  assert.ok(bot.rangePending.has(MINT), 'mark is queued for retry, not dropped');
+});
+
+test('range live: retry tick lands the eval once the view appears', async () => {
+  const { bot, clock, views, calls } = liveRig();
+  views.delete(MINT);
+  bot._evalRange(RMARK);
+  await flush();
+  views.set(MINT, view({ address: MINT, symbol: 'RNG' }));
+  clock.t += 20000; // first retry slot
+  await bot._rangeRetryTick(clock.t);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].sig.setup, 'range');
+  assert.equal(bot.rangePending.has(MINT), false);
+  assert.equal(bot.stats.range.retries, 1);
+});
+
+test('range live: a mark that never gets a view expires after 5 minutes, counted once', async () => {
+  const { bot, clock, views, calls } = liveRig();
+  views.delete(MINT);
+  bot._evalRange(RMARK);
+  await flush();
+  clock.t += 5 * 60000 + 1;
+  await bot._rangeRetryTick(clock.t);
+  assert.equal(calls.length, 0);
+  assert.equal(bot.rangePending.has(MINT), false);
+  assert.equal(bot.stats.range.noViewFinal, 1);
+});
+
+test('range live: eligible() failure journals a skipped range signal, no onSignal', async () => {
+  const { bot, views, calls } = liveRig();
+  views.set(MINT, view({ address: MINT, symbol: 'RNG', chgH1: -80 })); // dead bounce — fails the tradability floor
+  bot._evalRange(RMARK);
+  await flush();
+  assert.equal(calls.length, 0);
+  const recs = bot.journal.signals.filter(s => s.setup === 'range');
+  assert.equal(recs.length, 1);
+  assert.equal(recs[0].decision, 'skipped');
+  assert.match(recs[0].reasons[0], /range-live:/);
+});
+
+test('range live: the card notes live routing (evals + fired/taken) while aggregates stay mark-based', async () => {
+  const { bot, views } = liveRig();
+  views.set(MINT, view({ address: MINT, symbol: 'RNG', chgH1: -80 }));
+  bot._evalRange(RMARK);
+  await flush();
+  const card = bot.rangeWatchCard();
+  assert.equal(card.liveRouting.live, true);
+  assert.equal(card.liveRouting.evals, 1);
+  assert.equal(card.liveRouting.signals, 1);   // the eligible-floor skip journaled as a range signal
+  assert.equal(card.liveRouting.taken, 0);
+  assert.equal(card.marks, 0);                 // aggregates still judge marks only — the direct eval wrote none
+  const off = liveRig({}, { RANGE_LIVE: '0' });
+  assert.equal(off.bot.rangeWatchCard().liveRouting.live, false);
 });

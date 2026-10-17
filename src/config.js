@@ -88,7 +88,8 @@ export function loadConfig(env = process.env) {
     bottomMovePct: num(env, 'BOTTOM_MOVE_PCT', 18),           // first move off the low that fires the mark (PERCENT)
     bottomExpireMin: num(env, 'BOTTOM_EXPIRE_MIN', 60),       // minutes out of the sampling orbit before tracking a mint ends
     bottomMinPeakMc: num(env, 'BOTTOM_MIN_PEAK_MC', 25000),    // peak mc (USD) a run must have reached for its mark to qualify as a RETRACE SETUP (owner refinement 2026-10-16: he means coins that RAN first — dev/null/Gato class; below the floor the mark is dust: still journaled + scored in its own bucket, never alerted)
-    // Range Study (owner order 2026-10-16, RECORD-ONLY): a coin that bases
+    // Range Study (owner order 2026-10-16; study record-only, marks ALSO
+    // route live entries by default — RANGE_LIVE below): a coin that bases
     // in a tight sideways range for a sustained stretch — the shape he
     // circled on 'Market Maker' (~20 min of base before the vertical pop
     // the bot chased at its tip). When the trailing RANGE_WINDOW_MIN of
@@ -103,6 +104,15 @@ export function loadConfig(env = process.env) {
     rangeMaxBandPct: num(env, 'RANGE_MAX_BAND_PCT', 35),     // hi/lo mc band over the window that still counts as tight (PERCENT)
     rangeMaxMinMovePct: num(env, 'RANGE_MAX_MIN_MOVE_PCT', 18), // largest allowed 1-minute step inside the window (PERCENT)
     rangeMinMc: num(env, 'RANGE_MIN_MC', 15000),             // mc (USD) at mark a coin must carry to count as real
+    // Range LIVE (owner correction 2026-10-16, minutes after the study
+    // shipped: "None of this is shadow btw — Real"): when 1 (the
+    // default — his order), a range mark ALSO routes a live entry
+    // attempt through the exact standard onSignal pipeline
+    // (Bot._evalRange) — same gates, risk, sizing, exits as every
+    // setup; the study keeps journaling + scoring untouched. 0 =
+    // revert to the pure record-only study (marks, scores, card;
+    // zero signal records).
+    rangeLive: num(env, 'RANGE_LIVE', 1),                    // 1 = range marks route live entries (0 = study only)
     // Confluence Shadow Signal (user order 2026-10-16, RECORD-ONLY): every
     // walletWatch confluence fire ALSO opens two virtual positions stamped
     // at DETECTION time (the classification study's decisive unknowns are
@@ -725,6 +735,7 @@ export function validateConfig(cfg) {
   if (cfg.rangeMaxBandPct <= 0 || cfg.rangeMaxBandPct > 200) errs.push('RANGE_MAX_BAND_PCT must be between 0 and 200 (percent)');
   if (cfg.rangeMaxMinMovePct <= 0 || cfg.rangeMaxMinMovePct > 100) errs.push('RANGE_MAX_MIN_MOVE_PCT must be between 0 and 100 (percent)');
   if (!(cfg.rangeMinMc > 0)) errs.push('RANGE_MIN_MC must be > 0 (USD)');
+  if (cfg.rangeLive < 0 || cfg.rangeLive > 1) errs.push('RANGE_LIVE must be 0 or 1');
   if (cfg.confluenceSignal < 0 || cfg.confluenceSignal > 1) errs.push('CONFLUENCE_SIGNAL must be 0 or 1');
   if (cfg.confluenceScalpPct <= 0 || cfg.confluenceScalpPct > 2) errs.push('CONFLUENCE_SCALP_PCT must be between 0 and 2');
   if (cfg.staircaseLive < 0 || cfg.staircaseLive > 1) errs.push('STAIRCASE_LIVE must be 0 or 1');
