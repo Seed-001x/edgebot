@@ -335,6 +335,15 @@ export function startServer(bot, port) {
       if (!bot.bottomWatchCard) return json(res, 200, { enabled: false });
       return json(res, 200, bot.bottomWatchCard());
     }
+    if (req.method === 'GET' && u.pathname === '/rangewatch') {
+      // Range Study (record-only, owner 2026-10-16): tight sideways
+      // bases held over the trailing window, journaled one mark per
+      // range episode to range_marks.jsonl, forward-scored with the
+      // structure tailer and classed expanded / broke down / ranged;
+      // ready at 30 finalized. Nothing here gates or trades.
+      if (!bot.rangeWatchCard) return json(res, 200, { enabled: false });
+      return json(res, 200, bot.rangeWatchCard());
+    }
     if (req.method === 'GET' && u.pathname === '/confluencesignal') {
       // Confluence Shadow Signal (record-only, user 2026-10-16): every
       // walletWatch confluence fire as a pair of DETECTION-time virtual

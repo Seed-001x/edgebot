@@ -88,6 +88,21 @@ export function loadConfig(env = process.env) {
     bottomMovePct: num(env, 'BOTTOM_MOVE_PCT', 18),           // first move off the low that fires the mark (PERCENT)
     bottomExpireMin: num(env, 'BOTTOM_EXPIRE_MIN', 60),       // minutes out of the sampling orbit before tracking a mint ends
     bottomMinPeakMc: num(env, 'BOTTOM_MIN_PEAK_MC', 25000),    // peak mc (USD) a run must have reached for its mark to qualify as a RETRACE SETUP (owner refinement 2026-10-16: he means coins that RAN first — dev/null/Gato class; below the floor the mark is dust: still journaled + scored in its own bucket, never alerted)
+    // Range Study (owner order 2026-10-16, RECORD-ONLY): a coin that bases
+    // in a tight sideways range for a sustained stretch — the shape he
+    // circled on 'Market Maker' (~20 min of base before the vertical pop
+    // the bot chased at its tip). When the trailing RANGE_WINDOW_MIN of
+    // sampled history is tight (hi/lo mc within RANGE_MAX_BAND_PCT),
+    // quiet (no 1-minute step beyond RANGE_MAX_MIN_MOVE_PCT) and covered,
+    // and the coin is real (mc >= RANGE_MIN_MC, first sampled at least a
+    // window ago), one mark per range episode journals to
+    // range_marks.jsonl, forward-scored with the structure watch's tailer
+    // (/rangewatch): expanded / broke down / ranged. 0 = fully off.
+    rangeWatch: num(env, 'RANGE_WATCH', 1),                  // 1 = range study on (0 = no observing, no records, card off)
+    rangeWindowMin: num(env, 'RANGE_WINDOW_MIN', 15),        // trailing minutes of sampled history judged as the range window
+    rangeMaxBandPct: num(env, 'RANGE_MAX_BAND_PCT', 35),     // hi/lo mc band over the window that still counts as tight (PERCENT)
+    rangeMaxMinMovePct: num(env, 'RANGE_MAX_MIN_MOVE_PCT', 18), // largest allowed 1-minute step inside the window (PERCENT)
+    rangeMinMc: num(env, 'RANGE_MIN_MC', 15000),             // mc (USD) at mark a coin must carry to count as real
     // Confluence Shadow Signal (user order 2026-10-16, RECORD-ONLY): every
     // walletWatch confluence fire ALSO opens two virtual positions stamped
     // at DETECTION time (the classification study's decisive unknowns are
@@ -705,6 +720,11 @@ export function validateConfig(cfg) {
   if (cfg.bottomMovePct <= 0 || cfg.bottomMovePct > 500) errs.push('BOTTOM_MOVE_PCT must be between 0 and 500 (percent)');
   if (cfg.bottomExpireMin < 10) errs.push('BOTTOM_EXPIRE_MIN must be >= 10');
   if (!(cfg.bottomMinPeakMc > 0)) errs.push('BOTTOM_MIN_PEAK_MC must be > 0 (USD)');
+  if (cfg.rangeWatch < 0 || cfg.rangeWatch > 1) errs.push('RANGE_WATCH must be 0 or 1');
+  if (cfg.rangeWindowMin < 3 || cfg.rangeWindowMin > 240) errs.push('RANGE_WINDOW_MIN must be 3..240');
+  if (cfg.rangeMaxBandPct <= 0 || cfg.rangeMaxBandPct > 200) errs.push('RANGE_MAX_BAND_PCT must be between 0 and 200 (percent)');
+  if (cfg.rangeMaxMinMovePct <= 0 || cfg.rangeMaxMinMovePct > 100) errs.push('RANGE_MAX_MIN_MOVE_PCT must be between 0 and 100 (percent)');
+  if (!(cfg.rangeMinMc > 0)) errs.push('RANGE_MIN_MC must be > 0 (USD)');
   if (cfg.confluenceSignal < 0 || cfg.confluenceSignal > 1) errs.push('CONFLUENCE_SIGNAL must be 0 or 1');
   if (cfg.confluenceScalpPct <= 0 || cfg.confluenceScalpPct > 2) errs.push('CONFLUENCE_SCALP_PCT must be between 0 and 2');
   if (cfg.staircaseLive < 0 || cfg.staircaseLive > 1) errs.push('STAIRCASE_LIVE must be 0 or 1');

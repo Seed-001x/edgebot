@@ -24,6 +24,7 @@ import { FlowExits } from './flowExits.js';
 import { StructureWatch } from './structureWatch.js';
 import { StaircaseSignal } from './staircaseSignal.js';
 import { BottomWatch } from './bottomWatch.js';
+import { RangeWatch } from './rangeWatch.js';
 import { ConfluenceSignal } from './confluenceSignal.js';
 import { ScanLab, buildScanCard } from './scanLab.js';
 import { ShadowSeller } from './shadowSeller.js';
@@ -55,6 +56,7 @@ export class Bot {
     this.staircaseSignal = new StaircaseSignal({ cfg, journal: this.journal, now: this.now, log: console.log }); // Staircase-3 Shadow Signal (record-only, user 2026-10-16): every structure-watch mark at ordinal >= 3 is ALSO journaled as a named shadow signal, scored by the watch's forward scores joined at read time (/staircase); nothing reads it into any decision
     this.structureWatch = new StructureWatch({ cfg, journal: this.journal, now: this.now, fetchHolders: (mint) => this._dasHolderSample(mint), log: console.log, onMark: (rec) => { try { this.staircaseSignal.noteMark(rec); } catch { /* observer only — never disturb the watch */ } try { this._evalStaircase(rec); } catch { /* live tap (STAIRCASE_LIVE) — self-guarded, async, fail-silent: can never disturb the watch */ } } }); // Structure Watch (record-only): seeds every signaled mint into an hours-long staircase + holder-series watch with would-enter marks at confirmed higher lows; holder reads ride the same knob-respecting DAS helper as gate sampling; no decision reads it
     this.bottomWatch = new BottomWatch({ cfg, journal: this.journal, dir: cfg.dataDir, now: this.now, log: console.log, wasExited: (mint) => this.journal.trades.some(t => t.type === 'close' && t.mint === mint), fetchCandles: (pool, fromTs, toTs) => this.structureWatch.fetchCandles(pool, fromTs, toTs), resolvePool: (mint) => this.structureWatch.resolvePool(mint) }); // Bottom Tracker (record-only, user 2026-10-16): episodes on watched coins dumped >= BOTTOM_DROP_PCT off their sampled peak; a 'first move off the bottom' mark once the low holds quiet and price + flow turn up; forward-scored by the structure watch's own candle tailer (/bottomwatch); fed from the poll + outcome-observer view streams — no sampler of its own, no decision reads it
+    this.rangeWatch = new RangeWatch({ cfg, journal: this.journal, dir: cfg.dataDir, now: this.now, log: console.log, wasExited: (mint) => this.journal.trades.some(t => t.type === 'close' && t.mint === mint), isHeld: (mint) => this.positions.some(p => p.mint === mint), fetchCandles: (pool, fromTs, toTs) => this.structureWatch.fetchCandles(pool, fromTs, toTs), resolvePool: (mint) => this.structureWatch.resolvePool(mint) }); // Range Study (record-only, owner 2026-10-16): a tight sideways base held over the trailing window journals one mark per range episode to range_marks.jsonl; forward-scored by the structure watch's own candle tailer (/rangewatch) — expanded / broke down / ranged; fed from the poll + outcome-observer view streams — no sampler of its own, no decision reads it
     this.scanLab = new ScanLab({ cfg, journal: this.journal, now: this.now, log: console.log }); // Scan Ledger scorer (record-only): r15/r60 after each finalized scan session; no decision reads it
     this.scanFold = new Map(); // Scan Ledger: mint -> live watch-session fold (cheap scalars only; finalized into the journal by _scanSweep)
     this.lastScanSweepTs = 0;
@@ -1055,6 +1057,15 @@ export class Bot {
     catch { return { enabled: false }; }
   }
 
+  /** Read-only /rangewatch payload — the Range Study card (record-only,
+   *  owner 2026-10-16): tight sideways bases journaled one mark per
+   *  episode, forward-scored with the structure tailer and classed
+   *  expanded / broke down / ranged; ready = 30 finalized. */
+  rangeWatchCard() {
+    try { return this.rangeWatch ? this.rangeWatch.card() : { enabled: false }; }
+    catch { return { enabled: false }; }
+  }
+
   /** Read-only /scanledger payload — the Scan Ledger (record-only, user
    *  2026-10-16): totals + latest sessions + the near-miss list (biggest
    *  runs while watched that never signaled), r15/r60 joined from the
@@ -1403,6 +1414,13 @@ export class Bot {
       const have = new Set(pend.map(p => p.mint));
       for (const pm of this.bottomWatch.pendingMints()) if (!have.has(pm.mint)) pend.push(pm);
     }
+    // Range Study (record-only): mints with an open range episode join
+    // the fetch set on the same terms — the range's exit (expansion or
+    // breakdown) is followed even after the coin leaves the watchlist.
+    if (this.rangeWatch) {
+      const have = new Set(pend.map(p => p.mint));
+      for (const pm of this.rangeWatch.pendingMints()) if (!have.has(pm.mint)) pend.push(pm);
+    }
     const due = pend.filter(p => n - (this.outcomeSeenAt.get(p.mint) || 0) >= 25000).slice(0, 150);
     if (!due.length) return;
     this.stats.outcomeObs.ticks++;
@@ -1414,6 +1432,7 @@ export class Bot {
         this.journal.observe(v);
         try { if (this.scanLab) this.scanLab.observe(v, n); } catch { /* scan scorer — record-only */ }
         try { if (this.bottomWatch) this.bottomWatch.observe(v, n); } catch { /* bottom tracker — record-only */ }
+        try { if (this.rangeWatch) this.rangeWatch.observe(v, n); } catch { /* range study — record-only */ }
         this.outcomeSeenAt.set(mint, n);
         this.stats.outcomeObs.views++;
       }
@@ -1440,7 +1459,7 @@ export class Bot {
     try {
       this.evictBlacklisted(); // marked coins never even get priced, let alone signal
       const mints = [...new Set([...this.watch.keys(), ...this.positions.map(p => p.mint)])];
-      if (!mints.length) { try { await this.outcomeTick(this.now()); } catch { /* observer only */ } try { await this._flowRetryTick(this.now()); } catch { /* record-only retry */ } try { await this._staircaseRetryTick(this.now()); } catch { /* staircase retry */ } try { await this._walletRetryTick(this.now()); } catch { /* wallet-live retry */ } try { await this.walletWatch.finalizeTick(this.now()); } catch { /* shadow outcomes */ } try { await this.calloutLab.tick(this.now()); } catch { /* shadow callouts */ } try { await this.flowExits.tick(this.now()); } catch { /* shadow flow exits */ } try { await this.structureWatch.tick(this.now()); } catch { /* shadow structure watch */ } try { await this.bottomWatch.tick(this.now()); } catch { /* shadow bottom tracker */ } try { this._scanSweep(this.now()); } catch { /* scan ledger */ } return; }
+      if (!mints.length) { try { await this.outcomeTick(this.now()); } catch { /* observer only */ } try { await this._flowRetryTick(this.now()); } catch { /* record-only retry */ } try { await this._staircaseRetryTick(this.now()); } catch { /* staircase retry */ } try { await this._walletRetryTick(this.now()); } catch { /* wallet-live retry */ } try { await this.walletWatch.finalizeTick(this.now()); } catch { /* shadow outcomes */ } try { await this.calloutLab.tick(this.now()); } catch { /* shadow callouts */ } try { await this.flowExits.tick(this.now()); } catch { /* shadow flow exits */ } try { await this.structureWatch.tick(this.now()); } catch { /* shadow structure watch */ } try { await this.bottomWatch.tick(this.now()); } catch { /* shadow bottom tracker */ } try { await this.rangeWatch.tick(this.now()); } catch { /* shadow range study */ } try { this._scanSweep(this.now()); } catch { /* scan ledger */ } return; }
       const views = await this.d.fetchViews(mints);
       const n = this.now();
       // D4 (user 2026-10-13): market breadth — the share of sampled coins green on the hour —
@@ -1468,6 +1487,7 @@ export class Bot {
         this.journal.observe(v);
         try { if (this.scanLab) this.scanLab.observe(v, n); } catch { /* scan scorer — record-only */ }
         try { if (this.bottomWatch) this.bottomWatch.observe(v, n); } catch { /* bottom tracker — record-only */ }
+        try { if (this.rangeWatch) this.rangeWatch.observe(v, n); } catch { /* range study — record-only */ }
         this.outcomeSeenAt.set(mint, n); // the trading poll just fed the outcome tracker for this mint
         if (this.positions.some(p => p.mint === mint)) { try { if (this.cfg.scanStamps) this._noteScanHeld(mint); } catch { /* record-only */ } continue; }
         if (tickCfg.churnEnabled) this._updateChurnPins(mint, n);
@@ -1523,6 +1543,7 @@ export class Bot {
       try { await this.flowExits.tick(n); } catch { /* shadow flow exits */ }
       try { await this.structureWatch.tick(n); } catch { /* shadow structure watch */ }
       try { await this.bottomWatch.tick(n); } catch { /* shadow bottom tracker */ }
+      try { await this.rangeWatch.tick(n); } catch { /* shadow range study */ }
       try { this._scanSweep(n); } catch { /* scan ledger */ }
       candidates.sort((a, b) => b.sig.strength - a.sig.strength);
       for (const c of candidates.slice(0, this.cfg.maxSignalsPerTick)) {
