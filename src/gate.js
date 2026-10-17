@@ -217,6 +217,32 @@ export function fastBondVerdict(lifeSec, maxSec) {
   return { pass: true, lifeSec: life, unknown: false, reason: `curve lived ${life}s — at or over the ${maxSec}s fast-bond line` };
 }
 
+// 4d. Birth-verdict memory (owner order 2026-10-16, the FMR hole): both birth
+// gates above FAIL OPEN on missing data — correct in isolation, fatal in
+// combination with amnesia. FMR (2026-10-16): a trend evaluation measured
+// the truth and instantGrad fired ("bonding curve filled in 3 buy tx(s) (18
+// buys bundled into them) — bought out at launch"), but the knowledge lived
+// only in that one journal record; ~18 minutes later a pop evaluation of
+// the same mint re-fetched, GeckoTerminal 429'd the curve history away
+// ('curve history unknown' -> pass) and DexScreener stamped both pairs
+// with the same pairCreatedAt second (degenerate -> lifespan unknown ->
+// pass), and the bot bought a bought-out launch. The fix is memory, not
+// guessing: whenever ANY evaluation ESTABLISHES a disqualifying birth
+// verdict — an instantGrad bought-out fire (1d) or a measured fastBond
+// block (4c) — Bot persists it per mint (birth-verdicts.json) and this
+// verdict blocks every later evaluation of that mint at the onSignal seam
+// BEFORE any fresh fetch is consulted. A mint with no stored verdict is
+// not judged here at all: the fresh-fetch gates keep their fail-open
+// behavior exactly. A PASSING measurement never creates a verdict (a
+// lifespan >= the line is permanent truth too, but the curve-life cache
+// already keeps it — memory is only for the disqualified).
+export function birthMemoryVerdict(verdict, now) {
+  if (!verdict || !verdict.kind) return { pass: true, reason: 'no stored birth verdict — not judged' };
+  const ageMs = Math.max(0, (Number(now) || 0) - (Number(verdict.firstSeenTs) || 0));
+  const age = ageMs < 60000 ? `${Math.floor(ageMs / 1000)}s` : ageMs < 3600000 ? `${Math.floor(ageMs / 60000)}m` : ageMs < 48 * 3600000 ? `${Math.floor(ageMs / 3600000)}h` : `${Math.floor(ageMs / 86400000)}d`;
+  return { pass: false, kind: verdict.kind, evidence: verdict.evidence || null, firstSeenTs: verdict.firstSeenTs || null, reason: `known fast bonder (${verdict.kind}: ${verdict.evidence}; verdict ${age} old) — blocked from memory` };
+}
+
 // 5. Vertical launch: a huge move on a coin minutes old is the pool being pushed, not demand.
 export function verticalLaunchCheck(ageMin, chgPct, maxPct = 5000, maxAgeMin = 120) {
   const bad = ageMin <= maxAgeMin && num(chgPct) >= maxPct;

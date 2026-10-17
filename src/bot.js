@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { History } from './history.js';
 import { detect, detectChurn, detectLiftoff, eligible, fastPop, fastPopFloors, judgeScan, closestCall, betterScanVerdict } from './detect.js';
-import { runGates, hasHardFail, tempRuleViolation, blockedNameWord, extensionCheck, freshHistoryCheck, flowSnapshotCheck, shallowDipCheck, summarizeGateChecks, holderSamples, foldLastTrades, insiderCountVerdict, fastBondVerdict } from './gate.js';
+import { runGates, hasHardFail, tempRuleViolation, blockedNameWord, extensionCheck, freshHistoryCheck, flowSnapshotCheck, shallowDipCheck, summarizeGateChecks, holderSamples, foldLastTrades, insiderCountVerdict, fastBondVerdict, birthMemoryVerdict } from './gate.js';
 import { computeSignalFields } from './signalFields.js';
 import { evaluateExit } from './exits.js';
 import { ShadowFlow, ratchetArmed, ratchetShadowFire } from './ratchetShadow.js';
@@ -109,6 +109,11 @@ export class Bot {
     this.enteredMints = this.loadEnteredMints();
     this.loadStats();
     this._syncShadowStats(); // the tracker owns its cumulative totals (persisted with its pending state) — stats mirrors them
+    // Birth-verdict memory (owner order 2026-10-16, the FMR hole): a disqualifying birth verdict — an instantGrad bought-out fire or a measured sub-line curve lifespan — is a fact about a mint's BIRTH, and birth facts do not expire when a later fetch fails. Persisted per mint (birth-verdicts.json, the entered-mints pattern) so it survives restarts, seeded at boot from the journal's own gate stamps (_backfillBirthVerdicts) so verdicts established before this fix are remembered too, and enforced at the onSignal seam (see the birth-memory block) under the FAST_BOND_BLOCK switch.
+    this.birthFile = path.join(cfg.dataDir, 'birth-verdicts.json');
+    this.birthVerdicts = this.loadBirthVerdicts(); // mint -> { mint, kind, evidence, firstSeenTs }
+    this._backfillBirthVerdicts();
+    this._birthStats().known = this.birthVerdicts.size;
     // Flow-Exit Watcher: re-establish watches for flow positions that were
     // open across this restart (their start records carry the attribution;
     // fired trims/exits are rebuilt from the journal and never re-fire).
@@ -194,6 +199,8 @@ export class Bot {
   saveStats() { try { fs.writeFileSync(this.statsFile, JSON.stringify(this.stats)); } catch { /* best effort */ } }
   loadEnteredMints() { try { return new Set(JSON.parse(fs.readFileSync(this.mintsFile, 'utf8'))); } catch { return new Set(); } }
   saveEnteredMints() { try { fs.writeFileSync(this.mintsFile, JSON.stringify([...this.enteredMints])); } catch { /* best effort */ } }
+  loadBirthVerdicts() { try { const arr = JSON.parse(fs.readFileSync(this.birthFile, 'utf8')); const m = new Map(); for (const r of Array.isArray(arr) ? arr : []) if (r && r.mint && r.kind) m.set(r.mint, { mint: r.mint, kind: r.kind, evidence: r.evidence || '', firstSeenTs: Number(r.firstSeenTs) || 0 }); return m; } catch { return new Map(); } }
+  saveBirthVerdicts() { try { fs.writeFileSync(this.birthFile, JSON.stringify([...this.birthVerdicts.values()])); } catch { /* best effort */ } }
 
   // Pace keeper: returns a relaxed cfg if we're behind the hourly target.
   // Never overrides user blacklists, RugCheck safety, or risk limits.
@@ -1634,6 +1641,73 @@ export class Bot {
   // 60s only, so repeat signals on one mint can't turn the seam into a
   // DexScreener hammer, yet a coin that graduates a minute later still gets
   // measured on its next signal. Never throws.
+  _birthStats() { const s = this.stats.birthMemory || (this.stats.birthMemory = {}); s.blocked = s.blocked || 0; s.written = s.written || 0; s.known = s.known || 0; return s; }
+
+  // Birth-verdict memory (owner order 2026-10-16, the FMR hole — see gate.js
+  // birthMemoryVerdict for the incident): _absorbBirthVerdict is the single
+  // door into the memory. The FIRST establishment of a verdict is its
+  // provenance: a mint already known keeps its original kind/evidence/
+  // firstSeenTs, and later re-fires (or a later-stamped backfill row) never
+  // move it; an earlier-stamped row from the boot backfill replaces a
+  // later one, because the earlier stamp is when the truth was actually
+  // established. Only DISQUALIFYING verdicts are absorbed — a passing
+  // measurement is never stored (the curve-life cache keeps passes).
+  _absorbBirthVerdict(rec) {
+    if (!rec || !rec.mint || !rec.kind) return false;
+    const cur = this.birthVerdicts.get(rec.mint);
+    if (cur && cur.firstSeenTs <= rec.firstSeenTs) return false;
+    this.birthVerdicts.set(rec.mint, { mint: rec.mint, kind: rec.kind, evidence: String(rec.evidence || ''), firstSeenTs: Number(rec.firstSeenTs) || this.now() });
+    this.saveBirthVerdicts();
+    return true;
+  }
+
+  _recordBirthVerdict(mint, kind, evidence) {
+    if (this._absorbBirthVerdict({ mint, kind, evidence, firstSeenTs: this.now() })) {
+      const bs = this._birthStats(); bs.written++; bs.known = this.birthVerdicts.size;
+      console.log(`[birthmemory] verdict recorded: ${String(mint).slice(0, 8)}… (${kind}: ${evidence})`);
+    }
+  }
+
+  // Write tap for the gate stack: an instantGrad bought-out fire is
+  // established the moment ANY runGates consumer sees it — the live
+  // onSignal path AND shadowGateRecord (shadow evaluations, walletWatch
+  // records, risk-preempted records) both call this, because knowledge is
+  // knowledge wherever it was measured. Writing is always-on bookkeeping,
+  // deliberately independent of the FAST_BOND_BLOCK enforcement switch:
+  // the memory keeps accruing while enforcement is off, ready for the
+  // moment it is switched back on. Never throws into the signal path.
+  _noteInstantGradVerdict(mint, g) {
+    try {
+      const ig = g && g.checks && g.checks.instantGrad;
+      if (ig && ig.pass === false && ig.reason) this._recordBirthVerdict(mint, 'instantGrad', ig.reason);
+    } catch { /* bookkeeping only — never disturb the signal path */ }
+  }
+
+  // Boot backfill: the journal's own signal records carry the gate stamps
+  // of every past evaluation — an instantGrad fire or a fastBond block
+  // journaled before this fix existed is still knowledge, and FMR's trend
+  // skip sat in exactly that form while its pop re-evaluation forgot.
+  // Folds the summarized stamps from gates AND shadowGates (live skips and
+  // shadow evaluations alike); the record's own ts is the verdict's
+  // firstSeenTs. Best-effort: if anything here fails, the live write taps
+  // still protect every verdict established from now on.
+  _backfillBirthVerdicts() {
+    let added = 0;
+    try {
+      for (const rec of (this.journal && this.journal.signals) || []) {
+        if (!rec || !rec.mint || !rec.ts) continue;
+        for (const src of [rec.gates, rec.shadowGates]) {
+          if (!src) continue;
+          const ig = src.instantGrad;
+          if (ig && ig.pass === false && ig.reason && this._absorbBirthVerdict({ mint: rec.mint, kind: 'instantGrad', evidence: ig.reason, firstSeenTs: rec.ts })) added++;
+          const fb = src.fastBond;
+          if (fb && fb.pass === false && fb.reason && this._absorbBirthVerdict({ mint: rec.mint, kind: 'fastBond', evidence: fb.reason, firstSeenTs: rec.ts })) added++;
+        }
+      }
+    } catch { /* best effort — see note above */ }
+    if (added) console.log(`[birthmemory] boot backfill: ${added} verdict(s) recovered from journal history (${this.birthVerdicts.size} mint(s) known)`);
+  }
+
   async _curveLifeSec(mint) {
     const hit = this.curveLifeCache.get(mint);
     if (hit && (hit.lifeSec != null || this.now() - hit.ts < 60000)) return hit.lifeSec;
@@ -1705,6 +1779,10 @@ export class Bot {
       const { cfg: gateCfg } = this.paceCfg(n);
       const g = runGates({ view: v, rug, curve, cfg: gateCfg, now: n });
       Object.assign(checks, summarizeGateChecks(g.checks) || {});
+      // Birth-verdict write tap (owner order 2026-10-16): a shadow
+      // evaluation that establishes a bought-out birth remembers it too —
+      // knowledge is knowledge, wherever it was measured (see onSignal).
+      this._noteInstantGradVerdict(v.address, g);
       return { gates: checks, gatePass: g.pass };
     } catch { return { gates: null, gatePass: null }; }
   }
@@ -2271,6 +2349,12 @@ export class Bot {
     const g = runGates({ view: v, rug, curve, cfg: gateCfg, now: n });
     // D1: the full per-gate map joins the pipeline checks for the record
     Object.assign(checks, summarizeGateChecks(g.checks) || {});
+    // Birth-verdict write tap (owner order 2026-10-16): if this gate run
+    // ESTABLISHED a bought-out birth (instantGrad fired), remember it for
+    // every later evaluation of this mint — this signal skips on the fire
+    // itself, but a later path whose curve read fails open must not be
+    // able to resurrect the coin (the FMR hole). Bookkeeping only.
+    this._noteInstantGradVerdict(v.address, g);
     if (!g.pass) {
       // Mandatory ape mode: if under N entries/hour, force through soft gate fails only.
       // Structural (HARD_GATES) fails are never forced — that bypass is what let rigged launches in.
@@ -2341,6 +2425,33 @@ export class Bot {
     // cannot fake. Judged on cfg, never the pace-relaxed gateCfg. Kill
     // switch FAST_BOND_BLOCK=0: no fetch, no stamp, no tally, records
     // exactly as before.
+    // Birth-verdict MEMORY block (owner order 2026-10-16, the FMR hole):
+    // before the fresh fastBond measurement below is consulted, ask what
+    // the bot already KNOWS about this mint's birth. A stored verdict —
+    // an instantGrad bought-out fire or a measured sub-line lifespan,
+    // established by ANY earlier evaluation on ANY path and persisted
+    // across restarts — blocks here, so an evaluation whose fresh fetches
+    // fail open (GeckoTerminal 429 -> 'curve history unknown'; degenerate
+    // same-second DexScreener stamps -> lifespan unknown) can never
+    // resurrect a known bought-out / fast-bonded launch. Judged on cfg on
+    // the same post-gates seam as the insider/fastBond blocks, so it binds
+    // clean passes, mandatory-ape forces and contested overrides alike.
+    // Enforcement follows the FAST_BOND_BLOCK kill switch: with the switch
+    // off there is no stamp, no tally and no block — records exactly as
+    // before the memory existed (verdict WRITING stays always-on; see
+    // _noteInstantGradVerdict). A mint with no stored verdict gets no
+    // stamp either: this block speaks only when it knows something, and
+    // unmeasured mints fall through to the fresh gates untouched.
+    if (this.cfg.fastBondBlock) {
+      const bv = birthMemoryVerdict(this.birthVerdicts.get(v.address), n);
+      if (!bv.pass) {
+        const bs = this._birthStats(); bs.blocked++; bs.known = this.birthVerdicts.size;
+        checks.birthMemory = { pass: false, kind: bv.kind, evidence: bv.evidence, firstSeenTs: bv.firstSeenTs, reason: bv.reason };
+        console.log(`[birthmemory] skip: ${v.symbol} — ${bv.reason}`);
+        return this.skip(v, sig, [bv.reason], g.warnings, checks, g.pass);
+      }
+    }
+
     if (this.cfg.fastBondBlock) {
       const fb = fastBondVerdict(await this._curveLifeSec(v.address), this.cfg.fastBondMaxSec);
       this.stats.fastBond = this.stats.fastBond || { blocked: 0, passed: 0, unknown: 0 };
@@ -2348,6 +2459,10 @@ export class Bot {
       if (fb.unknown) { checks.fastBond.unknown = true; this.stats.fastBond.unknown++; }
       else if (!fb.pass) {
         this.stats.fastBond.blocked++;
+        // Remember the measurement as a birth verdict: a later evaluation
+        // whose DexScreener stamps come back degenerate must find this
+        // truth in the memory instead of re-fetching it into oblivion.
+        this._recordBirthVerdict(v.address, 'fastBond', fb.reason);
         console.log(`[fastbond] skip: ${v.symbol} — ${fb.reason}`);
         return this.skip(v, sig, [fb.reason], g.warnings, checks, g.pass);
       } else this.stats.fastBond.passed++;
