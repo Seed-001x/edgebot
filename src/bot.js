@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { History } from './history.js';
 import { detect, detectChurn, detectLiftoff, eligible, fastPop, fastPopFloors, judgeScan, closestCall, betterScanVerdict } from './detect.js';
-import { runGates, hasHardFail, tempRuleViolation, blockedNameWord, extensionCheck, freshHistoryCheck, flowSnapshotCheck, shallowDipCheck, summarizeGateChecks, holderSamples, foldLastTrades, insiderCountVerdict } from './gate.js';
+import { runGates, hasHardFail, tempRuleViolation, blockedNameWord, extensionCheck, freshHistoryCheck, flowSnapshotCheck, shallowDipCheck, summarizeGateChecks, holderSamples, foldLastTrades, insiderCountVerdict, fastBondVerdict } from './gate.js';
 import { computeSignalFields } from './signalFields.js';
 import { evaluateExit } from './exits.js';
 import { ShadowFlow, ratchetArmed, ratchetShadowFire } from './ratchetShadow.js';
@@ -97,6 +97,7 @@ export class Bot {
     this.shadowFlow = new ShadowFlow(); // held mints' streamed flow for the shadow ratchet judge (record-only)
     this.churnPins = new Map(); // mint -> { at, until } basing watch: dumped coins stay watchlist-pinned past the normal TTL (churn detector)
     this.curveSeen = new Set(); // mints whose latest view was the pump.fun bonding-curve pair — graduation handoff watches for the flip to an AMM pair
+    this.curveLifeCache = new Map(); // mint -> { lifeSec: number|null, ts } fast-bonder block: a measured lifespan is immutable once graduated and cached forever; an unknown (null) read is retried only after 60s so a hot mint can't hammer DexScreener through the seam
     this.posFile = path.join(cfg.dataDir, 'positions.json');
     this.positions = this.loadPositions();
     this.busy = { discover: false, poll: false, pos: false };
@@ -1624,6 +1625,25 @@ export class Bot {
     }
   }
 
+  // Fast-bonder measurement (owner order 2026-10-16): the mint's bonding-
+  // curve lifespan in seconds via the optional fetchCurveLife dep (wired in
+  // index.js; absent in unit rigs → null = unknown = fail open, exactly like
+  // the ran-rebuy lookup). Cached per mint: a MEASURED lifespan can never
+  // change (graduation is one-way), so it is kept forever; an UNKNOWN read
+  // (non-graduated, fetch failure, missing stamps) is negatively cached for
+  // 60s only, so repeat signals on one mint can't turn the seam into a
+  // DexScreener hammer, yet a coin that graduates a minute later still gets
+  // measured on its next signal. Never throws.
+  async _curveLifeSec(mint) {
+    const hit = this.curveLifeCache.get(mint);
+    if (hit && (hit.lifeSec != null || this.now() - hit.ts < 60000)) return hit.lifeSec;
+    let lifeSec = null;
+    if (this.d.fetchCurveLife) { try { lifeSec = await this.d.fetchCurveLife(mint); } catch { lifeSec = null; } }
+    if (!(Number.isFinite(lifeSec) && lifeSec >= 0)) lifeSec = null;
+    this.curveLifeCache.set(mint, { lifeSec, ts: this.now() });
+    return lifeSec;
+  }
+
   // Ran-rebuy verdict (user 2026-10-15): the already-ran rebuy check from
   // gate.js, reached through the optional ranRebuyCheck dep (wired in
   // index.js; absent in unit rigs → no verdict and the gate simply doesn't
@@ -2301,6 +2321,36 @@ export class Bot {
         console.log(`[insiders] skip: ${v.symbol} — ${ib.reason}`);
         return this.skip(v, sig, [ib.reason], g.warnings, checks, g.pass);
       }
+    }
+
+    // Fast-bonder block (owner order 2026-10-16, "live gate now: block
+    // sub-2-minute bonders"): a KNOWN graduated coin whose bonding curve
+    // lived less than FAST_BOND_MAX_SEC seconds never buys. Judged HERE,
+    // immediately after the insider block on the same post-gates seam, so
+    // it binds clean passes, mandatory-ape forces and contested overrides
+    // alike — and every live path funnels through onSignal. The lifespan is
+    // measured lazily at this seam only (never for gate-failed candidates)
+    // from DexScreener pairCreatedAt stamps and cached per mint (see
+    // _curveLifeSec); the fetch is timeout-bounded and a slow or failed
+    // read degrades to unknown. FAIL OPEN, ALWAYS: a non-graduated coin has
+    // no lifespan and is definitionally untouched, and missing data never
+    // blocks and is never rounded into an invented number — the stamp says
+    // unknown and the entry proceeds exactly as today. Distinct from the
+    // gates' instantGrad check, which counts curve buy txs (a count the
+    // split-wallet pattern defeats); this judges elapsed time, which it
+    // cannot fake. Judged on cfg, never the pace-relaxed gateCfg. Kill
+    // switch FAST_BOND_BLOCK=0: no fetch, no stamp, no tally, records
+    // exactly as before.
+    if (this.cfg.fastBondBlock) {
+      const fb = fastBondVerdict(await this._curveLifeSec(v.address), this.cfg.fastBondMaxSec);
+      this.stats.fastBond = this.stats.fastBond || { blocked: 0, passed: 0, unknown: 0 };
+      checks.fastBond = { pass: fb.pass, curveLifeSec: fb.lifeSec, max: this.cfg.fastBondMaxSec, reason: fb.reason };
+      if (fb.unknown) { checks.fastBond.unknown = true; this.stats.fastBond.unknown++; }
+      else if (!fb.pass) {
+        this.stats.fastBond.blocked++;
+        console.log(`[fastbond] skip: ${v.symbol} — ${fb.reason}`);
+        return this.skip(v, sig, [fb.reason], g.warnings, checks, g.pass);
+      } else this.stats.fastBond.passed++;
     }
 
     // exit-value check: price a buy AND the immediate sell-back before spending anything

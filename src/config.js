@@ -350,6 +350,9 @@ export function loadConfig(env = process.env) {
     // Insider-COUNT entry block (owner order 2026-10-16, off the last-50 separation study): the gates' insiders check above caps the SUPPLY SHARE in linked networks; this blocks on the raw COUNT of graph-detected insider wallets (rug.graphInsidersDetected — the same field the entry snapshot records as insiderWallets). Study: winner median 0 vs loser median 4; a >=3 block would have blocked 17/31 losers vs 6/18 winners (net +0.26 SOL on the sample). Judged in Bot.onSignal AFTER the gate stack resolves to proceed, so it binds on clean passes, mandatory-ape forces and contested overrides alike. INSIDER_BLOCK=0 is the kill switch (no verdict stamped, no tally — records exactly as before).
     insiderBlock: num(env, 'INSIDER_BLOCK', 1) === 1,
     insiderBlockN: num(env, 'INSIDER_BLOCK_N', 3), // block when graphInsidersDetected >= this count
+    // Fast-bonder entry block (owner order 2026-10-16, "live gate now: block sub-2-minute bonders"): a KNOWN graduated coin whose bonding curve lived less than FAST_BOND_MAX_SEC seconds never buys. The camouflaged-bundle species splits its graduation slam across 100+ wallets and pads the tape with micro-buys so every count-based read looks organic (TRUMARS: 201 curve buys, 78-second curve) — but elapsed curve time cannot be faked. Measured from DexScreener pairCreatedAt, curve pair vs first AMM pair (sources.js curveLifeFromPairs). FAIL OPEN BY CONSTRUCTION: a non-graduated coin has no lifespan, a failed fetch measures nothing, and neither ever blocks. Judged in Bot.onSignal immediately after the insider block, so it binds on clean passes, mandatory-ape forces and contested overrides alike. Distinct from instantGrad below, which counts curve buy txs. FAST_BOND_BLOCK=0 is the kill switch (no fetch, no verdict stamped, no tally — records exactly as before).
+    fastBondBlock: num(env, 'FAST_BOND_BLOCK', 1) === 1,
+    fastBondMaxSec: num(env, 'FAST_BOND_MAX_SEC', 120), // block when curve lifespan < this many seconds
     minQuoteLiqUsd: num(env, 'MIN_QUOTE_LIQ_USD', 1200),
     ladderMinN: num(env, 'LADDER_MIN_N', 15), ladderMaxRatio: num(env, 'LADDER_MAX_RATIO', 1.6),
     revivalDeadDrop: num(env, 'REVIVAL_DEAD_DROP', 50), revivalBounce: num(env, 'REVIVAL_BOUNCE', 50),
@@ -611,6 +614,7 @@ export function validateConfig(cfg) {
   if (cfg.shallowDipMaxPct < 0 || cfg.shallowDipMaxPct > 0.9) errs.push('SHALLOW_DIP_MAX_PCT must be between 0 and 0.9 (0 = off)');
   if (cfg.shallowDipWindowMin < 1 || cfg.shallowDipWindowMin > 720) errs.push('SHALLOW_DIP_WINDOW_MIN must be between 1 and 720');
   if (cfg.insiderBlockN < 1 || cfg.insiderBlockN > 10000) errs.push('INSIDER_BLOCK_N must be between 1 and 10000');
+  if (cfg.fastBondMaxSec < 1 || cfg.fastBondMaxSec > 86400) errs.push('FAST_BOND_MAX_SEC must be between 1 and 86400');
   if (cfg.ranRebuy < 0 || cfg.ranRebuy > 1) errs.push('RAN_REBUY must be 0 or 1');
   if (cfg.ranRebuyMult < 1 || cfg.ranRebuyMult > 1000) errs.push('RAN_REBUY_MULT must be between 1 and 1000');
   if (cfg.ranRebuyHours <= 0 || cfg.ranRebuyHours > 168) errs.push('RAN_REBUY_HOURS must be > 0 and <= 168');

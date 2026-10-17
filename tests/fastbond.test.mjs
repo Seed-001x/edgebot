@@ -1,0 +1,228 @@
+// FAST-BONDER BLOCK (owner order 2026-10-16, "live gate now: block
+// sub-2-minute bonders"): a KNOWN graduated coin whose bonding curve lived
+// less than FAST_BOND_MAX_SEC (default 120) seconds never buys. The
+// measurement is a DURATION — DexScreener pairCreatedAt of the pumpfun
+// curve pair vs the first AMM pair (sources.js curveLifeFromPairs) —
+// because the camouflaged-bundle species defeats every count: TRUMARS
+// (2026-10-16) split its graduation slam across 4 wallets in second 0 and
+// padded the tape with a micro-buy swarm (201 curve buys, median $10.76),
+// yet the whole curve still lived 78 seconds. Elapsed time cannot be
+// faked; buy counts can. Judged in Bot.onSignal immediately after the
+// insider block, on the same post-gates seam. FAIL OPEN, ALWAYS: unknown
+// (non-graduated, fetch failure, missing stamps, no dep) never blocks.
+// FAST_BOND_BLOCK=0 is the kill switch (no fetch, no stamp, no tally).
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { Bot } from '../src/bot.js';
+import { Executor } from '../src/exec.js';
+import { loadConfig, validateConfig } from '../src/config.js';
+import { fastBondVerdict } from '../src/gate.js';
+import { curveLifeFromPairs } from '../src/sources.js';
+import { SOL_MINT } from '../src/util.js';
+import { testCfg, view } from './helpers.mjs';
+
+const T0 = 1_000_000_000_000;
+const healthyRug = { token: { supply: 1e15, decimals: 6 }, creatorBalance: 0, totalHolders: 2000, graphInsidersDetected: 0, markets: [{ pubkey: 'POOL', lp: { base: 1e8, quote: 1400, lpLockedUSD: 3e5, lpLockedPct: 100 } }], knownAccounts: { POOL: { type: 'AMM' } }, topHolders: Array.from({ length: 12 }, (_, i) => ({ owner: 'h' + i, address: 'h' + i, amount: 9e12 - i * 3.1e10, pct: 2 })), insiderNetworks: [] };
+
+function seedHistory(bot, mint, price = 1) {
+  const samples = [];
+  for (let k = 0; k < 12; k++) samples.push({ ts: T0 - (11 - k) * 30000, price, mc: 500_000, volM5: 100_000, volH1: 500_000, buysM5: 900, sellsM5: 800, liq: 100_000 });
+  bot.history.m.set(mint, samples);
+}
+
+// curveLife: fixed seconds | per-mint function | 'throw' (fetch failure).
+function pipelineRig({ cfgOver = {}, env = {}, rug = healthyRug, curveLife = null, omitCurveLife = false } = {}) {
+  const cfg = testCfg({ tradeSol: 0.02, ...cfgOver }, env);
+  const clock = { t: T0 };
+  const q = { valueLam: 19_000_000 };
+  const quote = async (input, _o, amount) => (input === SOL_MINT
+    ? { outAmount: '1000000000', priceImpactPct: '0.01' }
+    : { outAmount: String(Math.floor(q.valueLam * (Number(amount) / 1e9))) });
+  const exec = new Executor(cfg, { quote });
+  const views = new Map();
+  let calls = 0;
+  const deps = {
+    now: () => clock.t, exec,
+    discover: async () => Object.assign(new Map(), { counts: {} }),
+    fetchViews: async (mints) => new Map(mints.filter(m => views.has(m)).map(m => [m, views.get(m)])),
+    fetchSolUsd: async () => 150, fetchRug: async () => rug, searchByName: async () => [],
+  };
+  if (!omitCurveLife) deps.fetchCurveLife = async (mint) => {
+    calls++;
+    if (curveLife === 'throw') throw new Error('dexscreener unreachable');
+    return typeof curveLife === 'function' ? curveLife(mint) : curveLife;
+  };
+  const bot = new Bot(cfg, deps);
+  return { bot, clock, views, curveLifeCalls: () => calls };
+}
+
+async function popFire(rig, { mint = 'MINTP', symbol = 'POPT', dex = 'pumpswap' } = {}) {
+  const v = view({ address: mint, symbol, mc: 500_000, liq: 100_000, createdAt: T0 - 10 * 3600e3, dex });
+  rig.views.set(mint, v);
+  await rig.bot.start();
+  seedHistory(rig.bot, mint);
+  await rig.bot.onSignal(v, { setup: 'pop', strength: 42, metrics: { gainPct: 42, volM5: 100_000 } });
+  return rig.bot.journal.signals.at(-1);
+}
+
+async function trendFire(rig, { mint = 'MINTT', symbol = 'TRENT' } = {}) {
+  const v = view({ address: mint, symbol, mc: 500_000, liq: 100_000, createdAt: T0 - 10 * 3600e3, dex: 'pumpswap' });
+  rig.views.set(mint, v);
+  await rig.bot.start();
+  seedHistory(rig.bot, mint);
+  await rig.bot.onSignal(v, { setup: 'trend', metrics: { volM5: 100_000 } });
+  return rig.bot.journal.signals.at(-1);
+}
+
+// ------------------------------------------------------------ config
+test('config: fast-bond block defaults ON at 120s; env knobs read; validation bounds the line', () => {
+  const d = loadConfig({});
+  assert.equal(d.fastBondBlock, true);
+  assert.equal(d.fastBondMaxSec, 120);
+  assert.equal(loadConfig({ FAST_BOND_BLOCK: '0' }).fastBondBlock, false);
+  assert.equal(loadConfig({ FAST_BOND_MAX_SEC: '45' }).fastBondMaxSec, 45);
+  assert.ok(validateConfig({ ...d, fastBondMaxSec: 0 }).some(e => e.includes('FAST_BOND_MAX_SEC')));
+  assert.ok(validateConfig({ ...d, fastBondMaxSec: 86401 }).some(e => e.includes('FAST_BOND_MAX_SEC')));
+  assert.ok(!validateConfig(d).some(e => e.includes('FAST_BOND_MAX_SEC')));
+});
+
+// ------------------------------------------------------------ verdict helper
+test('fastBondVerdict: under the line blocks, at/over passes, unmeasured is unknown and never blocks', () => {
+  assert.deepEqual(fastBondVerdict(119, 120), { pass: false, lifeSec: 119, unknown: false, reason: 'curve lifespan 119s < 120s — fast bonder blocked' });
+  assert.equal(fastBondVerdict(120, 120).pass, true, 'boundary: exactly at the line passes');
+  assert.equal(fastBondVerdict(121, 120).pass, true);
+  assert.equal(fastBondVerdict(78, 120).pass, false, 'the TRUMARS shape');
+  for (const bad of [null, undefined, NaN, 'fast', -5]) {
+    const v = fastBondVerdict(bad, 120);
+    assert.deepEqual({ pass: v.pass, lifeSec: v.lifeSec, unknown: v.unknown }, { pass: true, lifeSec: null, unknown: true }, `${String(bad)} must read unknown`);
+  }
+});
+
+// ------------------------------------------------------------ measurement (pure)
+test('curveLifeFromPairs: graduation stamp minus curve stamp, earliest AMM pair wins', () => {
+  const curve = { dexId: 'pumpfun', pairCreatedAt: 1792198759000 };
+  const swap = { dexId: 'pumpswap', pairCreatedAt: 1792198837000 };
+  assert.equal(curveLifeFromPairs([curve, swap]), 78, 'the TRUMARS pair set');
+  assert.equal(curveLifeFromPairs([swap, curve]), 78, 'order in the payload does not matter');
+  const raydiumLater = { dexId: 'raydium', pairCreatedAt: 1792198837000 + 3600e3 };
+  assert.equal(curveLifeFromPairs([curve, raydiumLater, swap]), 78, 'the FIRST AMM pair is the graduation');
+  assert.equal(curveLifeFromPairs([{ dexId: 'pumpfun', pairCreatedAt: 1000000 }, { dexId: 'pumpswap', pairCreatedAt: 1000000 + 120000 }]), 120);
+});
+
+test('curveLifeFromPairs: every unmeasurable shape reads null (unknown), never a number', () => {
+  const curve = { dexId: 'pumpfun', pairCreatedAt: 1792198759000 };
+  const swap = { dexId: 'pumpswap', pairCreatedAt: 1792198837000 };
+  assert.equal(curveLifeFromPairs([curve]), null, 'no AMM pair — not graduated yet');
+  assert.equal(curveLifeFromPairs([swap]), null, 'no curve pair — not a pump launch (or DS dropped it)');
+  assert.equal(curveLifeFromPairs([]), null);
+  assert.equal(curveLifeFromPairs(null), null);
+  assert.equal(curveLifeFromPairs([{ dexId: 'pumpfun' }, swap]), null, 'curve stamp missing');
+  assert.equal(curveLifeFromPairs([curve, { dexId: 'pumpswap' }]), null, 'AMM stamp missing');
+  assert.equal(curveLifeFromPairs([{ dexId: 'pumpfun', pairCreatedAt: 2000 }, { dexId: 'pumpswap', pairCreatedAt: 1000 }]), null, 'AMM stamped before the curve — indexer noise');
+  assert.equal(curveLifeFromPairs([{ dexId: 'pumpfun', pairCreatedAt: 1000 }, { dexId: 'pumpswap', pairCreatedAt: 1500 }]), null, 'sub-second — same-stamp noise, not a duration');
+  assert.equal(curveLifeFromPairs([{ pairCreatedAt: 1000 }, swap]), null, 'a pair without dexId identifies nothing');
+});
+
+// ------------------------------------------------------------ pipeline: the block
+test('fast bond: TRUMARS shape on the TREND path — 78s curve skipped, stamped, tallied, no buy', async () => {
+  const rig = pipelineRig({ curveLife: 78 });
+  const rec = await trendFire(rig);
+  assert.equal(rec.setup, 'trend');
+  assert.equal(rec.decision, 'skipped', JSON.stringify(rec.reasons));
+  assert.deepEqual(rec.reasons, ['curve lifespan 78s < 120s — fast bonder blocked']);
+  assert.equal(rec.gatePass, true, 'the gate stack itself passed — the block is what stopped it');
+  assert.equal(rec.gates.fastBond.pass, false);
+  assert.equal(rec.gates.fastBond.curveLifeSec, 78);
+  assert.equal(rec.gates.fastBond.max, 120);
+  assert.equal(rig.bot.positions.length, 0);
+  assert.equal(rig.bot.stats.entries, 0);
+  assert.deepEqual(rig.bot.stats.fastBond, { blocked: 1, passed: 0, unknown: 0 });
+  assert.equal(rig.curveLifeCalls(), 1, 'measured lazily, once, at the seam');
+});
+
+test('fast bond: boundary — 119s blocks, exactly 120s buys with the stamp on the taken record', async () => {
+  const r119 = pipelineRig({ curveLife: 119 });
+  const rec119 = await popFire(r119);
+  assert.equal(rec119.decision, 'skipped');
+  assert.deepEqual(rec119.reasons, ['curve lifespan 119s < 120s — fast bonder blocked']);
+  const r120 = pipelineRig({ curveLife: 120 });
+  const rec120 = await popFire(r120);
+  assert.equal(rec120.decision, 'taken', JSON.stringify(rec120.reasons));
+  assert.equal(rec120.gates.fastBond.pass, true);
+  assert.equal(rec120.gates.fastBond.curveLifeSec, 120);
+  assert.equal(r120.bot.positions.length, 1);
+  assert.deepEqual(r120.bot.stats.fastBond, { blocked: 0, passed: 1, unknown: 0 });
+});
+
+test('fast bond: FAST_BOND_MAX_SEC moves the line — 78s passes at 60, 59s blocks', async () => {
+  const r78 = pipelineRig({ cfgOver: { fastBondMaxSec: 60 }, curveLife: 78 });
+  assert.equal((await popFire(r78)).decision, 'taken');
+  const r59 = pipelineRig({ cfgOver: { fastBondMaxSec: 60 }, curveLife: 59 });
+  const rec59 = await popFire(r59);
+  assert.equal(rec59.decision, 'skipped');
+  assert.deepEqual(rec59.reasons, ['curve lifespan 59s < 60s — fast bonder blocked']);
+});
+
+// ------------------------------------------------------------ pipeline: fail open, always
+test('fast bond FAIL OPEN: non-graduated curve coin (no lifespan) buys untouched, record says unknown', async () => {
+  const rig = pipelineRig({ curveLife: null });
+  const rec = await popFire(rig, { dex: 'pumpfun' });
+  assert.equal(rec.decision, 'taken', JSON.stringify(rec.reasons));
+  assert.equal(rec.gates.fastBond.pass, true);
+  assert.equal(rec.gates.fastBond.curveLifeSec, null);
+  assert.equal(rec.gates.fastBond.unknown, true);
+  assert.deepEqual(rig.bot.stats.fastBond, { blocked: 0, passed: 0, unknown: 1 });
+  assert.equal(rig.bot.positions.length, 1, 'a curve-side path is definitionally untouched');
+});
+
+test('fast bond FAIL OPEN: the lifespan fetch throwing still buys, tallied unknown', async () => {
+  const rig = pipelineRig({ curveLife: 'throw' });
+  const rec = await popFire(rig);
+  assert.equal(rec.decision, 'taken', JSON.stringify(rec.reasons));
+  assert.equal(rec.gates.fastBond.unknown, true);
+  assert.deepEqual(rig.bot.stats.fastBond, { blocked: 0, passed: 0, unknown: 1 });
+});
+
+test('fast bond FAIL OPEN: no fetchCurveLife dep wired (unit rigs) — buys, tallied unknown', async () => {
+  const rig = pipelineRig({ omitCurveLife: true });
+  const rec = await popFire(rig);
+  assert.equal(rec.decision, 'taken', JSON.stringify(rec.reasons));
+  assert.equal(rec.gates.fastBond.unknown, true);
+  assert.deepEqual(rig.bot.stats.fastBond, { blocked: 0, passed: 0, unknown: 1 });
+});
+
+// ------------------------------------------------------------ kill switch
+test('fast bond: kill switch FAST_BOND_BLOCK=0 — a 30s bonder buys, no stamp, no tally, no fetch', async () => {
+  const rig = pipelineRig({ cfgOver: { fastBondBlock: false }, curveLife: 30 });
+  const rec = await popFire(rig);
+  assert.equal(rec.decision, 'taken', JSON.stringify(rec.reasons));
+  assert.equal(rec.gates.fastBond, undefined, 'no verdict stamped when the block is off');
+  assert.equal(rig.bot.stats.fastBond, undefined, 'no tally when the block is off');
+  assert.equal(rig.curveLifeCalls(), 0, 'the measurement is never even fetched when off');
+  assert.equal(rig.bot.positions.length, 1);
+});
+
+// ------------------------------------------------------------ cache
+test('curve life cache: a measured lifespan is fetched once per mint and never refetched', async () => {
+  const rig = pipelineRig({ curveLife: 78 });
+  assert.equal(await rig.bot._curveLifeSec('MINTX'), 78);
+  assert.equal(await rig.bot._curveLifeSec('MINTX'), 78);
+  assert.equal(rig.curveLifeCalls(), 1, 'second read is a cache hit — lifespan is immutable');
+  assert.equal(await rig.bot._curveLifeSec('MINTY'), 78);
+  assert.equal(rig.curveLifeCalls(), 2, 'a different mint gets its own single read');
+});
+
+test('curve life cache: unknown is negatively cached 60s, then re-measured (graduation meanwhile counts)', async () => {
+  let life = null;
+  const rig = pipelineRig({ curveLife: () => life });
+  assert.equal(await rig.bot._curveLifeSec('MINTX'), null);
+  assert.equal(await rig.bot._curveLifeSec('MINTX'), null);
+  assert.equal(rig.curveLifeCalls(), 1);
+  rig.clock.t += 59_000;
+  assert.equal(await rig.bot._curveLifeSec('MINTX'), null);
+  assert.equal(rig.curveLifeCalls(), 1, 'inside the negative-cache window: no refetch');
+  rig.clock.t += 2_000;
+  life = 5000;
+  assert.equal(await rig.bot._curveLifeSec('MINTX'), 5000, 'after the window the mint is re-measured');
+  assert.equal(rig.curveLifeCalls(), 2);
+});

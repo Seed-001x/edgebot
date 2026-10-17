@@ -197,6 +197,26 @@ export function insiderCountVerdict(rug, max) {
   return { pass: true, insiders, unknown: false, reason: `${insiders} insider wallets — under the block line ${max}` };
 }
 
+// 4c. Fast-bonder block verdict (owner order 2026-10-16, "live gate now:
+// block sub-2-minute bonders"). Judges a DURATION, not a count: how many
+// seconds a graduated coin's bonding curve lived (curve start -> graduation,
+// from DexScreener pairCreatedAt on the curve pair vs the first AMM pair —
+// see sources.js curveLifeFromPairs). Distinct from instantGrad above (1d),
+// which counts curve BUY TXS inside 24h: the camouflaged-bundle species
+// splits its graduation slam across 100+ wallets and pads the tape with
+// micro-buys (TRUMARS, 2026-10-16: 201 curve buys, median $10.76), so the
+// count reads organic — but the whole curve still filled in 78 seconds,
+// and elapsed time is the one number that pattern cannot fake. Only a
+// MEASURED lifespan judges: null / non-numeric / negative is unknown, and
+// unknown never blocks (a non-graduated coin has no lifespan at all).
+export function fastBondVerdict(lifeSec, maxSec) {
+  const raw = lifeSec == null ? NaN : Number(lifeSec);
+  const life = Number.isFinite(raw) && raw >= 0 ? raw : null;
+  if (life == null) return { pass: true, lifeSec: null, unknown: true, reason: 'curve lifespan unavailable — not judged' };
+  if (maxSec > 0 && life < maxSec) return { pass: false, lifeSec: life, unknown: false, reason: `curve lifespan ${life}s < ${maxSec}s — fast bonder blocked` };
+  return { pass: true, lifeSec: life, unknown: false, reason: `curve lived ${life}s — at or over the ${maxSec}s fast-bond line` };
+}
+
 // 5. Vertical launch: a huge move on a coin minutes old is the pool being pushed, not demand.
 export function verticalLaunchCheck(ageMin, chgPct, maxPct = 5000, maxAgeMin = 120) {
   const bad = ageMin <= maxAgeMin && num(chgPct) >= maxPct;

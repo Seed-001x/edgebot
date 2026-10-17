@@ -149,6 +149,45 @@ export async function fetchCurve(mint, cfg) {
   return resolveCurve(pairs, cfg, chainFn);
 }
 
+/**
+ * Pure: a graduated coin's bonding-curve lifespan in whole seconds, from the
+ * DexScreener pair set of one mint — graduation time (the EARLIEST non-curve
+ * pair's pairCreatedAt: the first AMM pool appears at migration) minus curve
+ * start (the pumpfun pair's pairCreatedAt). Returns null whenever the
+ * lifespan is not measurable: no curve pair (never a pump launch, or DS
+ * dropped it), no AMM pair (not graduated / not indexed yet), a missing or
+ * non-positive timestamp on either side, or an AMM stamp at/before —
+ * or within the same second as — the curve stamp (a sub-second reading is
+ * indexer noise, not a measurable duration). Callers must treat null as
+ * UNKNOWN — never as zero, never as a block (see gate.js fastBondVerdict).
+ * For TRUMARS (2026-10-16) the two stamps read 78s apart, matching the
+ * GeckoTerminal first-curve-trade -> graduation read exactly.
+ */
+export function curveLifeFromPairs(pairs) {
+  const list = Array.isArray(pairs) ? pairs : [];
+  let curveTs = null, ammTs = null;
+  for (const p of list) {
+    if (!p || !p.dexId) continue;
+    const ts = Number(p.pairCreatedAt);
+    if (!(ts > 0)) continue;
+    if (p.dexId === 'pumpfun') { if (curveTs == null) curveTs = ts; }
+    else if (ammTs == null || ts < ammTs) ammTs = ts;
+  }
+  if (curveTs == null || ammTs == null) return null;
+  const lifeSec = Math.floor((ammTs - curveTs) / 1000);
+  return lifeSec > 0 ? lifeSec : null;
+}
+
+/** Curve lifespan for one mint via the same DexScreener token-pairs read
+ *  fetchCurve uses (fail-open: any fetch error resolves to null = unknown).
+ *  The timeout is bounded tighter than the 8s house default on purpose:
+ *  this is fetched lazily at the entry seam, and a slow read must degrade
+ *  to unknown (entry proceeds) rather than hold a fill hostage. */
+export async function fetchCurveLife(mint) {
+  const pairs = await fetchJson(`${DS}/token-pairs/v1/solana/${mint}`, { timeout: 5000 });
+  return curveLifeFromPairs(pairs);
+}
+
 // ------------------------------------------------------------------ discovery lists
 async function jupList(cfg, path) {
   const headers = cfg.jupApiKey ? { 'x-api-key': cfg.jupApiKey } : {};
