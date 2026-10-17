@@ -28,6 +28,7 @@ import { RangeWatch } from './rangeWatch.js';
 import { ConfluenceSignal } from './confluenceSignal.js';
 import { ScanLab, buildScanCard } from './scanLab.js';
 import { ShadowSeller } from './shadowSeller.js';
+import { NeverGreenCut } from './neverGreen.js';
 import { snapshotFeatures, externalExit } from './learn.js';
 
 import { PostExitTracker, PairedShadowExits } from './postExit.js';
@@ -86,6 +87,7 @@ export class Bot {
     this.postExit = new PostExitTracker(cfg.dataDir, this.now); // 5-min post-exit price tracker (observer only)
     this.paired = new PairedShadowExits(cfg.dataDir, this.now); // D1: virtual would-be exits paired to manual exits (observer only)
     this.shadowSeller = new ShadowSeller({ cfg, journal: this.journal, now: this.now, log: console.log, postExitOf: (id) => (this.postExit && this.postExit.done || []).find(x => x.id === id) || null }); // Shadow Seller (record-only, user 2026-10-16): a LEARNED exit judge — buckets each open position's state and journals its first would-sell when the bot's own completed history says holding from that state paid worse than the mark; pairs against the ladder's actual outcome at close. No ladder rules, no borrowed thresholds; can never sell
+    this.neverGreen = new NeverGreenCut({ cfg, journal: this.journal, now: this.now, log: console.log }); // Never-Green Cut SHADOW (record-only, owner 2026-10-17): a position that never peaked above +2%, is 5+ min old, and prints realizable <= -10% for 2 consecutive checks would have been cut — journaled + paired at close in nevergreen.jsonl (/nevergreen); NEVER sells, blocks, or feeds any decision
     this.streamEvalAt = new Map(); // mint -> ts of last stream-judge evaluation (v2 throttle, mirrors fastEvalAt)
     this.shadowStreamState = new Map(); // shadow virtual id -> stream-judge state (kept Bot-side: the virtual's own serialized state stays untouched)
     this.shadowTrades = new ShadowTrades(cfg.dataDir, this.now, { // trade-grade shadow (record-only): virtual positions for gate-passing shadow signals, run through the real exit stack
@@ -213,6 +215,11 @@ export class Bot {
     // BASE MODE (owner order 2026-10-16): the tally exists from boot so
     // /state shows the strategy's shape even before the first enrollment.
     this.stats.baseMode = { enrolled: 0, bySetup: {}, dipWatches: 0, dipEntries: 0, structureStops: 0, pulseSkips: { total: 0, bySetup: {} }, rangeUnenrolled: 0, ...(this.stats.baseMode || {}) };
+    // Never-Green Cut shadow tally (record-only, owner 2026-10-17): exists
+    // from boot so /state shows the shadow's shape at 0 before its first
+    // fire; fires counted at the would-fire, paired/deltaSol at the close
+    // pairing (see ensureClose / managePosition).
+    this.stats.neverGreen = { fires: 0, paired: 0, deltaSol: 0, ...(this.stats.neverGreen || {}) };
     if (!this.stats.baseMode.bySetup) this.stats.baseMode.bySetup = {};
     if (!this.stats.baseMode.pulseSkips) this.stats.baseMode.pulseSkips = { total: 0, bySetup: {} };
     if (loaded) return;
@@ -339,6 +346,19 @@ export class Bot {
     // on this position, pair it against what the ladder actually did with
     // the same remainder from fire time to this close.
     try { if (this.shadowSeller) this.shadowSeller.noteClose(pos, full); } catch { /* observer only — never disturb trading */ }
+    // Never-Green Cut pairing (record-only): if the shadow would-fired on
+    // this position, pair it against what the remainder actually realized
+    // from fire time to this close, and keep the /state tally current.
+    try {
+      if (this.neverGreen) {
+        const pr = this.neverGreen.noteClose(pos, full);
+        if (pr && pr.deltaSol != null) {
+          this.stats.neverGreen = this.stats.neverGreen || { fires: 0, paired: 0, deltaSol: 0 };
+          this.stats.neverGreen.paired++;
+          this.stats.neverGreen.deltaSol = +(this.stats.neverGreen.deltaSol + pr.deltaSol).toFixed(6);
+        }
+      }
+    } catch { /* observer only — never disturb trading */ }
     try {
       this.stats.closesSinceReport = (this.stats.closesSinceReport || 0) + 1;
       if (this.stats.closesSinceReport >= (this.cfg.reportEveryTrades || 10)) this.makeTradeReport();
@@ -1071,6 +1091,15 @@ export class Bot {
    *  journal (see staircaseSignal.js). ready = 30 finalized. */
   staircaseCard() {
     try { return this.staircaseSignal ? this.staircaseSignal.card() : { enabled: false }; }
+    catch { return { enabled: false }; }
+  }
+
+  /** Read-only /nevergreen payload — the Never-Green Cut shadow card
+   *  (record-only, owner 2026-10-17): would-fires paired against the
+   *  actual close outcomes on the same remainders (see neverGreen.js);
+   *  ready at 30 paired. */
+  neverGreenCard() {
+    try { return this.neverGreen ? this.neverGreen.card() : { enabled: false }; }
     catch { return { enabled: false }; }
   }
 
@@ -3346,6 +3375,22 @@ export class Bot {
     // only ever writes journal records; the ladder's decision above is untouched.
     if (valueSol != null) {
       try { if (this.shadowSeller) this.shadowSeller.observe(pos, { valueSol, view: v, n }); } catch { /* observer only — never disturb trading */ }
+    }
+    // Never-Green Cut SHADOW (record-only, owner 2026-10-17): judged on the
+    // same check, off the same realizable ratio the tick journal computes
+    // and the position's just-updated running peak. It only ever stamps
+    // its own ngCut* fields on the position (persisted by this tick's
+    // savePositions, like bagTrailSince) and writes journal records; the
+    // ladder's decision above is untouched and nothing reads it back.
+    if (valueSol != null) {
+      try {
+        if (this.neverGreen) {
+          const ngBasis = pos.entrySol * pos.remainingFrac;
+          const ngRatio = ngBasis > 0 ? valueSol / ngBasis : null;
+          const rec = this.neverGreen.noteCheck(pos, { ratio: ngRatio, peakRatio: pos.peakRatio, valueSol, now: n });
+          if (rec) { this.stats.neverGreen = this.stats.neverGreen || { fires: 0, paired: 0, deltaSol: 0 }; this.stats.neverGreen.fires++; }
+        }
+      } catch { /* observer only — never disturb trading */ }
     }
     // +20% progress callout: let the timeline know it's climbing (once per position)
     if (valueSol != null && !pos.climbCalloutDone) {

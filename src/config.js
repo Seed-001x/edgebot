@@ -76,6 +76,23 @@ export function loadConfig(env = process.env) {
     // finalized marks) and scored by the watch's own forward scores, joined
     // at read time (/staircase). No path reads it back into a decision.
     staircaseSignal: num(env, 'STAIRCASE_SIGNAL', 1),        // 1 = staircase-3 shadow signal on (0 = no records, card off)
+    // Never-Green Cut SHADOW (owner order 2026-10-17, RECORD-ONLY): a
+    // position that has NEVER peaked above +2% (running peakRatio <=
+    // NG_CUT_PEAK_MAX for its whole life), is at least NG_CUT_ARM_SEC old,
+    // and prints a realizable ratio <= NG_CUT_RATIO for NG_CUT_CONFIRM_CHECKS
+    // consecutive position checks would have been cut in full at that
+    // check's quote. Journals would-fires + pairs them against the actual
+    // close in nevergreen.jsonl (/nevergreen, LAB card) so the rule is
+    // judged on ~30 paired samples before any promotion. Priced from the
+    // 2026-10-17 tick replay: SEXCOIN (never green, bled 36 min to -59%)
+    // would have exited at 7.9 min / -18%; the 300s arm is load-bearing —
+    // MAKERS dipped to 0.719 at 1.3 min before running 16x, and an arm
+    // under 5 min fires on it. NEVER sells, blocks, or feeds any decision.
+    neverGreenShadow: num(env, 'NEVERGREEN_SHADOW', 1),      // 1 = never-green cut shadow on (0 = module fully inert, no records, card off)
+    ngCutArmSec: num(env, 'NG_CUT_ARM_SEC', 300),            // seconds a position must be held before the cut may arm (see above — do not lower casually)
+    ngCutPeakMax: num(env, 'NG_CUT_PEAK_MAX', 1.02),         // running peakRatio ceiling: above this the position once went green and the cut is permanently disarmed
+    ngCutRatio: num(env, 'NG_CUT_RATIO', 0.90),              // realizable ratio at/below which a never-green position counts a confirm check
+    ngCutConfirmChecks: num(env, 'NG_CUT_CONFIRM_CHECKS', 2), // consecutive sub-line checks required to would-fire (a check back above the line resets the count)
     // Bottom Tracker (user order 2026-10-16, RECORD-ONLY): watched coins that
     // dump >= BOTTOM_DROP_PCT off their sampled peak open an episode; once the
     // low has held quiet for BOTTOM_QUIET_MIN minutes, the first move >=
@@ -788,6 +805,11 @@ export function validateConfig(cfg) {
   if (cfg.shadowSellerPriorK < 0) errs.push('SHADOW_SELLER_PRIOR_K must be >= 0');
   if (cfg.shadowSellerRefitMin < 1) errs.push('SHADOW_SELLER_REFIT_MIN must be >= 1');
   if (cfg.staircaseSignal < 0 || cfg.staircaseSignal > 1) errs.push('STAIRCASE_SIGNAL must be 0 or 1');
+  if (cfg.neverGreenShadow < 0 || cfg.neverGreenShadow > 1) errs.push('NEVERGREEN_SHADOW must be 0 or 1');
+  if (cfg.ngCutArmSec < 0 || cfg.ngCutArmSec > 3600) errs.push('NG_CUT_ARM_SEC must be between 0 and 3600');
+  if (cfg.ngCutPeakMax < 1 || cfg.ngCutPeakMax > 3) errs.push('NG_CUT_PEAK_MAX must be between 1 and 3');
+  if (cfg.ngCutRatio <= 0 || cfg.ngCutRatio >= 1) errs.push('NG_CUT_RATIO must be between 0 and 1 (exclusive)');
+  if (cfg.ngCutConfirmChecks < 1 || cfg.ngCutConfirmChecks > 20) errs.push('NG_CUT_CONFIRM_CHECKS must be between 1 and 20');
   if (cfg.bottomWatch < 0 || cfg.bottomWatch > 1) errs.push('BOTTOM_WATCH must be 0 or 1');
   if (cfg.bottomDropPct <= 0 || cfg.bottomDropPct >= 100) errs.push('BOTTOM_DROP_PCT must be between 0 and 100 (percent)');
   if (cfg.bottomQuietMin < 0 || cfg.bottomQuietMin > 120) errs.push('BOTTOM_QUIET_MIN must be 0..120');

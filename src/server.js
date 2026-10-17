@@ -325,6 +325,16 @@ export function startServer(bot, port) {
       if (!bot.staircaseCard) return json(res, 200, { enabled: false });
       return json(res, 200, bot.staircaseCard());
     }
+    if (req.method === 'GET' && u.pathname === '/nevergreen') {
+      // Never-Green Cut SHADOW (record-only, owner 2026-10-17): positions
+      // that never peaked above +2%, are 5+ min old, and print realizable
+      // <= -10% for 2 consecutive checks would have been cut in full —
+      // journaled to nevergreen.jsonl and paired against the actual close
+      // on the same remainder; ready at 30 paired. Nothing here gates,
+      // sells, or feeds any decision.
+      if (!bot.neverGreenCard) return json(res, 200, { enabled: false });
+      return json(res, 200, bot.neverGreenCard());
+    }
     if (req.method === 'GET' && u.pathname === '/bottomwatch') {
       // Bottom Tracker (record-only, user 2026-10-16): watched coins that
       // dumped >= BOTTOM_DROP_PCT off their sampled peak, and the first

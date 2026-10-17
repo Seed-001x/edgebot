@@ -58,7 +58,7 @@ export class Journal {
   constructor(dir, { now = Date.now } = {}) {
     this.now = now;
     this.dir = dir;
-    this.f = { sig: path.join(dir, 'signals.jsonl'), out: path.join(dir, 'outcomes.jsonl'), trades: path.join(dir, 'trades.jsonl'), fb: path.join(dir, 'feedback.jsonl'), ticks: path.join(dir, 'ticks.jsonl'), manual: path.join(dir, 'manual_exits.jsonl'), reports: path.join(dir, 'trade_reports.jsonl'), rshadow: path.join(dir, 'ratchet_shadow.jsonl'), pend: path.join(dir, 'outcome_pending.json'), scan: path.join(dir, 'scans.jsonl'), sses: path.join(dir, 'scan_sessions.jsonl'), cshadow: path.join(dir, 'callout_shadow.jsonl'), rsig: path.join(dir, 'resignal_shadow.jsonl'), fexit: path.join(dir, 'flow_exits.jsonl'), swatch: path.join(dir, 'structure_watch.jsonl'), ssell: path.join(dir, 'shadow_sell.jsonl'), stair: path.join(dir, 'staircase_signals.jsonl'), pticks: path.join(dir, 'position_ticks.jsonl'), bwatch: path.join(dir, 'bottom_marks.jsonl'), rwatch: path.join(dir, 'range_marks.jsonl') };
+    this.f = { sig: path.join(dir, 'signals.jsonl'), out: path.join(dir, 'outcomes.jsonl'), trades: path.join(dir, 'trades.jsonl'), fb: path.join(dir, 'feedback.jsonl'), ticks: path.join(dir, 'ticks.jsonl'), manual: path.join(dir, 'manual_exits.jsonl'), reports: path.join(dir, 'trade_reports.jsonl'), rshadow: path.join(dir, 'ratchet_shadow.jsonl'), pend: path.join(dir, 'outcome_pending.json'), scan: path.join(dir, 'scans.jsonl'), sses: path.join(dir, 'scan_sessions.jsonl'), cshadow: path.join(dir, 'callout_shadow.jsonl'), rsig: path.join(dir, 'resignal_shadow.jsonl'), fexit: path.join(dir, 'flow_exits.jsonl'), swatch: path.join(dir, 'structure_watch.jsonl'), ssell: path.join(dir, 'shadow_sell.jsonl'), stair: path.join(dir, 'staircase_signals.jsonl'), pticks: path.join(dir, 'position_ticks.jsonl'), bwatch: path.join(dir, 'bottom_marks.jsonl'), rwatch: path.join(dir, 'range_marks.jsonl'), ngcut: path.join(dir, 'nevergreen.jsonl') };
     this._pendDirty = false;   // outcome-tracking progress changed since the last save
     this._pendSavedAt = 0;
     try { fs.mkdirSync(dir, { recursive: true }); } catch { /* ignore */ }
@@ -78,6 +78,8 @@ export class Journal {
     for (const r of readTail(this.f.rshadow, 500)) this.ratchet.push(r);
     this.shadowSells = []; // Shadow Seller (2026-10-16): would-fire + paired records for the read-only /shadowseller endpoint — the capped tail feeds the card and the judge's fire-once/pairing rebuild at boot
     for (const r of readTail(this.f.ssell, KEEP)) this.shadowSells.push(r);
+    this.neverGreenRecs = []; // Never-Green Cut shadow (2026-10-17): would-fire + paired records for the read-only /nevergreen endpoint — the capped tail feeds the card and the judge's fire-once/pairing rebuild at boot
+    for (const r of readTail(this.f.ngcut, KEEP)) this.neverGreenRecs.push(r);
     this.resignalFired = new Set();   // answered-resignal shadow: mark keys that already produced a record (rebuilt from resignal_shadow.jsonl in boot())
     this._rsigCache = null; this._rsigCacheTs = 0;
     this.boot();
@@ -198,6 +200,9 @@ export class Journal {
   shadowSell(rec) { this.shadowSells.push(rec); if (this.shadowSells.length > KEEP) this.shadowSells.shift(); this.append(this.f.ssell, rec); return rec; }
   /** Staircase-3 shadow signal record (record-only, user 2026-10-16) — append-only, observer only (see staircaseSignal.js). Like the structure watch: NO in-memory tail; the module folds its file itself and joins mark scores from the structure journal at read time. */
   staircaseSignal(rec) { this.append(this.f.stair, rec); return rec; }
+
+  /** Never-Green Cut shadow record (record-only, owner 2026-10-17) — would-fires and their close pairings (see neverGreen.js). Kept in memory like the shadow sells: the card reads the tail and the judge rebuilds its fire-once/pairing state from it at boot. */
+  neverGreen(rec) { this.neverGreenRecs.push(rec); if (this.neverGreenRecs.length > KEEP) this.neverGreenRecs.shift(); this.append(this.f.ngcut, rec); return rec; }
   /** Bottom Tracker record (episode / mark / mark-score / episode-end — record-only, user 2026-10-16): append-only, observer only (see bottomWatch.js). Like the structure watch: NO in-memory tail; the module folds its file itself. */
   bottomWatch(rec) { this.append(this.f.bwatch, rec); return rec; }
   /** Range Study record (mark / mark-score / episode-end — record-only, user 2026-10-16): append-only, observer only (see rangeWatch.js). Like the structure watch: NO in-memory tail; the module folds its file itself. */
