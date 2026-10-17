@@ -179,6 +179,24 @@ export function insiderCheck(networks, supplyRaw, maxPct = 10) {
   return { pass: pct <= maxPct, reason: pct > maxPct ? `${pct.toFixed(1)}% of supply in linked wallets` : 'no large linked network' };
 }
 
+// 4b. Insider-COUNT block verdict (owner order 2026-10-16, off the last-50
+// separation study). Distinct from the insiders gate above, which caps the
+// supply SHARE held by linked networks — this judges the raw COUNT of
+// graph-detected insider wallets on the RugCheck report
+// (rug.graphInsidersDetected — the same number Bot's entry snapshot records
+// as insiderWallets via learn.js). The study found it the cleanest separator
+// in the bot's own fields (winner median 0, loser median 4). A report that
+// doesn't carry the count yields insiders: null + unknown: the caller
+// proceeds and the record says so — unknown never blocks and is never
+// rounded into an invented number.
+export function insiderCountVerdict(rug, max) {
+  const raw = rug ? Number(rug.graphInsidersDetected) : NaN;
+  const insiders = Number.isFinite(raw) && raw >= 0 ? raw : null;
+  if (insiders == null) return { pass: true, insiders: null, unknown: true, reason: 'insider count unavailable on the RugCheck report — not judged' };
+  if (max > 0 && insiders >= max) return { pass: false, insiders, unknown: false, reason: `insiders ${insiders} >= ${max} — blocked` };
+  return { pass: true, insiders, unknown: false, reason: `${insiders} insider wallets — under the block line ${max}` };
+}
+
 // 5. Vertical launch: a huge move on a coin minutes old is the pool being pushed, not demand.
 export function verticalLaunchCheck(ageMin, chgPct, maxPct = 5000, maxAgeMin = 120) {
   const bad = ageMin <= maxAgeMin && num(chgPct) >= maxPct;

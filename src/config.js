@@ -335,6 +335,9 @@ export function loadConfig(env = process.env) {
     creatorVolBypassUsd: num(env, 'CREATOR_VOL_BYPASS_USD', 25000), // creator veto becomes a warning when 5m volume >= this — real flow can absorb the stack (user 2026-10-14, Eikon: skipped at $53K on this gate with $39.1K/5m volume, then bought at $307K and lost). 0 = off (veto always fires).
     insiderCountMax: num(env, 'INSIDER_COUNT_MAX', 50),
     insiderMaxPct: num(env, 'INSIDER_MAX_PCT', 10), // linked-wallet supply cap in the insiders gate (loosened to 15 by env 2026-10-12: skipped coins averaged +16%)
+    // Insider-COUNT entry block (owner order 2026-10-16, off the last-50 separation study): the gates' insiders check above caps the SUPPLY SHARE in linked networks; this blocks on the raw COUNT of graph-detected insider wallets (rug.graphInsidersDetected — the same field the entry snapshot records as insiderWallets). Study: winner median 0 vs loser median 4; a >=3 block would have blocked 17/31 losers vs 6/18 winners (net +0.26 SOL on the sample). Judged in Bot.onSignal AFTER the gate stack resolves to proceed, so it binds on clean passes, mandatory-ape forces and contested overrides alike. INSIDER_BLOCK=0 is the kill switch (no verdict stamped, no tally — records exactly as before).
+    insiderBlock: num(env, 'INSIDER_BLOCK', 1) === 1,
+    insiderBlockN: num(env, 'INSIDER_BLOCK_N', 3), // block when graphInsidersDetected >= this count
     minQuoteLiqUsd: num(env, 'MIN_QUOTE_LIQ_USD', 1200),
     ladderMinN: num(env, 'LADDER_MIN_N', 15), ladderMaxRatio: num(env, 'LADDER_MAX_RATIO', 1.6),
     revivalDeadDrop: num(env, 'REVIVAL_DEAD_DROP', 50), revivalBounce: num(env, 'REVIVAL_BOUNCE', 50),
@@ -595,6 +598,7 @@ export function validateConfig(cfg) {
   if (cfg.peakVetoAgeSec < 0 || cfg.peakVetoAgeSec > 86400) errs.push('PEAK_VETO_AGE_SEC must be between 0 and 86400');
   if (cfg.shallowDipMaxPct < 0 || cfg.shallowDipMaxPct > 0.9) errs.push('SHALLOW_DIP_MAX_PCT must be between 0 and 0.9 (0 = off)');
   if (cfg.shallowDipWindowMin < 1 || cfg.shallowDipWindowMin > 720) errs.push('SHALLOW_DIP_WINDOW_MIN must be between 1 and 720');
+  if (cfg.insiderBlockN < 1 || cfg.insiderBlockN > 10000) errs.push('INSIDER_BLOCK_N must be between 1 and 10000');
   if (cfg.ranRebuy < 0 || cfg.ranRebuy > 1) errs.push('RAN_REBUY must be 0 or 1');
   if (cfg.ranRebuyMult < 1 || cfg.ranRebuyMult > 1000) errs.push('RAN_REBUY_MULT must be between 1 and 1000');
   if (cfg.ranRebuyHours <= 0 || cfg.ranRebuyHours > 168) errs.push('RAN_REBUY_HOURS must be > 0 and <= 168');

@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { History } from './history.js';
 import { detect, detectChurn, detectLiftoff, eligible, fastPop, fastPopFloors, judgeScan, closestCall, betterScanVerdict } from './detect.js';
-import { runGates, hasHardFail, tempRuleViolation, blockedNameWord, extensionCheck, freshHistoryCheck, flowSnapshotCheck, shallowDipCheck, summarizeGateChecks, holderSamples, foldLastTrades } from './gate.js';
+import { runGates, hasHardFail, tempRuleViolation, blockedNameWord, extensionCheck, freshHistoryCheck, flowSnapshotCheck, shallowDipCheck, summarizeGateChecks, holderSamples, foldLastTrades, insiderCountVerdict } from './gate.js';
 import { computeSignalFields } from './signalFields.js';
 import { evaluateExit } from './exits.js';
 import { ShadowFlow, ratchetArmed, ratchetShadowFire } from './ratchetShadow.js';
@@ -1534,6 +1534,15 @@ export class Bot {
       this.stats.peakVeto.stamped++;
       if (f.peakVeto && f.peakVeto.wouldBlock) this.stats.peakVeto.wouldBlock++;
     } else this.stats.peakVeto.unstamped++;
+    // Chg1m shadow counters (record-only, owner order 2026-10-16): the same
+    // one-count-per-journaled-signal discipline as the peak-veto tallies —
+    // the falling-minute verdict computed in signalFields is tallied here
+    // and NEVER read back for any decision; /state exposes the running
+    // score of the shadow test while it earns (or loses) its case.
+    this.stats.shadowChg1m = this.stats.shadowChg1m || { wouldBlock: 0, pass: 0, unknown: 0 };
+    if (f && f.chg1mShadow === 'would-block') this.stats.shadowChg1m.wouldBlock++;
+    else if (f && f.chg1mShadow === 'pass') this.stats.shadowChg1m.pass++;
+    else this.stats.shadowChg1m.unknown++;
     return f;
   }
 
@@ -2242,6 +2251,33 @@ export class Bot {
         } else {
           return this.skip(v, sig, g.fails, g.warnings, checks, g.pass);
         }
+      }
+    }
+
+    // Insider-count block (owner order 2026-10-16, off the last-50 separation
+    // study: insider wallets at entry were its best separator — winner median
+    // 0 vs loser median 4; a >=3 block scored net +0.26 SOL on the sample).
+    // Judged HERE, after the gate stack has resolved to PROCEED — clean pass,
+    // mandatory-ape force and contested override all land on this seam — so
+    // the block binds exactly where forcing used to wave coins through. Every
+    // live entry path funnels through onSignal, so this one seam covers
+    // pop/churn/trend/liftoff, flow, staircase, confluence and dev-launch.
+    // The count is the RugCheck report's graphInsidersDetected — the same
+    // field the entry snapshot records as insiderWallets; the gates' own
+    // insiders check (linked-supply %) is a different measurement and stays
+    // untouched. Judged on cfg, NOT the pace-relaxed gateCfg: the block never
+    // relaxes. An unavailable count never blocks and is never invented — the
+    // entry proceeds and the verdict stamp says unknown. Kill switch
+    // INSIDER_BLOCK=0: no stamp, no tally, records exactly as before.
+    if (this.cfg.insiderBlock) {
+      const ib = insiderCountVerdict(rug, this.cfg.insiderBlockN);
+      this.stats.insiderBlock = this.stats.insiderBlock || { blocked: 0, unknown: 0 };
+      checks.insiderBlock = { pass: ib.pass, insiders: ib.insiders, max: this.cfg.insiderBlockN, reason: ib.reason };
+      if (ib.unknown) { checks.insiderBlock.unknown = true; this.stats.insiderBlock.unknown++; }
+      if (!ib.pass) {
+        this.stats.insiderBlock.blocked++;
+        console.log(`[insiders] skip: ${v.symbol} — ${ib.reason}`);
+        return this.skip(v, sig, [ib.reason], g.warnings, checks, g.pass);
       }
     }
 

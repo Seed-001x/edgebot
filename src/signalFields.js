@@ -76,11 +76,33 @@
 //                         branches on any of it: no gate, detector, sizing or
 //                         exit path reads these fields; the /deadentry
 //                         scorecard is the only consumer.
+//   chg1mPct / chg1mShadow — the 1-minute price change into the signal
+//                         (owner order 2026-10-16, off the last-50 separation
+//                         study, where a candle REBUILD of this number —
+//                         the bot never recorded its own — separated: all
+//                         10 covered winners were rising in their entry
+//                         minute, 9 of 20 covered losers were already
+//                         falling). Computed from the bot's OWN samples:
+//                         the signal view's price vs the sampled price
+//                         closest to 60s earlier, accepted only when that
+//                         sample sits within CHG1M_TOL_MS of the target —
+//                         too-thin history reads null, never fabricated.
+//                         chg1mShadow is the falling-minute block SHADOW
+//                         verdict: 'would-block' when chg1mPct < 0, 'pass'
+//                         when >= 0, 'unknown' when the samples can't say.
+//                         Record-only: the owner ordered the block
+//                         shadow-tested first (the study's covered winner
+//                         sample was only n=10) — no gate, detector or
+//                         sizing path reads either field; Bot tallies the
+//                         verdicts in stats.shadowChg1m, nothing else
+//                         consumes them.
 
 export const GRAD_MC_USD = 69000; // nominal pump.fun graduation market cap (USD)
 export const BABY_POOL_MAX_MIN = 15; // baby-pool band ceiling (min) from the 2026-10-14 audit
 export const DEAD_ENTRY_THRESHOLDS_USD = [15000, 17500, 20000, 25000]; // dead-entry veto curve (USD 5m volume)
 export const BUY_VEL_BLOCK_PER_MIN = 30; // dead-entry study's buy-velocity line (buys/min)
+export const CHG1M_WINDOW_MS = 60000; // chg1m lookback: the minute before the signal
+export const CHG1M_TOL_MS = 30000; // the "60s ago" sample must sit within this of the target, else chg1m is unknown
 
 // Minimum evidence per field (below → null):
 export const FIELDS_MIN = {
@@ -106,7 +128,7 @@ const round = (v, d) => (Number.isFinite(v) ? Math.round(v * 10 ** d) / 10 ** d 
  *                 when finite; null/absent falls back to the view.
  */
 export function computeSignalFields({ samples = [], view = null, holders = [], now = Date.now(), veto = null, volM5 = null } = {}) {
-  const out = { holderGrowthPerMin: null, holderGrowthPctPerMin: null, curveFillPctPerMin: null, buyVelPerMin: null, poolAgeMin: null, babyPool: null, distFromPeakPct: null, peakAgeSec: null, peakVeto: null, volM5: null, buyVel: null, deadEntryVeto: null, buyVelBlock30: null };
+  const out = { holderGrowthPerMin: null, holderGrowthPctPerMin: null, curveFillPctPerMin: null, buyVelPerMin: null, poolAgeMin: null, babyPool: null, distFromPeakPct: null, peakAgeSec: null, peakVeto: null, volM5: null, buyVel: null, deadEntryVeto: null, buyVelBlock30: null, chg1mPct: null, chg1mShadow: 'unknown' };
 
   // ---- pool age / baby-pool tag (view's pairCreatedAt; no samples needed) ----
   if (view && Number.isFinite(view.createdAt) && view.createdAt > 0) {
@@ -181,6 +203,19 @@ export function computeSignalFields({ samples = [], view = null, holders = [], n
     for (const t of DEAD_ENTRY_THRESHOLDS_USD) vetoMap[`wouldBlock${t}`] = vol != null ? vol < t : null;
     out.deadEntryVeto = vetoMap;
     out.buyVelBlock30 = out.buyVelPerMin != null ? out.buyVelPerMin < BUY_VEL_BLOCK_PER_MIN : null;
+  }
+
+  // ---- 1-minute price change into the signal + falling-minute shadow verdict ----
+  {
+    const priced = (samples || []).filter(s => s && Number.isFinite(s.price) && s.price > 0);
+    const cur = view && Number.isFinite(view.price) && view.price > 0 ? view.price : null;
+    if (cur != null && priced.length) {
+      const target = now - CHG1M_WINDOW_MS;
+      let best = null, bestDist = Infinity;
+      for (const s of priced) { const d = Math.abs(s.ts - target); if (d < bestDist) { bestDist = d; best = s; } }
+      if (best && bestDist <= CHG1M_TOL_MS && best.ts < now) out.chg1mPct = round((cur / best.price - 1) * 100, 1);
+    }
+    out.chg1mShadow = out.chg1mPct == null ? 'unknown' : (out.chg1mPct < 0 ? 'would-block' : 'pass');
   }
 
   return out;
