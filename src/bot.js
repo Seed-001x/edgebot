@@ -142,6 +142,13 @@ export class Bot {
     this.birthVerdicts = this.loadBirthVerdicts(); // mint -> { mint, kind, evidence, firstSeenTs }
     this._backfillBirthVerdicts();
     this._birthStats().known = this.birthVerdicts.size;
+    // FLOW CONFIRMATION LANE (owner order 2026-10-17): the per-mint fire
+    // registry + lane accounting (entry caps, re-entry timers, the
+    // pre-registered kill rule's sample) persist to flow-confirm.json —
+    // the birth-verdicts pattern — so a restart cannot reset the
+    // per-mint 2-entry cap or hand the lane a fresh 15-trade sample.
+    this.flowConfirmFile = path.join(cfg.dataDir, 'flow-confirm.json');
+    this.flowConfirmState = this.loadFlowConfirm();
     // BASE MODE enrollment restore (owner decision 2026-10-16 23:16
     // EDT): range entries require a NOMINATED mint — re-arm the
     // enrollment map from the journal's enrollment records inside the
@@ -250,6 +257,23 @@ export class Bot {
   loadBirthVerdicts() { try { const arr = JSON.parse(fs.readFileSync(this.birthFile, 'utf8')); const m = new Map(); for (const r of Array.isArray(arr) ? arr : []) if (r && r.mint && r.kind) m.set(r.mint, { mint: r.mint, kind: r.kind, evidence: r.evidence || '', firstSeenTs: Number(r.firstSeenTs) || 0 }); return m; } catch { return new Map(); } }
   saveBirthVerdicts() { try { fs.writeFileSync(this.birthFile, JSON.stringify([...this.birthVerdicts.values()])); } catch { /* best effort */ } }
 
+  // FLOW CONFIRMATION LANE state (see the constructor note): one object —
+  // lane totals (fires / qualifiedFires / entries / closes / pnlSumSol),
+  // the kill-rule latch (killChecked / disabled / disabledMeanPnlSol),
+  // starved-test blocked tallies, and the per-mint registry
+  // { fires: [{k, ts}], anchorTs, windowEntries, entries, lastCloseTs }.
+  loadFlowConfirm() {
+    const dflt = () => ({ fires: 0, qualifiedFires: 0, entries: 0, closes: 0, pnlSumSol: 0, disabled: false, disabledAt: null, disabledMeanPnlSol: null, killChecked: false, blocked: { slot: 0, halt: 0, risk: 0 }, mints: {} });
+    try {
+      const s = JSON.parse(fs.readFileSync(this.flowConfirmFile, 'utf8'));
+      const out = { ...dflt(), ...(s || {}) };
+      out.blocked = { slot: 0, halt: 0, risk: 0, ...((s && s.blocked) || {}) };
+      if (!out.mints || typeof out.mints !== 'object' || Array.isArray(out.mints)) out.mints = {};
+      return out;
+    } catch { return dflt(); }
+  }
+  saveFlowConfirm() { try { fs.writeFileSync(this.flowConfirmFile, JSON.stringify(this.flowConfirmState)); } catch { /* best effort */ } }
+
   // Pace keeper: returns a relaxed cfg if we're behind the hourly target.
   // Never overrides user blacklists, RugCheck safety, or risk limits.
   paceCfg(n) {
@@ -304,6 +328,12 @@ export class Bot {
   ensureClose(pos, rec) {
     if (this.closedIds.has(pos.id)) return false;
     this.closedIds.add(pos.id);
+    // FLOW CONFIRMATION LANE: a lane position's close feeds the lane's
+    // own accounting here — this funnel is the one place every close
+    // passes through exactly once (bot sell, manual exit, reconcile,
+    // admin clear alike), so neither the re-entry timer nor the
+    // kill-rule sample can miss or double-count a close.
+    if (pos.flowConfirm) this._laneOnClose(pos, rec);
     const full = { type: 'close', ...rec };
     // D1 (record-only): EVERY close carries the full decision record, whichever
     // path closed it. The entry snapshot used to survive only on manual exits —
@@ -2082,8 +2112,196 @@ export class Bot {
    * eligible() tradability floor, then the exact same onSignal pipeline — gates,
    * risk, exits all unchanged. The wallet nominates; it never bypasses.
    */
+
+  // ------------------------------------------------------------ FLOW CONFIRMATION LANE
+  // (owner order 2026-10-17, "Go ahead and. Build." — the morning's audits
+  // in one line: first catches lose; coins that already fired, stayed
+  // liquid, and fire AGAIN win.) While BASE_MODE is on, a live flow fire
+  // on a mint with a PRIOR distinct flow event inside the confirmation
+  // window, at mc >= FLOW_CONFIRM_MIN_MC with the standard floors passing
+  // on this fire's own view, is NOT enrolled for base watch — it routes
+  // into the standard live pipeline at exactly FLOW_CONFIRM_SOL, with
+  // every gate binding and only the winner/loser/closed mint cooldowns
+  // waived (the lane's own re-entry timer + per-mint cap govern instead).
+  // First fires and non-qualifying repeats enroll exactly as before.
+
+  /** Identity of one wallet-buy EVENT on a flow agg: the deciding buy's
+   *  chain stamp + wallet + size. One buy re-evaluated (overlapping
+   *  trigger windows, the no-view retry re-invoking _evalFlow with the
+   *  same agg) carries the same key and is ONE fire — the morning audit's
+   *  records-vs-fires lesson, enforced here instead of cleaned up later. */
+  _laneEventKey(agg) {
+    if (!agg || agg.buyTs == null) return null;
+    return `${agg.buyTs}|${agg.wallet || ''}|${agg.walletSol ?? ''}`;
+  }
+
+  /** Register a flow EVENT in the lane's per-mint registry. Runs at the
+   *  TOP of _evalFlow — before the view fetch, before every floor — on
+   *  the owner's ruling: a first fire blocked by the $0-liquidity read or
+   *  the $5K min-MC floor STILL counts as the coin's first fire ("a coin
+   *  that fired at $3K and fires again at $60K is exactly the shape").
+   *  Bookkeeping only: registration never changes any evaluation. */
+  _laneRecordFire(mint, agg, n) {
+    try {
+      const st = this.flowConfirmState;
+      if (!st || !mint) return;
+      const key = this._laneEventKey(agg) || `nots:${n}`;
+      const ts = agg && Number.isFinite(agg.buyTs) ? agg.buyTs : n;
+      let m = st.mints[mint];
+      if (!m) m = st.mints[mint] = { fires: [], anchorTs: 0, windowEntries: 0, entries: 0, lastCloseTs: 0 };
+      if (m.fires.some(f => f.k === key)) return; // same event re-evaluated — one fire
+      const winMs = (this.cfg.flowConfirmWindowH || 3) * 3600000;
+      // Episode anchor: no earlier fire inside the window behind this
+      // one → this fire opens a fresh episode (anchor + cap reset).
+      if (!m.fires.some(f => f.ts <= ts && ts - f.ts <= winMs)) { m.anchorTs = ts; m.windowEntries = 0; }
+      m.fires.push({ k: key, ts });
+      m.fires = m.fires.filter(f => ts - f.ts <= 24 * 3600000);
+      st.fires++;
+      // Housekeeping sweep: dead records (no fires in 48h, never entered,
+      // no lane close) leave the registry so the map tracks the live tape.
+      for (const [k, mm] of Object.entries(st.mints)) {
+        if (k === mint) continue;
+        const newest = mm.fires && mm.fires.length ? mm.fires[mm.fires.length - 1].ts : 0;
+        if (!(mm.entries > 0) && !(mm.windowEntries > 0) && n - Math.max(newest, mm.lastCloseTs || 0) > 48 * 3600000) delete st.mints[k];
+      }
+      this.saveFlowConfirm();
+    } catch { /* bookkeeping only — never disturb the flow path */ }
+  }
+
+  /** Does THIS live flow fire qualify for the lane? Judged in _evalFlow
+   *  after the standard guards have passed on this fire's own view (so
+   *  the eligible() liq/mc floors already hold for it — the qualifying
+   *  fire is judged on its own merits). Returns the would-be entry
+   *  ordinal, or null (→ ordinary enrollment). Counts the qualification
+   *  either way the pipeline ends — starved-test bookkeeping starts here:
+   *  a qualified fire the risk layer later blocks is still a qualified
+   *  fire, tallied in blocked{} at the block point. */
+  _laneQualify(mint, v, n, agg) {
+    const cfg = this.cfg;
+    if (!cfg.flowConfirmLive || !cfg.baseMode) return null;
+    const st = this.flowConfirmState;
+    if (!st || st.disabled) return null;
+    const m = st.mints[mint];
+    if (!m || !m.fires.length) return null;
+    const key = this._laneEventKey(agg);
+    const winMs = (cfg.flowConfirmWindowH || 3) * 3600000;
+    // A PRIOR distinct event inside the window — however its own
+    // evaluation ended (the registry is events, not survivors).
+    if (!m.fires.some(f => f.k !== key && f.ts <= n && n - f.ts <= winMs)) return null;
+    if ((m.windowEntries || 0) >= (cfg.flowConfirmMaxEntries || 2)) return null; // per-mint cap inside the window
+    if (m.lastCloseTs && n - m.lastCloseTs < (cfg.flowConfirmReentryMin || 0) * 60000) return null; // lane re-entry timer
+    if (!(v.mc >= (cfg.flowConfirmMinMc || 0))) return null; // the qualifying fire's own mc floor
+    st.qualifiedFires++;
+    this.saveFlowConfirm();
+    return { ordinal: (m.windowEntries || 0) + 1 };
+  }
+
+  /** An actual lane entry executed: count it against the mint's window
+   *  cap and the lane totals; returns the entry's ordinal. Called once,
+   *  at position creation in onSignal. */
+  _laneRecordEntry(mint, n) {
+    const st = this.flowConfirmState;
+    let m = st.mints[mint];
+    if (!m) m = st.mints[mint] = { fires: [], anchorTs: n, windowEntries: 0, entries: 0, lastCloseTs: 0 };
+    m.windowEntries = (m.windowEntries || 0) + 1;
+    m.entries = (m.entries || 0) + 1;
+    st.entries++;
+    this.saveFlowConfirm();
+    return m.windowEntries;
+  }
+
+  /** A qualifying lane fire died at the risk layer (slot / halt /
+   *  down-stop / other risk): tally it so the lane test's coverage —
+   *  and its biases — stay measurable. The skip record itself already
+   *  carries the lane marker (metrics.flowConfirm) + the exact reason,
+   *  outcome-tracked like every skipped signal; this is only the count.
+   *  Blocked fires NEVER count toward the kill-rule sample. */
+  _laneBlocked(reason) {
+    try {
+      const st = this.flowConfirmState;
+      if (!st) return;
+      const r = String(reason || '');
+      const cat = /positions open/.test(r) ? 'slot' : (/HALT file|down-stop|kill switch/.test(r) ? 'halt' : 'risk');
+      st.blocked[cat] = (st.blocked[cat] || 0) + 1;
+      this.saveFlowConfirm();
+    } catch { /* bookkeeping only */ }
+  }
+
+  /** A lane position closed (called from ensureClose — the one funnel
+   *  every close passes through exactly once): stamp the mint's lane
+   *  re-entry timer and, when the close carries a real PnL, feed the
+   *  kill-rule sample. At FLOW_CONFIRM_KILL_N closes the check runs
+   *  ONCE: a negative mean disables the lane (persisted + journaled as
+   *  a flowConfirmDisabled event); a non-negative mean retires the
+   *  check and the lane keeps running. Open positions are never
+   *  force-closed by the rule. */
+  _laneOnClose(pos, rec) {
+    try {
+      const st = this.flowConfirmState;
+      if (!st || !pos || !pos.mint) return;
+      let m = st.mints[pos.mint];
+      if (!m) m = st.mints[pos.mint] = { fires: [], anchorTs: 0, windowEntries: 0, entries: 0, lastCloseTs: 0 };
+      m.lastCloseTs = (rec && rec.ts) || this.now();
+      const pnl = rec ? rec.pnlSol : null;
+      if (Number.isFinite(pnl)) {
+        st.closes++;
+        st.pnlSumSol = +(((st.pnlSumSol || 0) + pnl)).toFixed(6);
+        const N = this.cfg.flowConfirmKillN || 0;
+        if (N > 0 && !st.killChecked && st.closes >= N) {
+          st.killChecked = true; // the gate is one-time, win or lose
+          const mean = st.pnlSumSol / st.closes;
+          if (mean < 0) {
+            st.disabled = true;
+            st.disabledAt = m.lastCloseTs;
+            st.disabledMeanPnlSol = +mean.toFixed(6);
+            try { this.journal.flowConfirm({ type: 'flowConfirmDisabled', ts: st.disabledAt, closes: st.closes, meanPnlSol: st.disabledMeanPnlSol, killN: N }); } catch { /* journaling never blocks the close */ }
+            console.log(`[flowconfirm] KILL RULE: ${st.closes} lane closes at mean ${st.disabledMeanPnlSol} SOL < 0 — lane disabled (qualifying fires enroll again)`);
+          } else {
+            console.log(`[flowconfirm] kill-rule check at ${st.closes} closes: mean ${(+mean.toFixed(6))} SOL >= 0 — lane stays live`);
+          }
+        }
+      }
+      this.saveFlowConfirm();
+    } catch { /* bookkeeping only — never disturb the close */ }
+  }
+
+  /** The /state flowConfirm block: lane on/off, the kill-rule state
+   *  (including the mean AT disablement, not just the running mean),
+   *  coverage tallies and the per-mint entry ledger. */
+  _flowConfirmState() {
+    const st = this.flowConfirmState || {};
+    const closes = st.closes || 0;
+    const byMint = {};
+    for (const [mint, m] of Object.entries(st.mints || {})) {
+      if ((m.entries || 0) > 0) byMint[mint] = { entries: m.entries, windowEntries: m.windowEntries || 0, lastCloseTs: m.lastCloseTs || null };
+    }
+    return {
+      enabled: !!(this.cfg.flowConfirmLive && !st.disabled),
+      killSwitch: !!this.cfg.flowConfirmLive,
+      disabled: !!st.disabled,
+      disabledAt: st.disabledAt ?? null,
+      disabledMeanPnlSol: st.disabledMeanPnlSol ?? null,
+      killN: this.cfg.flowConfirmKillN,
+      killChecked: !!st.killChecked,
+      fires: st.fires || 0,
+      qualifiedFires: st.qualifiedFires || 0,
+      blocked: { slot: 0, halt: 0, risk: 0, ...(st.blocked || {}) },
+      entries: st.entries || 0,
+      closes,
+      meanPnlSol: closes > 0 ? +(((st.pnlSumSol || 0) / closes)).toFixed(6) : null,
+      sizeSol: this.cfg.flowConfirmSol,
+      minMc: this.cfg.flowConfirmMinMc,
+      windowH: this.cfg.flowConfirmWindowH,
+      reentryMin: this.cfg.flowConfirmReentryMin,
+      maxEntries: this.cfg.flowConfirmMaxEntries,
+      byMint,
+    };
+  }
+
   async _evalFlow(mint, agg, liqRechecks = 0) {
+
     const n = this.now();
+    this._laneRecordFire(mint, agg, n);
     const views = await this.d.fetchViews([mint]).catch(() => null);
     const v = views && views.get(mint);
     if (!v) { this._queueFlowRetry(mint, agg, n); return; }
@@ -2135,7 +2353,22 @@ export class Bot {
       this.stats.flow.shadow = (this.stats.flow.shadow || 0) + 1;
       console.log(`[flow] ${v.symbol} flow trigger is shadow-only (not a live-flow wallet) — logged + outcome-tracked, no buy: ${agg.label}`);
     }
-    await this.onSignal(v, { setup: 'flow', strength: agg.maxSol || 0, metrics, label: agg.label || null, flowShadowOnly: !live, shadowReason: live ? null : 'shadow: flow is shadow-only for this wallet — logged + outcome-tracked, no buy', ...(liqRechecks > 0 ? { liqRechecks } : {}) });
+
+    const sig = { setup: 'flow', strength: agg.maxSol || 0, metrics, label: agg.label || null, flowShadowOnly: !live, shadowReason: live ? null : 'shadow: flow is shadow-only for this wallet — logged + outcome-tracked, no buy', ...(liqRechecks > 0 ? { liqRechecks } : {}) };
+    // FLOW CONFIRMATION LANE: a LIVE flow fire that qualifies (prior
+    // distinct event in the window, this fire's own mc/liq merits, cap +
+    // re-entry timer clear) carries the lane marker into the pipeline —
+    // onSignal sizes it at FLOW_CONFIRM_SOL, waives only the mint
+    // cooldowns for it, and lets it past the base-mode enrollment. A
+    // shadow-only trigger never qualifies: the lane spends real entries,
+    // it does not promote shadow wallets.
+    if (live && this._laneQualify(mint, v, n, agg)) {
+      sig.flowConfirmLane = true;
+      metrics.flowConfirm = 1;
+      console.log(`[flowconfirm] ${v.symbol} QUALIFIES — repeat flow fire inside the window at mc $${Math.round(v.mc)} — direct lane entry attempt`);
+    }
+    await this.onSignal(v, sig);
+
   }
 
   /** Journal a flow buy that a pipeline guard kept out of evaluation (record-only). */
@@ -3034,10 +3267,20 @@ export class Bot {
     // canEnter cap below judges (adopted bags sit in this list too), so
     // the cap and the size can never disagree about which slot this is.
     const slot = this.positions.length >= 1 ? 2 : 1;
-    const size = this.risk.sizeFor(v.liq, solUsd, this.positions.length);
-    const gate0 = this.risk.canEnter({ mint: v.address, walletSol, openCount: this.positions.length, sizeSol: size, halted: this.halted() });
+    // FLOW CONFIRMATION LANE (owner order 2026-10-17): a qualifying
+    // repeat flow fire (sig.flowConfirmLane, judged in _evalFlow) sizes
+    // at the lane's own FLOW_CONFIRM_SOL — not tradeSol, not the slot
+    // size, not the brake-halved effective size: the test measures the
+    // lane. Its canEnter calls waive ONLY the winner/loser/closed mint
+    // cooldowns (skipMintCooldowns); halts, the slot cap, the down-stop
+    // and every other risk check bind exactly as for any entry.
+    const laneEntry = !!sig.flowConfirmLane;
+    let size = this.risk.sizeFor(v.liq, solUsd, this.positions.length);
+    if (laneEntry) size = this.risk.sizeForLane(v.liq, solUsd);
+    const gate0 = this.risk.canEnter({ mint: v.address, walletSol, openCount: this.positions.length, sizeSol: size, halted: this.halted(), ...(laneEntry ? { skipMintCooldowns: true } : {}) });
     if (!gate0.ok) {
       checks.risk = { pass: false, reason: gate0.reason || null };
+      if (laneEntry) this._laneBlocked(gate0.reason); // starved-test tally: the skip record itself carries the lane marker + exact reason
       // Freeze work 1b (record-only, user 2026-10-14): a risk-layer preemption
       // used to end the pipeline here, so the record never showed whether the
       // GATE STACK would have passed the coin — the gate-pricing question was
@@ -3247,7 +3490,17 @@ export class Bot {
     // returned at the shadow branch above), so record-only judging is
     // untouched. BASE_MODE=0: no stamp, no tally, no record — the
     // pipeline below runs exactly as tonight.
-    if (this.cfg.baseMode && !BASE_ENTRY_SETUPS.has(sig.setup)) {
+    // FLOW CONFIRMATION LANE bypass (owner order 2026-10-17): a
+    // qualifying repeat flow fire is the ONE non-base setup that does
+    // not enroll — it has already proven itself by firing twice, and
+    // the lane is its own entry rule ("a base trigger cannot block a
+    // pop trigger" — lanes are independent). The verdict is stamped on
+    // the record so the taken/skipped journal shows WHY this flow fire
+    // was allowed to spend.
+    if (laneEntry && this.cfg.baseMode && !BASE_ENTRY_SETUPS.has(sig.setup)) {
+      checks.flowConfirm = { lane: true, enrolledBypass: true, reason: 'flow confirmation lane: qualifying repeat fire — direct entry instead of base-watch enrollment' };
+    }
+    if (this.cfg.baseMode && !BASE_ENTRY_SETUPS.has(sig.setup) && !laneEntry) {
       const bm = this._baseStats();
       bm.enrolled++;
       bm.bySetup[sig.setup] = (bm.bySetup[sig.setup] || 0) + 1;
@@ -3271,8 +3524,8 @@ export class Bot {
     // to go through at whatever the live price is. Entries are instant from here.
 
     // re-check limits right before spending (state may have changed during the awaits above)
-    const gate1 = this.risk.canEnter({ mint: v.address, walletSol: await this.exec.solBalance(), openCount: this.positions.length, sizeSol: size, halted: this.halted() });
-    if (!gate1.ok) { checks.risk = { pass: false, reason: gate1.reason || null }; return this.skip(v, sig, [`risk: ${gate1.reason}`], g.warnings, checks, g.pass); }
+    const gate1 = this.risk.canEnter({ mint: v.address, walletSol: await this.exec.solBalance(), openCount: this.positions.length, sizeSol: size, halted: this.halted(), ...(laneEntry ? { skipMintCooldowns: true } : {}) });
+    if (!gate1.ok) { checks.risk = { pass: false, reason: gate1.reason || null }; if (laneEntry) this._laneBlocked(gate1.reason); return this.skip(v, sig, [`risk: ${gate1.reason}`], g.warnings, checks, g.pass); }
 
     let fill;
     try { fill = await this.exec.buy(v.address, size, rt.buyQuote); }
@@ -3284,6 +3537,14 @@ export class Bot {
     // config stamp. None of these are read by any trading decision.
     const dec = rug && rug.token && rug.token.decimals != null ? Number(rug.token.decimals) : null;
     const tokensWhole = dec != null && Number(fill.tokensRaw) > 0 ? Number(fill.tokensRaw) / 10 ** dec : null;
+    // FLOW CONFIRMATION LANE: the entry is real — count it against the
+    // mint's window cap (authoritative increment, here at execution) and
+    // stamp the lane ordinal onto the signal metrics, the position and
+    // the open record, so the kill rule can read the close back off the
+    // position (ensureClose) and any audit can find lane trades by the
+    // marker alone.
+    const laneOrdinal = laneEntry ? this._laneRecordEntry(v.address, n) : null;
+    if (laneEntry) { sig.metrics = sig.metrics || {}; sig.metrics.flowConfirmOrdinal = laneOrdinal; }
     const pos = {
       id: `${v.address.slice(0, 6)}-${n}`, mint: v.address, symbol: v.symbol, setup: sig.setup,
       entryTs: n, entrySol: fill.solSpent, tokensRaw: fill.tokensRaw, entryTokensRaw: fill.tokensRaw, remainingFrac: 1, peakRatio: 1, tp1Done: false, tp2Done: false, tp1Arm: null, flowHist: [], suspectUnbookedSell: false,
@@ -3297,12 +3558,17 @@ export class Bot {
       // removal on 2026-10-17 NO exit reads it). A signal carrying
       // neither stamp produces the exact position shape of tonight.
       ...(sig.baseTp1 ? { tp1AtPct: 0.5 } : {}), ...(sig.structureLow > 0 ? { structureLow: sig.structureLow } : {}),
+      // FLOW CONFIRMATION LANE stamp: a lane entry carries its ordinal
+      // (the kill rule + re-entry timer read it back at close). A lane
+      // entry is never slot-stamped — its size came from the lane rule,
+      // not the slot rule, and the records must not claim otherwise.
+      ...(laneEntry ? { flowConfirm: { ordinal: laneOrdinal } } : {}),
       // SLOT stamp (owner order 2026-10-17): a second-slot entry (priced at
       // SLOT2_SOL by the seam above) carries slot: 2 on the position and
       // its open record. With SLOT2_SOL=0 (kill switch) nothing is priced
       // by the slot rule and nothing is stamped — the record is exactly
       // the pre-slot shape, like every other disabled knob tonight.
-      ...(slot === 2 && this.cfg.slot2Sol > 0 ? { slot: 2 } : {}),
+      ...(slot === 2 && !laneEntry && this.cfg.slot2Sol > 0 ? { slot: 2 } : {}),
       entryPrice: v.price, entryMc: v.mc, realizedSol: 0, simulated: fill.simulated, sigBuy: fill.sig, markFails: 0,
       stamp: this.cfgStamp, gates: checks, gatePass: g.pass, decimals: dec,
       entryFillSol: tokensWhole > 0 ? fill.solSpent / tokensWhole : null, solUsdEntry: solUsd || null, ticks: [],
@@ -3333,8 +3599,10 @@ export class Bot {
         this.lastCallout = { ok: false, error: e.message, symbol: v.symbol, ts: Date.now() };
       });
     }
-    this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'taken', reasons: [], price: v.price, mc: v.mc, metrics: { ...sig.metrics, roundTrip: +rt.ratio.toFixed(3), sizeSol: size }, warnings: g.warnings, label: sig.label || null, gates: checks, gatePass: g.pass, fields: this._fieldsFor(v, sig), liqRechecks: sig.liqRechecks ?? null });
-    this.journal.trade({ type: 'open', id: pos.id, mint: pos.mint, symbol: pos.symbol, setup: pos.setup, entrySol: pos.entrySol, sig: fill.sig, simulated: fill.simulated, ts: n, stamp: pos.stamp, tokensRaw: fill.tokensRaw, entryFillSol: pos.entryFillSol, entryFillUsd: pos.entryFillSol != null && solUsd > 0 ? +(pos.entryFillSol * solUsd).toFixed(10) : null, ...(slot === 2 && this.cfg.slot2Sol > 0 ? { slot: 2 } : {}) });
+
+this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'taken', reasons: [], price: v.price, mc: v.mc, metrics: { ...sig.metrics, roundTrip: +rt.ratio.toFixed(3), sizeSol: size }, warnings: g.warnings, label: sig.label || null, gates: checks, gatePass: g.pass, fields: this._fieldsFor(v, sig), liqRechecks: sig.liqRechecks ?? null });
+    this.journal.trade({ type: 'open', id: pos.id, mint: pos.mint, symbol: pos.symbol, setup: pos.setup, entrySol: pos.entrySol, sig: fill.sig, simulated: fill.simulated, ts: n, stamp: pos.stamp, tokensRaw: fill.tokensRaw, entryFillSol: pos.entryFillSol, entryFillUsd: pos.entryFillSol != null && solUsd > 0 ? +(pos.entryFillSol * solUsd).toFixed(10) : null, ...(slot === 2 && !laneEntry && this.cfg.slot2Sol > 0 ? { slot: 2 } : {}), ...(laneEntry ? { flowConfirm: 1, flowConfirmOrdinal: laneOrdinal } : {}) });
+
     // Flow-Exit Watcher (record-only): a flow-triggered entry starts a watch
     // on the wallet whose buy nominated it — its trim/exit get journaled and
     // scored against this position's own close in ensureClose. No-op for
@@ -3865,6 +4133,7 @@ export class Bot {
       halted: this.halted(),
       risk: this.risk.snapshot(),
       limits: { tradeSol: this.risk.effectiveTradeSol(), maxPositions: this.cfg.maxPositions, dailyLossSol: this.cfg.dailyLossSol, maxTradesPerHour: this.cfg.maxTradesPerHour, tp1Pct: this.cfg.tp1Pct, tp1Frac: this.cfg.tp1Frac },
+      flowConfirm: this._flowConfirmState(),
       watchlist: this.watch.size,
       pairedShadow: this.paired ? { pending: this.paired.pending.size, done: this.paired.done.length } : { pending: 0, done: 0 },
       positions: this.positions.map(p => ({ id: p.id, symbol: p.symbol, mint: p.mint, setup: p.setup, entrySol: p.entrySol, remainingFrac: p.remainingFrac, peakRatio: +(p.peakRatio || 1).toFixed(2), heldMin: +((this.now() - p.entryTs) / 60000).toFixed(1), simulated: p.simulated, noTp: !!p.noTp, protected: p.protected || null, takenOver: p.takenOver || null, tp1AtPct: p.tp1AtPct ?? null, path: p.pathClass || null, stallPending: p.stallPending ?? null, bagDeadWaves: p.bagDeadWaves ?? null })),

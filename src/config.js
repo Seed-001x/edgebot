@@ -373,6 +373,31 @@ export function loadConfig(env = process.env) {
     // (only listed solo wallets live, everything else journals as shadow).
     flowAllLive: num(env, 'FLOW_ALL_LIVE', 1) === 1,
 
+    // FLOW CONFIRMATION LANE (owner order 2026-10-17, "Go ahead and.
+    // Build." — off this morning's audits: first catches lose; a coin that
+    // already fired, stayed liquid, and fires AGAIN is the proven shape).
+    // While BASE_MODE is on, a flow fire on a mint with a PRIOR distinct
+    // flow event inside FLOW_CONFIRM_WINDOW_H, at mc >= FLOW_CONFIRM_MIN_MC
+    // with the standard liq floors passing on a real view, routes DIRECT
+    // through the standard pipeline (every gate binding, top guard
+    // included) at exactly FLOW_CONFIRM_SOL instead of being enrolled for
+    // base watch. Lane-local re-entry: the lane ignores the winner/loser/
+    // closed mint cooldowns for its own entries; after a lane close the
+    // mint can re-enter on a new qualifying fire once
+    // FLOW_CONFIRM_REENTRY_MIN has passed, max FLOW_CONFIRM_MAX_ENTRIES
+    // lane entries per mint inside the window anchored at the first fire.
+    // Pre-registered kill rule: at FLOW_CONFIRM_KILL_N lane closes with a
+    // negative mean PnL the lane disables itself (persisted + journaled).
+    // FLOW_CONFIRM_LIVE=0 is the kill switch — base-mode enrollment for
+    // every flow fire, exactly as before the lane existed.
+    flowConfirmLive: num(env, 'FLOW_CONFIRM_LIVE', 1) === 1,
+    flowConfirmWindowH: num(env, 'FLOW_CONFIRM_WINDOW_H', 3),        // a prior flow event inside this window arms the lane
+    flowConfirmMinMc: num(env, 'FLOW_CONFIRM_MIN_MC', 50000),        // the qualifying fire's own mc floor
+    flowConfirmSol: num(env, 'FLOW_CONFIRM_SOL', 0.025),             // exact lane entry size (brake does not factor it)
+    flowConfirmReentryMin: num(env, 'FLOW_CONFIRM_REENTRY_MIN', 10), // minutes after a lane close before the lane may re-enter the mint
+    flowConfirmMaxEntries: num(env, 'FLOW_CONFIRM_MAX_ENTRIES', 2),  // lane entries per mint per window
+    flowConfirmKillN: num(env, 'FLOW_CONFIRM_KILL_N', 15),           // lane closes that arm the one-time kill-rule check
+
     // ---- wallet task shadow detectors (user brief 2026-10-14, Phases 4–6; go given 2026-10-15) ----
     // LOG-ONLY observers over the Phase 1–3 wallet sets (src/walletSets.json): the 23
     // hand-tagged devs (dev-launch detector) and the 225 surviving trader entities /
@@ -846,6 +871,12 @@ export function validateConfig(cfg) {
   if (cfg.rangeLive < 0 || cfg.rangeLive > 1) errs.push('RANGE_LIVE must be 0 or 1');
   if (cfg.bottomLive < 0 || cfg.bottomLive > 1) errs.push('BOTTOM_LIVE must be 0 or 1');
   if (cfg.baseMode < 0 || cfg.baseMode > 1) errs.push('BASE_MODE must be 0 or 1');
+  if (!(cfg.flowConfirmWindowH > 0) || cfg.flowConfirmWindowH > 72) errs.push('FLOW_CONFIRM_WINDOW_H must be > 0 and <= 72');
+  if (!(cfg.flowConfirmMinMc >= 0)) errs.push('FLOW_CONFIRM_MIN_MC must be >= 0');
+  if (!(cfg.flowConfirmSol > 0) || cfg.flowConfirmSol > 1) errs.push('FLOW_CONFIRM_SOL must be > 0 and <= 1');
+  if (!(cfg.flowConfirmReentryMin >= 0)) errs.push('FLOW_CONFIRM_REENTRY_MIN must be >= 0');
+  if (!(cfg.flowConfirmMaxEntries >= 1)) errs.push('FLOW_CONFIRM_MAX_ENTRIES must be >= 1');
+  if (!(cfg.flowConfirmKillN >= 1)) errs.push('FLOW_CONFIRM_KILL_N must be >= 1');
   if (!(cfg.baseMinVolM5 >= 0)) errs.push('BASE_MIN_VOL_M5 must be >= 0 (USD)');
   if (!(cfg.enrollTtlH > 0) || cfg.enrollTtlH > 720) errs.push('ENROLL_TTL_H must be between 0 and 720 (hours)');
   if (cfg.confluenceSignal < 0 || cfg.confluenceSignal > 1) errs.push('CONFLUENCE_SIGNAL must be 0 or 1');
