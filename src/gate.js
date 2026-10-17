@@ -243,6 +243,53 @@ export function birthMemoryVerdict(verdict, now) {
   return { pass: false, kind: verdict.kind, evidence: verdict.evidence || null, firstSeenTs: verdict.firstSeenTs || null, reason: `known fast bonder (${verdict.kind}: ${verdict.evidence}; verdict ${age} old) — blocked from memory` };
 }
 
+// 4e. Top guard (owner order 2026-10-16, "Do not buy a coin if it's at the
+// literal fucking top"): the live paths' triggers peak exactly when the
+// vertical peaks, so the fill lands on the tip — blocus (confluence taken
+// at $56,844, the exact top tick of a single vertical candle out of a
+// day-long range, out -9.7%), MM (confluence taken with the entry minute
+// already -13.6% off a seconds-old high), 'long' (pop taken at $50,158,
+// $33.9K three minutes later). This verdict judges the SHAPE of arrival
+// from the bot's OWN sampled history only (per-mint mc samples — the same
+// history the chg1m sampler maintains): where the trailing high sits, how
+// old it is, and whether it was MADE by a vertical surge. No external
+// fetch is consulted, so the guard can never fail open on a GeckoTerminal
+// 429 or a DexScreener stamp collapse. BLOCK when ALL hold: the candidate
+// is within distPct of the trailing-lookback high, that high was reached
+// by a surge of >= surgePct from the lowest sample inside the
+// surgeWindowSec before the high printed, and the high is no older than
+// highMaxAgeSec. A high that was GROUND out (no 2-minute surge — the
+// staircase-runner shape) or HELD (the surge is old — the coin has based
+// at the top, a different animal) passes: this blocks the fresh vertical
+// tip, not strength. UNKNOWN never blocks: too few samples in the
+// lookback, no current mc, or no sample inside the surge-base window (the
+// surge's base was never measured — e.g. the coin was discovered already
+// at its high) all stamp unknown and the entry proceeds.
+export function topGuardVerdict(samples, now, { currentMc = null, lookbackMin = 30, surgeWindowSec = 120, maxDistPct = 10, minSurgePct = 20, highMaxAgeSec = 300 } = {}) {
+  const round1 = (x) => Math.round(x * 10) / 10;
+  const win = (samples || []).filter(s => s && Number.isFinite(s.mc) && s.mc > 0 && s.ts <= now && now - s.ts <= lookbackMin * 60000);
+  if (win.length < 5) return { pass: true, unknown: true, distPct: null, surgePct: null, highAgeSec: null, reason: `top guard: only ${win.length} sampled mc prints in the trailing ${lookbackMin}m — not judged` };
+  let high = 0, highTs = null;
+  for (const s of win) { if (s.mc > high) { high = s.mc; highTs = s.ts; } } // strict > : the high's age runs from the print that MADE it
+  let cur = Number.isFinite(currentMc) && currentMc > 0 ? currentMc : null;
+  if (cur == null) { let newest = win[0]; for (const s of win) if (s.ts >= newest.ts) newest = s; cur = newest.mc; }
+  if (!(cur > 0) || !(high > 0)) return { pass: true, unknown: true, distPct: null, surgePct: null, highAgeSec: null, reason: 'top guard: no current market cap to judge — not judged' };
+  const distPct = round1(Math.max(0, (high - cur) / high * 100));
+  const highAgeSec = Math.max(0, Math.round((now - highTs) / 1000));
+  const baseWin = win.filter(s => s.ts >= highTs - surgeWindowSec * 1000 && s.ts < highTs);
+  if (!baseWin.length) return { pass: true, unknown: true, distPct, surgePct: null, highAgeSec, reason: `top guard: no sample inside the ${surgeWindowSec}s window before the high — surge unmeasured, not judged` };
+  let base = Infinity;
+  for (const s of baseWin) if (s.mc < base) base = s.mc;
+  const surgePct = round1((high - base) / base * 100);
+  const blocked = distPct <= maxDistPct && surgePct >= minSurgePct && highAgeSec <= highMaxAgeSec;
+  if (blocked) {
+    const age = highAgeSec < 120 ? `${highAgeSec}s` : `${Math.round(highAgeSec / 60)}m`;
+    const winLabel = surgeWindowSec % 60 === 0 ? `${surgeWindowSec / 60}-minute` : `${surgeWindowSec}s`;
+    return { pass: false, unknown: false, distPct, surgePct, highAgeSec, reason: `at the local top: within ${distPct}% of a high made ${age} ago by a +${surgePct}% ${winLabel} surge — not buying the tip` };
+  }
+  return { pass: true, unknown: false, distPct, surgePct, highAgeSec, reason: `no fresh vertical top: ${distPct}% under a ${highAgeSec}s-old high reached by a +${surgePct}% surge — outside the top-guard lines (${maxDistPct}% / +${minSurgePct}% / ${highMaxAgeSec}s)` };
+}
+
 // 5. Vertical launch: a huge move on a coin minutes old is the pool being pushed, not demand.
 export function verticalLaunchCheck(ageMin, chgPct, maxPct = 5000, maxAgeMin = 120) {
   const bad = ageMin <= maxAgeMin && num(chgPct) >= maxPct;

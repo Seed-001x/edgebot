@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { History } from './history.js';
 import { detect, detectChurn, detectLiftoff, eligible, fastPop, fastPopFloors, judgeScan, closestCall, betterScanVerdict } from './detect.js';
-import { runGates, hasHardFail, tempRuleViolation, blockedNameWord, extensionCheck, freshHistoryCheck, flowSnapshotCheck, shallowDipCheck, summarizeGateChecks, holderSamples, foldLastTrades, insiderCountVerdict, fastBondVerdict, birthMemoryVerdict } from './gate.js';
+import { runGates, hasHardFail, tempRuleViolation, blockedNameWord, extensionCheck, freshHistoryCheck, flowSnapshotCheck, shallowDipCheck, summarizeGateChecks, holderSamples, foldLastTrades, insiderCountVerdict, fastBondVerdict, birthMemoryVerdict, topGuardVerdict } from './gate.js';
 import { computeSignalFields } from './signalFields.js';
 import { evaluateExit } from './exits.js';
 import { ShadowFlow, ratchetArmed, ratchetShadowFire } from './ratchetShadow.js';
@@ -2571,6 +2571,42 @@ export class Bot {
         console.log(`[birthmemory] skip: ${v.symbol} — ${bv.reason}`);
         return this.skip(v, sig, [bv.reason], g.warnings, checks, g.pass);
       }
+    }
+
+    // Top guard (owner order 2026-10-16, "Do not buy a coin if it's at the
+    // literal fucking top"): every live trigger — pop's gain print,
+    // confluence's wallet coincidence, flow's tracked buy — peaks exactly
+    // when the vertical peaks, so fills land on the tip (blocus taken at
+    // the exact top tick of a single vertical candle; MM taken with the
+    // entry minute already -13.6% off a seconds-old high; 'long' taken at
+    // $50,158, $33.9K three minutes later). Judged HERE, on the same
+    // post-gates seam as the insider/birth-memory blocks and BEFORE the
+    // fastBond fetch, so it binds clean passes, mandatory-ape forces and
+    // contested overrides alike — and costs no network: the verdict reads
+    // ONLY the bot's own sampled mc history (the per-mint history the
+    // chg1m sampler maintains), so it can never fail open on a
+    // GeckoTerminal 429 or a DexScreener stamp collapse. A candidate
+    // within TOP_GUARD_DIST_PCT of its trailing TOP_GUARD_LOOKBACK_MIN-
+    // minute high is blocked when that high was MADE by a >=
+    // TOP_GUARD_SURGE_PCT rise inside the TOP_GUARD_SURGE_WINDOW_SEC
+    // before it printed and is <= TOP_GUARD_HIGH_MAX_AGE_SEC old; a high
+    // that was ground out (no 2-minute surge — the staircase shape) or
+    // held (the surge aged out) passes untouched. UNKNOWN (thin history,
+    // unmeasured surge base, no current mc) never blocks and is never
+    // rounded into an invented number — the stamp says unknown and the
+    // entry proceeds. Judged on cfg, never the pace-relaxed gateCfg.
+    // Kill switch TOP_GUARD_BLOCK=0: no stamp, no tally, records exactly
+    // as before.
+    if (this.cfg.topGuardBlock) {
+      const tg = topGuardVerdict(this.history.get(v.address), n, { currentMc: v.mc, lookbackMin: this.cfg.topGuardLookbackMin, surgeWindowSec: this.cfg.topGuardSurgeWindowSec, maxDistPct: this.cfg.topGuardDistPct, minSurgePct: this.cfg.topGuardSurgePct, highMaxAgeSec: this.cfg.topGuardHighMaxAgeSec });
+      this.stats.topGuard = this.stats.topGuard || { blocked: 0, passed: 0, unknown: 0 };
+      checks.topGuard = { pass: tg.pass, distPct: tg.distPct, surgePct: tg.surgePct, highAgeSec: tg.highAgeSec, reason: tg.reason };
+      if (tg.unknown) { checks.topGuard.unknown = true; this.stats.topGuard.unknown++; }
+      else if (!tg.pass) {
+        this.stats.topGuard.blocked++;
+        console.log(`[topguard] skip: ${v.symbol} — ${tg.reason}`);
+        return this.skip(v, sig, [tg.reason], g.warnings, checks, g.pass);
+      } else this.stats.topGuard.passed++;
     }
 
     if (this.cfg.fastBondBlock) {

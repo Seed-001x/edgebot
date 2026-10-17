@@ -31,6 +31,11 @@ function rig({ rug = healthyRug, cfgOver = {}, others = [] } = {}) {
   return { cfg, bot, clock, market, q, tick };
 }
 const RAMP = [1.1, 1.2, 1.3, 1.4, 1.5];
+// Ramp call sites hold each level for 7 ticks (~70s): the climb builds over
+// minutes, so pop's own 300s-window gain still trips at the top levels while
+// the trailing-2-minute rise into the entry stays under the top guard's +20%
+// surge line (owner rule 2026-10-16 — a 10s-per-level ramp is a fresh vertical
+// top and the guard now, correctly, refuses those entries).
 
 test('full lifecycle: pop → gates pass → buy → adaptive TP1 → TP2 → moonbag trail → profit booked', async () => {
   // Fixture pins the spend the rig's scripted sell-back value is calibrated to (0.02, as in the
@@ -41,7 +46,7 @@ test('full lifecycle: pop → gates pass → buy → adaptive TP1 → TP2 → mo
   await r.bot.start(); await r.bot.discoverTick();
   await r.tick(1, 12);
   assert.equal(r.bot.positions.length, 0, 'flat market must not trigger');
-  for (const p of RAMP) await r.tick(p);
+  for (const p of RAMP) await r.tick(p, 7);
   assert.equal(r.bot.positions.length, 1, 'pop should have opened a position');
   const pos = r.bot.positions[0];
   assert.equal(pos.setup, 'pop'); assert.equal(pos.simulated, true); assert.ok(Math.abs(pos.entrySol - cfg.tradeSol) < 1e-9);
@@ -85,7 +90,7 @@ test('full lifecycle: pop → gates pass → buy → adaptive TP1 → TP2 → mo
 test('rigged launch: pop is detected, then BLOCKED by the gate, and logged with its reason', async () => {
   const r = rig({ rug: riggedRug });
   await r.bot.start(); await r.bot.discoverTick();
-  await r.tick(1, 12); for (const p of RAMP) await r.tick(p);
+  await r.tick(1, 12); for (const p of RAMP) await r.tick(p, 7);
   assert.equal(r.bot.positions.length, 0);
   const sk = r.bot.journal.signals.filter(s => s.decision === 'skipped');
   assert.ok(sk.length >= 1); assert.ok(sk[0].reasons.some(x => x.startsWith('clones:')), JSON.stringify(sk[0].reasons));
@@ -97,7 +102,7 @@ test('rigged launch: pop is detected, then BLOCKED by the gate, and logged with 
 test('copycat of an established coin passes the gate stack — no clone skip (clone filter removed, user 2026-10-14)', async () => {
   const orig = { address: 'ORIG', name: 'Test Coin', symbol: 'TEST', createdAt: T0 - 90 * 3600e3, volH24: 9e7, liq: 9e6 };
   const r = rig({ others: [orig] });
-  await r.bot.start(); await r.bot.discoverTick(); await r.tick(1, 12); for (const p of RAMP) await r.tick(p);
+  await r.bot.start(); await r.bot.discoverTick(); await r.tick(1, 12); for (const p of RAMP) await r.tick(p, 7);
   // This exact shape used to be gate-skipped with a 'clone:' reason. With the filter gone
   // the signal clears the whole gate stack and is judged downstream on its other merits —
   // in this rig it reaches the round-trip check (the pre-existing rig drift that also
@@ -129,7 +134,7 @@ test('same-name dedup REMOVED (user 2026-10-14): a second, different-mint coin c
 
 test('unsellable token (sell-back worth 10% of spend) is refused before any buy', async () => {
   const r = rig(); r.q.valueLam = 2_000_000;
-  await r.bot.start(); await r.bot.discoverTick(); await r.tick(1, 12); for (const p of RAMP) await r.tick(p);
+  await r.bot.start(); await r.bot.discoverTick(); await r.tick(1, 12); for (const p of RAMP) await r.tick(p, 7);
   assert.equal(r.bot.positions.length, 0);
   assert.ok(r.bot.journal.signals.some(s => s.reasons.some(x => x.startsWith('roundtrip:'))));
   assert.equal(await r.bot.exec.solBalance(), 1, 'nothing was spent');
@@ -137,14 +142,14 @@ test('unsellable token (sell-back worth 10% of spend) is refused before any buy'
 
 test('HALT file stops new entries', async () => {
   const r = rig(); fs.writeFileSync(path.join(r.cfg.dataDir, 'HALT'), '');
-  await r.bot.start(); await r.bot.discoverTick(); await r.tick(1, 12); for (const p of RAMP) await r.tick(p);
+  await r.bot.start(); await r.bot.discoverTick(); await r.tick(1, 12); for (const p of RAMP) await r.tick(p, 7);
   assert.equal(r.bot.positions.length, 0);
   assert.ok(r.bot.journal.signals.some(s => s.reasons.some(x => /HALT/.test(x))));
 });
 
 test('positions persist across restarts', async () => {
   const r = rig({ cfgOver: { tradeSol: 0.02 } }); // the rig's scripted sell-back value is calibrated to a 0.02 spend (as in the lifecycle fixture)
-  await r.bot.start(); await r.bot.discoverTick(); await r.tick(1, 12); for (const p of RAMP) await r.tick(p);
+  await r.bot.start(); await r.bot.discoverTick(); await r.tick(1, 12); for (const p of RAMP) await r.tick(p, 7);
   assert.equal(r.bot.positions.length, 1, 'the pop should have opened a position');
   const opened = r.bot.positions[0];
   // a fresh Bot on the same data dir restores the open book from the durable positions file

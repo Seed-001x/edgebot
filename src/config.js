@@ -380,6 +380,13 @@ export function loadConfig(env = process.env) {
     // BIRTH-VERDICT MEMORY (owner order 2026-10-16, the FMR hole): both birth gates fail open on missing data, so a verdict one evaluation ESTABLISHED must be REMEMBERED, not re-fetched into oblivion by the next one (FMR: instantGrad fired on a trend eval; 18 min later a pop eval's curve read 429'd to 'unknown' AND DexScreener's pair stamps came back degenerate — the bot bought a bought-out launch). Whenever any evaluation establishes a disqualifying birth verdict — an instantGrad bought-out fire or a measured lifespan under FAST_BOND_MAX_SEC — Bot persists it per mint (birth-verdicts.json) and the memory block at the onSignal seam (just before the fresh fastBond fetch) blocks every later evaluation of that mint. NO separate knob: ENFORCEMENT follows FAST_BOND_BLOCK (the kill switch disables the memory block too — no stamp, no tally, no block; records exactly as before), while verdict WRITING is always-on bookkeeping wherever a verdict is established (it accrues even with enforcement off). A passing measurement never writes a verdict. Boot backfills the memory from the journal's own gate stamps, so pre-fix fires are remembered on the first boot.
     fastBondBlock: num(env, 'FAST_BOND_BLOCK', 1) === 1,
     fastBondMaxSec: num(env, 'FAST_BOND_MAX_SEC', 120), // block when curve lifespan < this many seconds
+    // Top guard (owner order 2026-10-16, "Do not buy a coin if it's at the literal fucking top" + "minimize those numbers so it signals as it's building up" — the values below are his approved set): a candidate within TOP_GUARD_DIST_PCT of its trailing TOP_GUARD_LOOKBACK_MIN-minute sampled high never buys when that high was MADE by a >= TOP_GUARD_SURGE_PCT rise inside the TOP_GUARD_SURGE_WINDOW_SEC before it printed and is still <= TOP_GUARD_HIGH_MAX_AGE_SEC old. The live triggers peak when the vertical peaks (blocus taken at the exact top tick of one candle, MM taken already -13.6% off a seconds-old high, 'long' taken at $50,158 and $33.9K three minutes later), so fills land on the tip; this blocks the fresh vertical tip while passing ground-out highs (no 2m surge — staircase runners) and held highs (surge aged out). Judged in Bot.onSignal on the same post-gates seam as the insider/fastBond/birth-memory blocks, from the bot's OWN sampled mc history ONLY — no external fetch, so it can never fail open on a 429 or a stamp collapse. UNKNOWN (thin history, unmeasured surge base, no current mc) never blocks. TOP_GUARD_BLOCK=0 is the kill switch (no verdict stamped, no tally — records exactly as before).
+    topGuardBlock: num(env, 'TOP_GUARD_BLOCK', 1) === 1,
+    topGuardDistPct: num(env, 'TOP_GUARD_DIST_PCT', 10), // block when the candidate sits within this % of the sampled high
+    topGuardSurgePct: num(env, 'TOP_GUARD_SURGE_PCT', 20), // ...and the high was made by at least this % of a rise inside the surge window
+    topGuardSurgeWindowSec: num(env, 'TOP_GUARD_SURGE_WINDOW_SEC', 120), // the window before the high print the surge is measured over
+    topGuardHighMaxAgeSec: num(env, 'TOP_GUARD_HIGH_MAX_AGE_SEC', 300), // ...and the high is no older than this (a held high ages out)
+    topGuardLookbackMin: num(env, 'TOP_GUARD_LOOKBACK_MIN', 30), // trailing minutes of samples the high is read from
     minQuoteLiqUsd: num(env, 'MIN_QUOTE_LIQ_USD', 1200),
     ladderMinN: num(env, 'LADDER_MIN_N', 15), ladderMaxRatio: num(env, 'LADDER_MAX_RATIO', 1.6),
     revivalDeadDrop: num(env, 'REVIVAL_DEAD_DROP', 50), revivalBounce: num(env, 'REVIVAL_BOUNCE', 50),
@@ -642,6 +649,11 @@ export function validateConfig(cfg) {
   if (cfg.shallowDipWindowMin < 1 || cfg.shallowDipWindowMin > 720) errs.push('SHALLOW_DIP_WINDOW_MIN must be between 1 and 720');
   if (cfg.insiderBlockN < 1 || cfg.insiderBlockN > 10000) errs.push('INSIDER_BLOCK_N must be between 1 and 10000');
   if (cfg.fastBondMaxSec < 1 || cfg.fastBondMaxSec > 86400) errs.push('FAST_BOND_MAX_SEC must be between 1 and 86400');
+  if (cfg.topGuardDistPct < 0 || cfg.topGuardDistPct > 100) errs.push('TOP_GUARD_DIST_PCT must be between 0 and 100');
+  if (cfg.topGuardSurgePct < 0 || cfg.topGuardSurgePct > 100000) errs.push('TOP_GUARD_SURGE_PCT must be between 0 and 100000');
+  if (cfg.topGuardSurgeWindowSec < 1 || cfg.topGuardSurgeWindowSec > 3600) errs.push('TOP_GUARD_SURGE_WINDOW_SEC must be between 1 and 3600');
+  if (cfg.topGuardHighMaxAgeSec < 0 || cfg.topGuardHighMaxAgeSec > 86400) errs.push('TOP_GUARD_HIGH_MAX_AGE_SEC must be between 0 and 86400');
+  if (cfg.topGuardLookbackMin < 1 || cfg.topGuardLookbackMin > 90) errs.push('TOP_GUARD_LOOKBACK_MIN must be between 1 and 90 (the sample history keeps 90m)');
   if (cfg.ranRebuy < 0 || cfg.ranRebuy > 1) errs.push('RAN_REBUY must be 0 or 1');
   if (cfg.ranRebuyMult < 1 || cfg.ranRebuyMult > 1000) errs.push('RAN_REBUY_MULT must be between 1 and 1000');
   if (cfg.ranRebuyHours <= 0 || cfg.ranRebuyHours > 168) errs.push('RAN_REBUY_HOURS must be > 0 and <= 168');

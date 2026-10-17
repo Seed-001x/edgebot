@@ -380,10 +380,13 @@ function entryRig(cfgOver = {}) {
   return { cfg, bot, clock, q, tick, lines };
 }
 const RAMP = [1.1, 1.2, 1.3, 1.4, 1.5];
+// driveEntry holds each level for 7 ticks (~70s) — see e2e.test.mjs: the
+// climb must build over minutes or the top guard (owner rule 2026-10-16)
+// refuses the entry as a fresh vertical top.
 async function driveEntry(r) {
   await r.bot.start(); await r.bot.discoverTick();
   await r.tick(1, 12);
-  for (const p of RAMP) await r.tick(p);
+  for (const p of RAMP) await r.tick(p, 7);
   assert.equal(r.bot.positions.length, 1, 'rig should have opened a position');
   await flush();
   return r.bot.positions[0];
