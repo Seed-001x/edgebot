@@ -9,6 +9,12 @@
 // The drive sequences in the first block are the former PRE-TP1 trigger
 // conditions, kept verbatim — every one pins that nothing pre-TP2 can arm or
 // fire anymore. The second block pins the new post-TP2 behavior.
+// STAGED WAVES (user order 2026-10-16 ~20:15 EDT): the post-TP2 fire is now
+// staged by default (BAG_DEAD_STAGED=1) — waves of 50% + a stub floor,
+// pinned in tests/bagstaged.test.mjs. The two whole-bag fire tests in the
+// second block run under the kill switch (bagDeadStaged: 0) as the legacy
+// pins; the protect pin below runs under the staged default, where a
+// suppressed wave behaves exactly as the suppressed legacy fire did.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { evaluateExit } from '../src/exits.js';
@@ -219,9 +225,10 @@ test('v2 post-TP2: the bag arms on its first check (peak far past the +8% line)'
   assert.equal(ds[0].fraction, 0);
 });
 
-test('v2 post-TP2: a full 45s window of dead flow sells the whole bag — not before the window completes', () => {
+test('v2 post-TP2 (legacy, BAG_DEAD_STAGED=0): a full 45s window of dead flow sells the whole bag — not before the window completes', () => {
+  const cfgLegacy = testCfg({ txFeeSol: 0, dipStopPct: 0, lockKeep: 0, stallSec: 0, stallProbationSec: 0, beArmPct: 0, bagDeadStaged: 0 });
   const p = bag();
-  const ds = drive(p, [...seq(BAG_CLIMB, BAG_CLIMB_B), ...flat(14, 1.86, 312)]);
+  const ds = drive(p, [...seq(BAG_CLIMB, BAG_CLIMB_B), ...flat(14, 1.86, 312)], cfgLegacy);
   const fireIdx = ds.findIndex(d => d.fraction === 1);
   assert.ok(fireIdx >= 13, `no fire before the window can complete (fired at index ${fireIdx})`);
   assert.ok(ds.slice(0, fireIdx).every(d => d.fraction === 0));
@@ -231,8 +238,8 @@ test('v2 post-TP2: a full 45s window of dead flow sells the whole bag — not be
   assert.deepEqual(ds[fireIdx].deadflowEvents, [{ type: 'fired' }]);
 });
 
-test('v2 post-TP2: the live 120s window value fires at its own lapse, with the window in the reason', () => {
-  const cfgX = testCfg({ txFeeSol: 0, dipStopPct: 0, lockKeep: 0, stallSec: 0, stallProbationSec: 0, beArmPct: 0, deadflowWindowSec: 120 });
+test('v2 post-TP2 (legacy, BAG_DEAD_STAGED=0): the live 120s window value fires at its own lapse, with the window in the reason', () => {
+  const cfgX = testCfg({ txFeeSol: 0, dipStopPct: 0, lockKeep: 0, stallSec: 0, stallProbationSec: 0, beArmPct: 0, deadflowWindowSec: 120, bagDeadStaged: 0 });
   const p = bag();
   const ds = drive(p, [...seq(BAG_CLIMB, BAG_CLIMB_B), ...flat(34, 1.86, 312)], cfgX);
   const fireIdx = ds.findIndex(d => d.fraction === 1);

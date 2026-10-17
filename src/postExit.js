@@ -171,6 +171,8 @@ export class PairedShadowExits {
         if ('moveHist' in d) s.moveHist = d.moveHist;
         if ('exitPending' in d) s.exitPending = d.exitPending;
         if ('stallPending' in d) s.stallPending = d.stallPending;
+        if ('bagDeadWaves' in d) s.bagDeadWaves = d.bagDeadWaves;
+        if ('bagDeadHot' in d) s.bagDeadHot = d.bagDeadHot;
         if ('tp1Arm' in d) s.tp1Arm = d.tp1Arm;
         if (!(d.fraction > 0)) continue;
         s.realizedSol += d.fraction * valueSol;
@@ -179,6 +181,7 @@ export class PairedShadowExits {
         s.tokensFrac *= (1 - d.fraction);
         if (d.tp1) { s.tp1Done = true; s.remainingFrac *= (1 - d.fraction); }
         if (d.tp2) { s.tp2Done = true; s.remainingFrac *= (1 - d.fraction); }
+        if (d.bagWave) s.remainingFrac *= (1 - d.fraction); // staged moonbag wave: book the partial like the live seam does
       }
     } catch { /* never disturb the poll loop */ }
   }

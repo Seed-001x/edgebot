@@ -73,6 +73,22 @@
 // moonbag trail), TP2 rejection (3d-pre), moonbag dead flow (3c2),
 // liquidity death (1) and the stall exit (5) as the sole general downside
 // exit for pre-TP1 + middle positions.
+//
+// STAGED MOONBAG DEAD FLOW (user order 2026-10-16 ~20:15 EDT, "once dead
+// flow hits next time wave it sell another 50% and then let the rest ride
+// until 10+% above avg entry" / "build it, trail stays alongside"): the
+// moonbag's dead-flow exit (3c2) no longer dumps the whole bag at once.
+// Each dead-flow WAVE sells 50% of the current remainder; waves are
+// EDGE-based — after a wave fires, the dead-flow condition must clear on
+// at least one check before another wave can count — and after wave 2
+// dead flow never sells again on that position: the stub rides until the
+// realizable quote falls to 1 + BAG_FLOOR_PCT of average entry (the
+// "10% above avg entry" floor, new section 3c3), which sells it in full.
+// Wave state persists on the position (bagDeadWaves / bagDeadHot, visible
+// on /state). The −30% moonbag trail (3c) is untouched and stays armed on
+// the whole remaining bag at every stage, stub included. BAG_DEAD_STAGED=0
+// restores the legacy behavior entire: one dead-flow fire sells the whole
+// bag and the floor does not exist.
 const STRIP = {
   stopFamily: true,
   stallProbation: true,
@@ -201,6 +217,18 @@ export function evaluateExit(pos, mark, cfg, now) {
   // reaching TP2 (or flipping STALL_EXIT off) drops any carried pending,
   // so no stale stamp can execute in a stage the rule does not own.
   if (!(cfg.stallExit > 0) || pos.tp2Done) stallPending = null;
+  // Staged moonbag dead-flow state (user order 2026-10-16 ~20:15 EDT,
+  // sections 3c2/3c3): bagDeadWaves counts the dead-flow waves that have
+  // sold on this bag (0, 1, 2 — a count of SOLD waves, never decremented);
+  // bagDeadHot records whether the dead-flow trigger condition held on
+  // the previous judged check, which is what makes the waves edge-based:
+  // a wave can only fire on a check where the condition holds while the
+  // previous check's did not. Both persist on the position (the caller
+  // threads them back from every decision), so the staging survives
+  // restarts; a position opened before this build carries neither and
+  // starts at wave 0, not hot.
+  let bagDeadWaves = pos.bagDeadWaves || 0;
+  let bagDeadHot = !!pos.bagDeadHot;
   // PROTECT switch (user 2026-10-15, "just the stop loss… no ratchet", "no SL until I
   // say"): a one-time, per-position flag set via POST /protect while the user rides a
   // coin himself. While protected, ONLY the stop-loss family (2a dip stop, 2a2 hard
@@ -209,7 +237,10 @@ export function evaluateExit(pos, mark, cfg, now) {
   // skipped — the stall exit (5) and the full TP ladder judge exactly
   // as normal. (Since the 2026-10-15 strip + v2, the stop family, kill zone, bleed,
   // probation/stall, the trails and Tratchet are off for EVERY position, protected or not;
-  // the only suppression with live effect left is the post-TP2 dead flow's, 3c2.) The flag holds for the
+  // the only suppression with live effect left is the post-TP2 dead flow's, 3c2 — its
+  // staged waves included: a suppressed wave neither sells nor counts. The 3c3 stub
+  // floor is NOT suppressed — it is a price-level exit like the moonbag trail (3c),
+  // which protection has never blocked.) The flag holds for the
   // LIFE of the position: no timeout, no auto-expiry; it clears only when the
   // position closes or when POST /unprotect clears it (bot.js owns both, and
   // unprotect also resets the kill-zone record so the zone re-arms fresh). The
@@ -240,9 +271,9 @@ export function evaluateExit(pos, mark, cfg, now) {
   // section 4b), so no clock that matured during the takeover can fire. Takeover
   // supersedes protect: with both flags set, this return wins and nothing judges.
   const taken = !!pos.takenOver;
-  const out = (fraction, reason) => ({ fraction, reason, newPeak: peakRatio, newPeakMove: peakMove, ratio, stallSince: null, stopArmedTs, floorChecks, floorSince, probationSince, tp1Arm, moveHist, exitPending, exitConfirmEvents, protectedBlock, killZone, postTp1PeakMove, killzoneEvents, deadflowArmed, deadflowEvents, stallPending, stallEvents });
+  const out = (fraction, reason) => ({ fraction, reason, newPeak: peakRatio, newPeakMove: peakMove, ratio, stallSince: null, stopArmedTs, floorChecks, floorSince, probationSince, tp1Arm, moveHist, exitPending, exitConfirmEvents, protectedBlock, killZone, postTp1PeakMove, killzoneEvents, deadflowArmed, deadflowEvents, stallPending, stallEvents, bagDeadWaves, bagDeadHot });
   if (taken) {
-    stopArmedTs = null; floorChecks = 0; floorSince = null; probationSince = null; tp1Arm = null; stallPending = null;
+    stopArmedTs = null; floorChecks = 0; floorSince = null; probationSince = null; tp1Arm = null; stallPending = null; bagDeadHot = false;
     if (exitPending != null) exitPending = {};
     return { ...out(0, null), takenOver: true };
   }
@@ -432,6 +463,21 @@ export function evaluateExit(pos, mark, cfg, now) {
   //      on the same check keeps the trail's label; both sell the full bag.
   //      PROTECT suppresses the fire like the original rule's (noteBlock —
   //      it is a profit-side auto exit); TAKEOVER returned long before here.
+  //      STAGED (user order 2026-10-16 ~20:15 EDT; BAG_DEAD_STAGED, default
+  //      on): the trigger above is unchanged, but the fire no longer sells
+  //      the whole bag. The trigger is judged as a LEVEL (deadTrig) and the
+  //      sells hang off its EDGES: a check where deadTrig holds while the
+  //      previous judged check's did not is a WAVE — wave 1 and wave 2 each
+  //      sell 50% of the current remainder (the TP-style partial machinery
+  //      books them; the position survives). A wave suppressed by protect
+  //      neither sells nor counts, but the level still reads hot, so the
+  //      edge is spent either way — an unprotect into the same dead tape
+  //      must wait for a clear and a fresh edge, like any other check.
+  //      After wave 2 the level is inert: dead flow never sells again on
+  //      this position, and the stub's only price exit is the 3c3 floor
+  //      (plus the untouched 3c trail, which outranks everything here).
+  //      BAG_DEAD_STAGED=0 keeps the legacy branch below: the first dead
+  //      check sells the whole bag, exactly as this section read before.
   if (pos.tp2Done && cfg.deadflowWindowSec > 0 && deadflowArmed) {
     const winMs = cfg.deadflowWindowSec * 1000;
     const winStart = now - winMs;
@@ -448,16 +494,52 @@ export function evaluateExit(pos, mark, cfg, now) {
     }
     const covered = fStart != null && fNow != null && winStart - fStart.ts <= 12000 && now - fNow.ts <= 12000
       && fStart.buys != null && fNow.buys != null && peakAtStart != null && peakInWindow != null;
-    if (covered && peakAtStart >= 1 + cfg.deadflowArmPct) {
-      const buyDelta = fNow.buys - fStart.buys;
-      if (buyDelta <= cfg.deadflowMaxBuyDelta && peakInWindow <= peakAtStart + 1e-9 && move <= peakAtStart - cfg.deadflowPeakGapPct) {
-        if (prot) noteBlock('dead flow');
-        else {
-          deadflowEvents.push({ type: 'fired' });
-          return out(1, `dead flow after TP2 (${move >= 1 ? '+' : ''}${((move - 1) * 100).toFixed(1)}%, ${Math.max(0, buyDelta)} new buys in ${cfg.deadflowWindowSec}s, peak stalled)`);
-        }
+    const buyDelta = covered ? fNow.buys - fStart.buys : null;
+    const deadTrig = covered && peakAtStart >= 1 + cfg.deadflowArmPct
+      && buyDelta <= cfg.deadflowMaxBuyDelta && peakInWindow <= peakAtStart + 1e-9 && move <= peakAtStart - cfg.deadflowPeakGapPct;
+    if (deadTrig) {
+      if (prot) {
+        // a suppressed legacy fire, or a suppressed wave while waves remain;
+        // after wave 2 there is no fire left to suppress, so nothing reports
+        if (!(cfg.bagDeadStaged > 0) || bagDeadWaves < 2) noteBlock('dead flow');
+      } else if (!(cfg.bagDeadStaged > 0)) {
+        // LEGACY (BAG_DEAD_STAGED=0): the pre-staging rule entire — the
+        // first dead check sells the whole bag, exactly as before.
+        deadflowEvents.push({ type: 'fired' });
+        bagDeadHot = true;
+        return out(1, `dead flow after TP2 (${move >= 1 ? '+' : ''}${((move - 1) * 100).toFixed(1)}%, ${Math.max(0, buyDelta)} new buys in ${cfg.deadflowWindowSec}s, peak stalled)`);
+      } else if (bagDeadWaves < 2 && !bagDeadHot) {
+        // STAGED WAVE: a rising edge of dead flow sells half of what
+        // remains; the position survives and the wave count persists.
+        bagDeadWaves += 1;
+        bagDeadHot = true;
+        deadflowEvents.push({ type: 'wave', wave: bagDeadWaves });
+        return { ...out(0.5, `moonbag dead flow (wave ${bagDeadWaves} — sold 50%, ${move >= 1 ? '+' : ''}${((move - 1) * 100).toFixed(1)}%, ${Math.max(0, buyDelta)} new buys in ${cfg.deadflowWindowSec}s, peak stalled)`), bagWave: bagDeadWaves };
       }
+      // staged and already hot (or both waves spent): the tape is still
+      // dead but nothing sells — the edge must clear before another wave
+      // can count, and after wave 2 no wave ever counts again.
     }
+    bagDeadHot = deadTrig;
+  }
+
+  // 3c3. MOONBAG FLOOR (user order 2026-10-16 ~20:15 EDT, "let the rest
+  //      ride until 10+% above avg entry"): once both dead-flow waves have
+  //      sold, the surviving stub has exactly one price exit of its own —
+  //      when the realizable quote (ratio: current value vs the remainder's
+  //      share of the average entry cost) falls to 1 + BAG_FLOOR_PCT, the
+  //      stub sells in full. The floor governs the FINAL stub only: before
+  //      wave 2 a dip to the line sells nothing (dead-flow staging still
+  //      governs, test-pinned), and with BAG_DEAD_STAGED=0 the floor does
+  //      not exist. PLACEMENT: after dead flow, before everything below —
+  //      the moonbag trail (3c) still outranks it, so a deep retrace off a
+  //      high peak keeps the trail's label and its 100% sell; liquidity
+  //      death (1) outranks both. PROTECT does not suppress it (a price-
+  //      level exit like the trail, which protection has never blocked);
+  //      TAKEOVER returned long before here.
+  if (cfg.bagDeadStaged > 0 && pos.tp2Done && bagDeadWaves >= 2 && ratio <= 1 + cfg.bagFloorPct) {
+    deadflowEvents.push({ type: 'floor' });
+    return out(1, `moonbag floor (+${Math.round(cfg.bagFloorPct * 100)}% over entry)`);
   }
 
   // 3d-pre. TP2 rejection (user 2026-10-13): the middle stage climbed to within reach of the TP2

@@ -484,6 +484,13 @@ export function loadConfig(env = process.env) {
     deadflowWindowSec: num(env, 'DEADFLOW_WINDOW_SEC', 45), // rolling window of dead flow that must hold in full (0 = rule off)
     deadflowMaxBuyDelta: num(env, 'DEADFLOW_MAX_BUY_DELTA', 1), // max rise in the 5m buy count across the window — one stray buy tolerated
     deadflowPeakGapPct: num(env, 'DEADFLOW_PEAK_GAP_PCT', 0.01), // current `move` must sit at least this far below the window-start peak (price stopped pushing)
+    // Staged moonbag dead flow (user order 2026-10-16 ~20:15 EDT, exits.js 3c2/3c3): the bag's
+    // dead-flow exit sells in waves — 50% of the current remainder per dead-flow wave (edge-based:
+    // the condition must clear between waves) — and after wave 2 the stub rides to a floor at
+    // 1 + bagFloorPct of entry instead of ever selling to dead flow again. 0 = legacy: dead flow
+    // sells the whole bag at once, exactly as before, and the floor does not exist.
+    bagDeadStaged: num(env, 'BAG_DEAD_STAGED', 1),        // staged waves on (1) / legacy whole-bag dead-flow sell (0)
+    bagFloorPct: num(env, 'BAG_FLOOR_PCT', 0.10),         // post-wave-2 stub floor: sell in full when ratio <= 1 + this ("10% above avg entry")
     lockArm: num(env, 'PROFIT_LOCK_ARM', 0.15),           // once up +15% or more after fees...
     lockKeep: num(env, 'PROFIT_LOCK_KEEP', 0.5),          // ...sell the rest if it falls below half of its best gain (0 = off)
     trailArm: num(env, 'TRAIL_ARM', 1.00),
@@ -635,6 +642,8 @@ export function validateConfig(cfg) {
   if (cfg.deadflowWindowSec < 0 || cfg.deadflowWindowSec > 600) errs.push('DEADFLOW_WINDOW_SEC must be between 0 (off) and 600');
   if (cfg.deadflowMaxBuyDelta < 0 || cfg.deadflowMaxBuyDelta > 1000) errs.push('DEADFLOW_MAX_BUY_DELTA must be between 0 and 1000');
   if (cfg.deadflowPeakGapPct < 0 || cfg.deadflowPeakGapPct > 0.5) errs.push('DEADFLOW_PEAK_GAP_PCT must be between 0 and 0.5');
+  if (cfg.bagDeadStaged < 0 || cfg.bagDeadStaged > 1) errs.push('BAG_DEAD_STAGED must be 0 or 1');
+  if (cfg.bagFloorPct < 0 || cfg.bagFloorPct >= 1) errs.push('BAG_FLOOR_PCT must be between 0 and 1');
   if (cfg.stallBandPct < -0.5 || cfg.stallBandPct > 1) errs.push('STALL_BAND_PCT must be between -0.5 and 1 (breakout bar above entry for the entry stall)');
   if (cfg.stallBandUpPct < 0 || cfg.stallBandUpPct > 1) errs.push('STALL_BAND_UP_PCT must be between 0 and 1 (upside edge of the entry-stall dead zone)');
   if (cfg.stallProbationSec < 0) errs.push('STALL_PROBATION_SEC must be >= 0 (0 = probation off, sell at the stall deadline)');

@@ -721,7 +721,7 @@ export class Bot {
       stamp: this.cfgStamp, gates: { adopted: true }, gatePass: null, decimals: close.decimals ?? null,
       entryFillSol: open.entryFillSol ?? close.entryFillSol ?? null, solUsdEntry: null, ticks: [],
       entryVolH1: snap ? snap.volH1 || 0 : 0,
-      entryRoundTrip: rtRatio, peakMove: Math.max(1, ratio0), stopArmedTs: null, floorChecks: 0, floorSince: null, probationSince: null, moveHist: [], exitPending: {}, stallPending: null, feesSol: this.cfg.txFeeSol || 0,
+      entryRoundTrip: rtRatio, peakMove: Math.max(1, ratio0), stopArmedTs: null, floorChecks: 0, floorSince: null, probationSince: null, moveHist: [], exitPending: {}, stallPending: null, bagDeadWaves: 0, bagDeadHot: false, feesSol: this.cfg.txFeeSol || 0,
       bw: { tracked: null, supply: 0, creator: null, weights: linkedWeights(null), snaps: [], vals: [], lastTs: 0, trimmed: false },
       entry: snap, lastTickTs: 0, lastChainTs: 0, chainDropStrikes: 0,
       adopted: true, adoptedTs: now, adoptOf: close.id || null, lastValueSol: valueSol,
@@ -2139,7 +2139,7 @@ export class Bot {
       stamp: this.cfgStamp, gates: checks, gatePass: g.pass, decimals: dec,
       entryFillSol: tokensWhole > 0 ? fill.solSpent / tokensWhole : null, solUsdEntry: solUsd || null, ticks: [],
       entryVolH1: v.volH1 || 0,
-      entryRoundTrip: rt.ratio, peakMove: 1, stopArmedTs: null, floorChecks: 0, floorSince: null, probationSince: null, moveHist: [], exitPending: {}, stallPending: null, feesSol: this.cfg.txFeeSol || 0, // buy tx fee // entry stall: price is at entry (move 1.0) by definition; the 60s clock runs from entryTs
+      entryRoundTrip: rt.ratio, peakMove: 1, stopArmedTs: null, floorChecks: 0, floorSince: null, probationSince: null, moveHist: [], exitPending: {}, stallPending: null, bagDeadWaves: 0, bagDeadHot: false, feesSol: this.cfg.txFeeSol || 0, // buy tx fee // entry stall: price is at entry (move 1.0) by definition; the 60s clock runs from entryTs
       bw: { tracked: null, supply: rug && rug.token ? Number(rug.token.supply) || 0 : 0, creator: rug && rug.creator ? String(rug.creator) : null, weights: linkedWeights(rug), snaps: [], vals: [], lastTs: 0, trimmed: false },
       entry: snapshotFeatures({ v, sig, rug, g, now: n }), lastTickTs: 0, lastChainTs: 0, chainDropStrikes: 0,
     };
@@ -2338,6 +2338,8 @@ export class Bot {
     if ('postTp1PeakMove' in decision) pos.postTp1PeakMove = decision.postTp1PeakMove;
     if ('deadflowArmed' in decision) pos.deadflowArmed = decision.deadflowArmed;
     if ('stallPending' in decision) pos.stallPending = decision.stallPending;
+    if ('bagDeadWaves' in decision) pos.bagDeadWaves = decision.bagDeadWaves;
+    if ('bagDeadHot' in decision) pos.bagDeadHot = decision.bagDeadHot;
     // fail-safe confirmation outcomes (user 2026-10-14): count the windows that held to a
     // sell vs the triggers that recovered and were cancelled — the layer's report card.
     if (decision.exitConfirmEvents && decision.exitConfirmEvents.length) {
@@ -2363,12 +2365,16 @@ export class Bot {
     // Dead-flow exit (user 2026-10-15; repositioned post-TP2 by exit-stack
     // v2): count armings (a post-TP2 position's peak move reached the arm
     // line — counted once per position, exits.js emits the event only on the
-    // transition) and fires.
+    // transition) and fires. STAGED (user order 2026-10-16): a staged wave
+    // counts as a fire AND in the waves tally; the post-wave-2 stub floor
+    // counts in the floor tally.
     if (decision.deadflowEvents && decision.deadflowEvents.length) {
-      this.stats.deadflow = this.stats.deadflow || { armed: 0, fired: 0 };
+      this.stats.deadflow = this.stats.deadflow || { armed: 0, fired: 0, waves: 0, floor: 0 };
       for (const ev of decision.deadflowEvents) {
         if (ev.type === 'armed') { this.stats.deadflow.armed++; console.log(`[deadflow] ${pos.symbol}: armed (peak move reached +${Math.round(this.cfg.deadflowArmPct * 100)}% post-TP2)`); }
         else if (ev.type === 'fired') this.stats.deadflow.fired++;
+        else if (ev.type === 'wave') { this.stats.deadflow.fired++; this.stats.deadflow.waves++; console.log(`[deadflow] ${pos.symbol}: wave ${ev.wave} — sold 50% of the bag`); }
+        else if (ev.type === 'floor') { this.stats.deadflow.floor++; console.log(`[deadflow] ${pos.symbol}: stub floor (+${Math.round(this.cfg.bagFloorPct * 100)}% over entry) — selling the rest`); }
       }
     }
     // STALL EXIT (user order 2026-10-16 19:24 EDT): lifecycle counts —
@@ -2527,6 +2533,13 @@ export class Bot {
       console.log(`[paths] ${pos.symbol}: modest target hit — remainder split banked, slice converted to ladder`);
     }
     if (decision.tp2) { pos.tp2Done = true; pos.remainingFrac *= (1 - decision.fraction); }
+    if (decision.bagWave) {
+      // Staged moonbag dead flow (user order 2026-10-16): the wave sold a
+      // fraction of the CURRENT bag — shrink the book's remainder by the
+      // same fraction, exactly as a TP bank books; the position stays open.
+      pos.remainingFrac *= (1 - decision.fraction);
+      console.log(`[deadflow] ${pos.symbol}: wave ${decision.bagWave} booked — bag remainder now ${(pos.remainingFrac * 100).toFixed(1)}% of the original position`);
+    }
     this.journal.trade({ type: 'sell', id: pos.id, mint: pos.mint, symbol: pos.symbol, fraction: decision.fraction, solOut: res.solOut, reason: decision.reason, sig: res.sig, simulated: res.simulated, ts: n, path: pos.pathClass || undefined });
     // Callout Shadow Lab (record-only): a banked TP is a would-call moment —
     // journaled off the EXECUTED sell above, never off a decision alone.
@@ -2592,7 +2605,7 @@ export class Bot {
       tp1Done: !!pos.tp1Done, tp2Done: !!pos.tp2Done, tp1Arm: pos.tp1Arm || null,
       stallSince: pos.stallSince ?? null, stopArmedTs: pos.stopArmedTs ?? null,
       floorChecks: pos.floorChecks || 0, floorSince: pos.floorSince ?? null,
-      probationSince: pos.probationSince ?? null, moveHist: pos.moveHist || [], exitPending: {}, stallPending: pos.stallPending ?? null,
+      probationSince: pos.probationSince ?? null, moveHist: pos.moveHist || [], exitPending: {}, stallPending: pos.stallPending ?? null, bagDeadWaves: pos.bagDeadWaves || 0, bagDeadHot: !!pos.bagDeadHot,
       flowHist: (pos.flowHist || []).slice(-45),
       manualTs: n, manualPnlSol: manual.pnlSol, manualMarkSol: manual.valueSol ?? null,
       // D1 follow-up: when the manual side was priced from the real sell tx,
@@ -2640,7 +2653,7 @@ export class Bot {
       limits: { tradeSol: this.risk.effectiveTradeSol(), maxPositions: this.cfg.maxPositions, dailyLossSol: this.cfg.dailyLossSol, maxTradesPerHour: this.cfg.maxTradesPerHour, tp1Pct: this.cfg.tp1Pct, tp1Frac: this.cfg.tp1Frac },
       watchlist: this.watch.size,
       pairedShadow: this.paired ? { pending: this.paired.pending.size, done: this.paired.done.length } : { pending: 0, done: 0 },
-      positions: this.positions.map(p => ({ id: p.id, symbol: p.symbol, mint: p.mint, setup: p.setup, entrySol: p.entrySol, remainingFrac: p.remainingFrac, peakRatio: +(p.peakRatio || 1).toFixed(2), heldMin: +((this.now() - p.entryTs) / 60000).toFixed(1), simulated: p.simulated, noTp: !!p.noTp, protected: p.protected || null, takenOver: p.takenOver || null, tp1AtPct: p.tp1AtPct ?? null, path: p.pathClass || null, stallPending: p.stallPending ?? null })),
+      positions: this.positions.map(p => ({ id: p.id, symbol: p.symbol, mint: p.mint, setup: p.setup, entrySol: p.entrySol, remainingFrac: p.remainingFrac, peakRatio: +(p.peakRatio || 1).toFixed(2), heldMin: +((this.now() - p.entryTs) / 60000).toFixed(1), simulated: p.simulated, noTp: !!p.noTp, protected: p.protected || null, takenOver: p.takenOver || null, tp1AtPct: p.tp1AtPct ?? null, path: p.pathClass || null, stallPending: p.stallPending ?? null, bagDeadWaves: p.bagDeadWaves ?? null })),
       // stats.shadowTrades is read from the tracker at read time so /state can
       // never show a stale report card between the maintained sync points
       // gtOutcomes is read from the gtFetch tallies at read time (same pattern

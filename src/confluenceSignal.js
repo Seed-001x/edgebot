@@ -173,7 +173,7 @@ function freshState(fire, profile) {
     remainingFrac: 1, peakRatio: 1, peakMove: 1,
     tp1Done: false, tp2Done: false, tp1Arm: null,
     stallSince: null, stopArmedTs: null, floorChecks: 0, floorSince: null,
-    probationSince: null, moveHist: [], exitPending: {}, stallPending: null, flowHist: [],
+    probationSince: null, moveHist: [], exitPending: {}, stallPending: null, bagDeadWaves: 0, bagDeadHot: false, flowHist: [],
     killZone: null, postTp1PeakMove: null, deadflowArmed: false,
     pathClass: null, killZoneOverlay: false,
     realizedSol: 0, sells: 0, legs: [],
@@ -348,6 +348,8 @@ export class ConfluenceSignal {
           if ('killZone' in d) s.killZone = d.killZone;
           if ('postTp1PeakMove' in d) s.postTp1PeakMove = d.postTp1PeakMove;
           if ('deadflowArmed' in d) s.deadflowArmed = d.deadflowArmed;
+          if ('bagDeadWaves' in d) s.bagDeadWaves = d.bagDeadWaves;
+          if ('bagDeadHot' in d) s.bagDeadHot = d.bagDeadHot;
           if ('stallPending' in d) s.stallPending = d.stallPending;
           if (d.pathClass) { s.pathClass = d.pathClass; s.killZoneOverlay = !!d.killZoneOverlay; }
         }
