@@ -58,7 +58,7 @@ export class Journal {
   constructor(dir, { now = Date.now } = {}) {
     this.now = now;
     this.dir = dir;
-    this.f = { sig: path.join(dir, 'signals.jsonl'), out: path.join(dir, 'outcomes.jsonl'), trades: path.join(dir, 'trades.jsonl'), fb: path.join(dir, 'feedback.jsonl'), ticks: path.join(dir, 'ticks.jsonl'), manual: path.join(dir, 'manual_exits.jsonl'), reports: path.join(dir, 'trade_reports.jsonl'), rshadow: path.join(dir, 'ratchet_shadow.jsonl'), pend: path.join(dir, 'outcome_pending.json'), scan: path.join(dir, 'scans.jsonl'), sses: path.join(dir, 'scan_sessions.jsonl'), cshadow: path.join(dir, 'callout_shadow.jsonl'), rsig: path.join(dir, 'resignal_shadow.jsonl'), fexit: path.join(dir, 'flow_exits.jsonl'), swatch: path.join(dir, 'structure_watch.jsonl'), ssell: path.join(dir, 'shadow_sell.jsonl'), stair: path.join(dir, 'staircase_signals.jsonl'), pticks: path.join(dir, 'position_ticks.jsonl'), bwatch: path.join(dir, 'bottom_marks.jsonl'), rwatch: path.join(dir, 'range_marks.jsonl'), ngcut: path.join(dir, 'nevergreen.jsonl') };
+    this.f = { sig: path.join(dir, 'signals.jsonl'), out: path.join(dir, 'outcomes.jsonl'), trades: path.join(dir, 'trades.jsonl'), fb: path.join(dir, 'feedback.jsonl'), ticks: path.join(dir, 'ticks.jsonl'), manual: path.join(dir, 'manual_exits.jsonl'), reports: path.join(dir, 'trade_reports.jsonl'), rshadow: path.join(dir, 'ratchet_shadow.jsonl'), pend: path.join(dir, 'outcome_pending.json'), scan: path.join(dir, 'scans.jsonl'), sses: path.join(dir, 'scan_sessions.jsonl'), cshadow: path.join(dir, 'callout_shadow.jsonl'), rsig: path.join(dir, 'resignal_shadow.jsonl'), fexit: path.join(dir, 'flow_exits.jsonl'), swatch: path.join(dir, 'structure_watch.jsonl'), ssell: path.join(dir, 'shadow_sell.jsonl'), stair: path.join(dir, 'staircase_signals.jsonl'), pticks: path.join(dir, 'position_ticks.jsonl'), bwatch: path.join(dir, 'bottom_marks.jsonl'), rwatch: path.join(dir, 'range_marks.jsonl'), ngcut: path.join(dir, 'nevergreen.jsonl'), fconfirm: path.join(dir, 'flow_confirm.jsonl') };
     this._pendDirty = false;   // outcome-tracking progress changed since the last save
     this._pendSavedAt = 0;
     try { fs.mkdirSync(dir, { recursive: true }); } catch { /* ignore */ }
@@ -194,6 +194,12 @@ export class Journal {
   resignal(rec) { if (rec.markKey) this.resignalFired.add(rec.markKey); this.append(this.f.rsig, rec); return rec; }
   /** Flow-exit watcher record (start / trim / exit / final) — append-only, observer only (see flowExits.js). Like the callout lab: NO in-memory tail; the watcher folds the full file itself. */
   flowExit(rec) { this.append(this.f.fexit, rec); return rec; }
+
+  /** FLOW CONFIRMATION LANE events (2026-10-17): lifecycle records for
+   *  the lane — above all the pre-registered kill rule's self-disablement
+   *  (type 'flowConfirmDisabled', carrying the closes count + mean PnL at
+   *  trip time) in its own file, searchable long after /state rotated. */
+  flowConfirm(rec) { this.append(this.f.fconfirm, rec); return rec; }
   /** Structure Watch record (seed / sample / mark / mark-score / end / skip) — append-only, observer only (see structureWatch.js). No in-memory tail; the watch folds the full file itself. */
   structure(rec) { this.append(this.f.swatch, rec); return rec; }
   /** Shadow Seller record (fire / paired) — observer only, append-only; the capped in-memory tail feeds the /shadowseller card and the judge's boot rebuild of fired/pending state (see shadowSeller.js). */

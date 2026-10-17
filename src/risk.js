@@ -143,8 +143,14 @@ export class Risk {
     return null;
   }
 
-  /** Manual reset requires editing/deleting risk.json on purpose. */
-  canEnter({ mint, walletSol, openCount, sizeSol, halted = false }) {
+  /** Manual reset requires editing/deleting risk.json on purpose.
+   *  skipMintCooldowns (FLOW CONFIRMATION LANE only, owner order
+   *  2026-10-17): the lane ignores the winner/loser/closed mint cooldowns
+   *  for its own entries — its own re-entry timer + per-mint entry cap
+   *  govern instead. Every other check (halts, caps, reserve, the short
+   *  mint cooldown) binds exactly as for any other entry, and every other
+   *  caller passes the default false, byte-identical. */
+  canEnter({ mint, walletSol, openCount, sizeSol, halted = false, skipMintCooldowns = false }) {
     this.rollDay();
     const n = this.now();
     if (this.s.downHalted) return { ok: false, reason: `balance down-stop hit (equity fell ${this.cfg.haltDownSol} SOL below the armed balance) — halted` };
@@ -155,18 +161,20 @@ export class Risk {
     if (openCount >= this.cfg.maxPositions) return { ok: false, reason: `max ${this.cfg.maxPositions} positions open` };
     const cd = this.s.cooldown[mint];
     if (cd && n - cd < this.cfg.mintCooldownMin * 60000) return { ok: false, reason: 'mint cooldown' };
-    const lost = this.s.losers[mint];
-    if (lost && this.cfg.loserCooldownH > 0 && n - lost < this.cfg.loserCooldownH * 3600000)
-      return { ok: false, reason: `lost on this coin ${((n - lost) / 60000).toFixed(0)}m ago (no re-buy for ${this.cfg.loserCooldownH}h)` };
-    // Winner re-buy block (user 2026-10-15): a WINNING close blocks re-entry for the same
-    // window — the HIMA rebuy (21m after a green close, 31% under the top) passed every
-    // guard because only losses anchored a cooldown. Same skip path as the loser block.
-    const won = this.s.wins[mint];
-    if (won && this.cfg.winnerCooldownH > 0 && n - won < this.cfg.winnerCooldownH * 3600000)
-      return { ok: false, reason: `closed this coin ${((n - won) / 60000).toFixed(0)}m ago (no re-buy for ${this.cfg.winnerCooldownH}h)` };
-    const closedAt = this.s.closed[mint];
-    if (closedAt && this.cfg.closedCooldownH > 0 && n - closedAt < this.cfg.closedCooldownH * 3600000)
-      return { ok: false, reason: `already traded this coin — closed ${((n - closedAt) / 60000).toFixed(0)}m ago (no re-entry for ${this.cfg.closedCooldownH >= 1 ? `${this.cfg.closedCooldownH}h` : `${Math.round(this.cfg.closedCooldownH * 60)}m`})` };
+    if (!skipMintCooldowns) {
+      const lost = this.s.losers[mint];
+      if (lost && this.cfg.loserCooldownH > 0 && n - lost < this.cfg.loserCooldownH * 3600000)
+        return { ok: false, reason: `lost on this coin ${((n - lost) / 60000).toFixed(0)}m ago (no re-buy for ${this.cfg.loserCooldownH}h)` };
+      // Winner re-buy block (user 2026-10-15): a WINNING close blocks re-entry for the same
+      // window — the HIMA rebuy (21m after a green close, 31% under the top) passed every
+      // guard because only losses anchored a cooldown. Same skip path as the loser block.
+      const won = this.s.wins[mint];
+      if (won && this.cfg.winnerCooldownH > 0 && n - won < this.cfg.winnerCooldownH * 3600000)
+        return { ok: false, reason: `closed this coin ${((n - won) / 60000).toFixed(0)}m ago (no re-buy for ${this.cfg.winnerCooldownH}h)` };
+      const closedAt = this.s.closed[mint];
+      if (closedAt && this.cfg.closedCooldownH > 0 && n - closedAt < this.cfg.closedCooldownH * 3600000)
+        return { ok: false, reason: `already traded this coin — closed ${((n - closedAt) / 60000).toFixed(0)}m ago (no re-entry for ${this.cfg.closedCooldownH >= 1 ? `${this.cfg.closedCooldownH}h` : `${Math.round(this.cfg.closedCooldownH * 60)}m`})` };
+    }
     this.s.tradeTs = this.s.tradeTs.filter(t => n - t < 3600000);
     if (this.s.tradeTs.length >= this.cfg.maxTradesPerHour) return { ok: false, reason: `hourly trade cap (${this.cfg.maxTradesPerHour})` };
     if (walletSol - sizeSol < this.cfg.minReserveSol) return { ok: false, reason: `would leave < ${this.cfg.minReserveSol} SOL reserve` };
@@ -207,6 +215,17 @@ export class Risk {
   sizeFor(liqUsd, solUsd, openCount = 0) {
     const poolCapSol = (liqUsd * this.cfg.maxPoolFraction) / (solUsd || 150);
     return Math.max(0, Math.min(this.effectiveTradeSol(openCount), poolCapSol));
+  }
+
+  /** FLOW CONFIRMATION LANE size (owner order 2026-10-17): exactly
+   *  FLOW_CONFIRM_SOL — the lane's test size, deliberately NOT tradeSol
+   *  and NOT factored by the risk brake (the test measures the lane, not
+   *  the brake). The pool-fraction cap still binds: it is an execution
+   *  safety (never more than maxPoolFraction of the pool), not a sizing
+   *  policy. */
+  sizeForLane(liqUsd, solUsd) {
+    const poolCapSol = (liqUsd * this.cfg.maxPoolFraction) / (solUsd || 150);
+    return Math.max(0, Math.min(this.cfg.flowConfirmSol || 0, poolCapSol));
   }
 
   recordEntry(mint) {
