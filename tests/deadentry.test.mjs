@@ -236,7 +236,7 @@ const healthyRug = { token: { supply: 1e15, decimals: 6 }, creatorBalance: 0, to
 const AGG = { wallets: ['W1'], maxSol: 5, count: 1, kind: 'solo', label: 'flow: W1 bought 5 SOL' };
 
 function rig({ viewOver = {} } = {}) {
-  const cfg = testCfg({ tradeSol: 0.02 });
+  const cfg = testCfg({ tradeSol: 0.02, baseMode: 0 });
   const clock = { t: T0 };
   const q = { valueLam: 19_000_000 };
   const quote = async (input, _o, amount) => (input === SOL_MINT

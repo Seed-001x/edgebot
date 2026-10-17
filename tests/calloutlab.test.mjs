@@ -285,7 +285,7 @@ test('walletWatch: dev-launch and confluence events fire the onEvent tap as they
 
 // ---- bot-level seams (light rig) ----
 function lightBot(over = {}) {
-  const cfg = testCfg({ fastPop: 0, dipStopPct: 0, ...over });
+  const cfg = testCfg({ fastPop: 0, dipStopPct: 0, baseMode: 0, ...over });
   const clock = { t: T0 };
   const exec = { solBalance: async () => 5, markValue: async () => 0, sell: async () => ({ tokensSold: '0', solOut: 0, sig: null, simulated: true }), closeEmptyAccounts: async () => {} };
   const bot = new Bot(cfg, { now: () => clock.t, exec, discover: async () => new Map(), fetchViews: async () => new Map(), fetchSolUsd: async () => 150, fetchRug: async () => null, searchByName: async () => [] });
@@ -361,7 +361,7 @@ const healthyRug = { token: { supply: 1e15, decimals: 6 }, creatorBalance: 0, to
 const TE0 = 1_000_000_000_000;
 
 function entryRig(cfgOver = {}) {
-  const cfg = testCfg({ tradeSol: 0.02, tp1Frac: 0.4, ...cfgOver });
+  const cfg = testCfg({ tradeSol: 0.02, tp1Frac: 0.4, baseMode: 0, ...cfgOver });
   const clock = { t: TE0 };
   const market = { price: 1, liq: 100_000, buysM5: 30, sellsM5: 10 };
   const q = { valueLam: 19_000_000 };

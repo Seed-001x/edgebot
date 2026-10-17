@@ -13,7 +13,7 @@ const healthyRug = { token: { supply: 1e15, decimals: 6 }, creatorBalance: 0, to
 const riggedRug = { ...healthyRug, topHolders: Array.from({ length: 18 }, (_, i) => ({ owner: 'w' + i, address: 'w' + i, amount: 498001881166, pct: 0.05 })) };
 
 function rig({ rug = healthyRug, cfgOver = {}, others = [] } = {}) {
-  const cfg = testCfg(cfgOver);
+  const cfg = testCfg({ baseMode: 0, ...cfgOver });
   const clock = { t: T0 };
   const market = { price: 1, liq: 100_000, buysM5: 30, sellsM5: 10 };
   const q = { valueLam: 19_000_000 };   // value of the FULL 1e9-token holding, in lamports

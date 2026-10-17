@@ -83,6 +83,7 @@ export function loadConfig(env = process.env) {
     // the structure watch's tailer (/bottomwatch). The twitchy cousin of
     // churn's patient basing — measured, never traded. 0 = fully off.
     bottomWatch: num(env, 'BOTTOM_WATCH', 1),                 // 1 = bottom tracker on (0 = no observing, no records, card off)
+    bottomLive: num(env, 'BOTTOM_LIVE', 1),                   // 1 = QUALIFIED bottom marks route live entries (Bot._evalBottom, the base strategy's third shape; 0 = tracker stays record-only)
     bottomDropPct: num(env, 'BOTTOM_DROP_PCT', 50),           // drawdown off the watched peak that opens an episode (PERCENT)
     bottomQuietMin: num(env, 'BOTTOM_QUIET_MIN', 3),          // minutes with no new low before the bottom counts as established
     bottomMovePct: num(env, 'BOTTOM_MOVE_PCT', 18),           // first move off the low that fires the mark (PERCENT)
@@ -113,6 +114,33 @@ export function loadConfig(env = process.env) {
     // revert to the pure record-only study (marks, scores, card;
     // zero signal records).
     rangeLive: num(env, 'RANGE_LIVE', 1),                    // 1 = range marks route live entries (0 = study only)
+    // BASE MODE (owner order 2026-10-16 23:00 EDT, "Build the base
+    // strategy" — his diagnosis: the signals are fine, the ENTRIES are
+    // the disease; good and bad coins run and die the same, so the rule
+    // stack around direct entries is noise). "Buy the base, not the
+    // blast": when 1 (the default — a live strategy order), every live
+    // signal whose setup is not a formed-base shape {range, staircase,
+    // bottom} is DEMOTED at the onSignal seam to a watch enrollment
+    // (journaled 'skipped', fields.enrolledBy) and never buys; base
+    // entries carry TP1 pinned at +50% from birth, range entries judge
+    // in the band's lower two-thirds (top-third marks open a deferred
+    // dip watch instead), and range/bottom entries carry a structural
+    // stop at the base's own low. 0 = tonight's direct-buy behavior,
+    // byte-identical.
+    baseMode: num(env, 'BASE_MODE', 1),                      // 1 = base strategy on (0 = direct entries as before)
+    // Base-strategy entry gates (owner decision 2026-10-16 23:16 EDT,
+    // off tonight's range burst — the range path bought DEAD coins:
+    // entry volM5 stamps of $0 / $17 / $137 / $186 / $524 / $958 against
+    // a $22.1K loser-median in his last-50 study). PULSE FLOOR: every
+    // base-shape entry eval (range incl. the deferred dip, bottom,
+    // staircase) needs a live tape on the fresh view — volM5 at or
+    // above the floor, unknown counting as dead. ENROLLMENT: a range
+    // entry additionally requires the mint to be NOMINATED — a live
+    // signal demoted into an enrollment for it within the TTL (the
+    // enrollment map restores at boot from the signals journal). A
+    // base alone is not a nomination.
+    baseMinVolM5: num(env, 'BASE_MIN_VOL_M5', 5000),         // pulse floor for base-shape entries, USD 5m volume (0 = floor off)
+    enrollTtlH: num(env, 'ENROLL_TTL_H', 24),                // hours a demotion enrollment nominates a mint for range entries
     // Confluence Shadow Signal (user order 2026-10-16, RECORD-ONLY): every
     // walletWatch confluence fire ALSO opens two virtual positions stamped
     // at DETECTION time (the classification study's decisive unknowns are
@@ -748,6 +776,10 @@ export function validateConfig(cfg) {
   if (cfg.rangeMaxMinMovePct <= 0 || cfg.rangeMaxMinMovePct > 100) errs.push('RANGE_MAX_MIN_MOVE_PCT must be between 0 and 100 (percent)');
   if (!(cfg.rangeMinMc > 0)) errs.push('RANGE_MIN_MC must be > 0 (USD)');
   if (cfg.rangeLive < 0 || cfg.rangeLive > 1) errs.push('RANGE_LIVE must be 0 or 1');
+  if (cfg.bottomLive < 0 || cfg.bottomLive > 1) errs.push('BOTTOM_LIVE must be 0 or 1');
+  if (cfg.baseMode < 0 || cfg.baseMode > 1) errs.push('BASE_MODE must be 0 or 1');
+  if (!(cfg.baseMinVolM5 >= 0)) errs.push('BASE_MIN_VOL_M5 must be >= 0 (USD)');
+  if (!(cfg.enrollTtlH > 0) || cfg.enrollTtlH > 720) errs.push('ENROLL_TTL_H must be between 0 and 720 (hours)');
   if (cfg.confluenceSignal < 0 || cfg.confluenceSignal > 1) errs.push('CONFLUENCE_SIGNAL must be 0 or 1');
   if (cfg.confluenceScalpPct <= 0 || cfg.confluenceScalpPct > 2) errs.push('CONFLUENCE_SCALP_PCT must be between 0 and 2');
   if (cfg.staircaseLive < 0 || cfg.staircaseLive > 1) errs.push('STAIRCASE_LIVE must be 0 or 1');

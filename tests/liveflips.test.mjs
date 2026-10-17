@@ -37,7 +37,7 @@ function seedHistory(bot, mint, price = 1) {
 // Full-pipeline rig (flowshadow pattern): real Bot + real onSignal +
 // scripted-quote Executor. Views served from a per-mint map.
 function pipelineRig({ cfgOver = {}, env = {}, rug = healthyRug } = {}) {
-  const cfg = testCfg({ tradeSol: 0.02, ...cfgOver }, env);
+  const cfg = testCfg({ tradeSol: 0.02, baseMode: 0, ...cfgOver }, env);
   const clock = { t: T0 };
   const q = { valueLam: 19_000_000 };
   const quote = async (input, _o, amount) => (input === SOL_MINT

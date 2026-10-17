@@ -504,6 +504,19 @@ export class RangeWatch {
     return rec;
   }
 
+  /** The mint's OPEN range episode, or null when no episode is open
+   *  (never formed, already ended, or tracking dropped). Read by the
+   *  Bot's deferred dip watch (base strategy): a top-third mark's entry
+   *  may only fire while THIS episode — same episodeId, same band — is
+   *  still intact. Returns a copy of the episode's geometry; the
+   *  tracker stays the only writer. */
+  episodeFor(mint) {
+    const st = this.track.get(mint);
+    if (!st || !st.episode) return null;
+    const ep = st.episode;
+    return { episodeId: ep.episodeId, markId: ep.markId, startTs: ep.startTs, rangeHi: ep.rangeHi, rangeLo: ep.rangeLo, hiPrice: ep.hiPrice, loPrice: ep.loPrice };
+  }
+
   /** Mints with an open range episode — the outcome observer's fetch
    *  set keeps pricing them after they leave the watchlist, the same
    *  guarantee scanLab / confluenceSignal / bottomWatch marks get. */

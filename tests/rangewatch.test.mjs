@@ -458,7 +458,11 @@ function liveRig(over = {}, env = {}) {
   });
   const calls = [];
   bot.onSignal = async (v, sig) => { calls.push({ v, sig }); };
-  views.set(MINT, view({ address: MINT, symbol: 'RNG' }));
+  // ENROLLMENT GATE (owner decision 2026-10-16 23:16 EDT): a range entry
+  // routes only for a NOMINATED mint — these routing tests judge the
+  // routing, so the mint stands enrolled by a prior pop signal.
+  bot.baseEnrolled.set(MINT, { setup: 'pop', ts: T0 });
+  views.set(MINT, view({ address: MINT, symbol: 'RNG', mc: 20400 }));
   return { bot, clock, views, calls };
 }
 const flush = async () => { await new Promise(r => setImmediate(r)); await new Promise(r => setImmediate(r)); };
@@ -566,7 +570,7 @@ test('range live: retry tick lands the eval once the view appears', async () => 
   views.delete(MINT);
   bot._evalRange(RMARK);
   await flush();
-  views.set(MINT, view({ address: MINT, symbol: 'RNG' }));
+  views.set(MINT, view({ address: MINT, symbol: 'RNG', mc: 20400 }));
   clock.t += 20000; // first retry slot
   await bot._rangeRetryTick(clock.t);
   assert.equal(calls.length, 1);

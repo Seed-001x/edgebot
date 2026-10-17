@@ -22,7 +22,7 @@ const healthyRug = { token: { supply: 1e15, decimals: 6 }, creatorBalance: 0, to
 const riggedRug = { ...healthyRug, topHolders: Array.from({ length: 18 }, (_, i) => ({ owner: 'w' + i, address: 'h' + i, amount: 498001881166, pct: 0.05 })) };
 
 function rig(cfgOver = {}, rugRef = { rug: healthyRug }) {
-  const cfg = testCfg({ tradeSol: 0.02, ...cfgOver });
+  const cfg = testCfg({ tradeSol: 0.02, baseMode: 0, ...cfgOver });
   const clock = { t: T0 };
   const q = { valueLam: 19_000_000 };
   const quote = async (input, _o, amount) => (input === SOL_MINT

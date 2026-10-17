@@ -38,7 +38,7 @@ const CONFL_YENNI_AGG = { wallets: [YENNI, EIGHTDEJ], maxSol: 0.4, count: 2, kin
 // (owner flip 2026-10-16 made all-live the default; the kill switch restores
 // this exact behavior — the flip itself is pinned in liveflips.test.mjs).
 function rig({ env = { FLOW_LIVE_WALLETS: YENNI, FLOW_ALL_LIVE: '0' } } = {}) {
-  const cfg = testCfg({ tradeSol: 0.02 }, env);
+  const cfg = testCfg({ tradeSol: 0.02, baseMode: 0 }, env);
   const clock = { t: T0 };
   const q = { valueLam: 19_000_000 };
   const quote = async (input, _o, amount) => (input === SOL_MINT

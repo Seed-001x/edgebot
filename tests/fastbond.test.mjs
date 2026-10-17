@@ -32,7 +32,7 @@ function seedHistory(bot, mint, price = 1) {
 
 // curveLife: fixed seconds | per-mint function | 'throw' (fetch failure).
 function pipelineRig({ cfgOver = {}, env = {}, rug = healthyRug, curveLife = null, omitCurveLife = false } = {}) {
-  const cfg = testCfg({ tradeSol: 0.02, ...cfgOver }, env);
+  const cfg = testCfg({ tradeSol: 0.02, baseMode: 0, ...cfgOver }, env);
   const clock = { t: T0 };
   const q = { valueLam: 19_000_000 };
   const quote = async (input, _o, amount) => (input === SOL_MINT

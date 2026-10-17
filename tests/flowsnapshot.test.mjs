@@ -23,7 +23,7 @@ const AGG = { wallets: ['6yVb...JBqm'], maxSol: 5.51, count: 1, kind: 'solo', la
 // Full-pipeline rig (e2e pattern): real Bot + scripted-quote Executor, one
 // controlled view for MINTF. tradeSol 0.02 matches the rig's sell-back calibration.
 function rig({ viewOver = {}, cfgOver = {} } = {}) {
-  const cfg = testCfg({ tradeSol: 0.02, ...cfgOver });
+  const cfg = testCfg({ tradeSol: 0.02, baseMode: 0, ...cfgOver });
   const clock = { t: T0 };
   const q = { valueLam: 19_000_000 };
   const quote = async (input, _o, amount) => (input === SOL_MINT

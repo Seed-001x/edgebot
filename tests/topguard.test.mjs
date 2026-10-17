@@ -155,7 +155,7 @@ test('top guard: boundary — dist exactly 10, surge exactly +20, high exactly 3
 const healthyRug = { token: { supply: 1e15, decimals: 6 }, creatorBalance: 0, totalHolders: 2000, graphInsidersDetected: 0, markets: [{ pubkey: 'POOL', lp: { base: 1e8, quote: 1400, lpLockedUSD: 3e5, lpLockedPct: 100 } }], knownAccounts: { POOL: { type: 'AMM' } }, topHolders: Array.from({ length: 12 }, (_, i) => ({ owner: 'h' + i, address: 'h' + i, amount: 9e12 - i * 3.1e10, pct: 2 })), insiderNetworks: [] };
 
 function pipelineRig({ cfgOver = {} } = {}) {
-  const cfg = testCfg({ tradeSol: 0.02, ...cfgOver });
+  const cfg = testCfg({ tradeSol: 0.02, baseMode: 0, ...cfgOver });
   const clock = { t: T0 };
   const q = { valueLam: 19_000_000 };
   const quote = async (input, _o, amount) => (input === SOL_MINT

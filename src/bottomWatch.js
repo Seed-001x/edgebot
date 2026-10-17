@@ -63,10 +63,16 @@
 // is PERCENT (50 = −50%), matching the knob names; forward scores are
 // FRACTIONS (0.5 = +50%), the structure/staircase score convention.
 //
-// HARD BOUNDARIES: strictly record-only. No trading decision reads this
-// module; it never buys, sells, gates, signs or posts. Every public
-// method is fail-silent — a tracker failure can never reach a trading
-// path. Kill switch: BOTTOM_WATCH=0 (no observing, no records, card off).
+// HARD BOUNDARIES: the TRACKER is record-only — this module never buys,
+// sells, gates, signs or posts, and no trading decision reads it. The
+// one bridge out is the onMark tap (the range watch's own seam): when a
+// mark fires, the Bot's _evalBottom MAY route a live entry attempt for a
+// QUALIFIED mark through the standard pipeline (BOTTOM_LIVE, owner
+// order 2026-10-16, the base strategy). The tap changes nothing in here:
+// marks journal + score identically with the tap on, off, or absent.
+// Every public method is fail-silent — a tracker failure can never
+// reach a trading path. Kill switch: BOTTOM_WATCH=0 (no observing, no
+// records, card off).
 import fs from 'node:fs';
 import path from 'node:path';
 import { median, round } from './util.js';
@@ -204,19 +210,23 @@ export function buildBottomCard(records, now = Date.now(), live = {}) {
 export class BottomWatch {
   /**
    * deps: { cfg, journal, dir, now, log, wasExited(mint) -> bool,
+   *         onMark(rec),
    *         fetchCandles(pool, fromTs, toTs), resolvePool(mint) }
    * fetchCandles/resolvePool are the structure watch's own pair (the Bot
    * wires them); absent them, marks simply never score. wasExited reads
    * the trade journal's closes (the Bot wires it); absent it, every
-   * episode tags 'watched'.
+   * episode tags 'watched'. onMark is the live tap (Bot._evalBottom,
+   * BOTTOM_LIVE) — notified after a mark journals; absent it, marks are
+   * study-only.
    */
-  constructor({ cfg = {}, journal = null, dir = null, now = () => Date.now(), log = null, wasExited = null, fetchCandles = null, resolvePool = null } = {}) {
+  constructor({ cfg = {}, journal = null, dir = null, now = () => Date.now(), log = null, wasExited = null, onMark = null, fetchCandles = null, resolvePool = null } = {}) {
     this.cfg = cfg;
     this.journal = journal;
     this.dir = dir;
     this.now = now;
     this.log = log;
     this.wasExited = wasExited;
+    this.onMark = onMark;
     this.fetchCandles = fetchCandles;
     this.resolvePool = resolvePool;
     this.track = new Map();       // mint -> per-mint tracking state (scalars + open episode)
@@ -390,6 +400,12 @@ export class BottomWatch {
     this.dirty = true;
     this._save(true);
     if (this.log) this.log(`[bottomwatch] ${st.symbol || st.mint}: FIRST MOVE off the bottom — low ${rec.drawdownPct}% under peak, now +${rec.pctOffLow}% off the low${flow.known ? `, buy share ${rec.buyShare}` : ' (flow unknown)'} [${ep.source}${qualified ? ', retrace setup' : `, dust — peak under the $${Math.round(this.minPeakMc / 1000)}k floor`}] — record only`);
+    // The live tap (Bot._evalBottom via BOTTOM_LIVE): notified AFTER the
+    // mark is journaled and the episode closed — the tracker's records
+    // are already complete whatever the tap does with it. Only a
+    // QUALIFIED mark is a retrace setup the tap may act on; _evalBottom
+    // re-checks the flag itself, so the tap fires for every mark here.
+    try { if (this.onMark) this.onMark(rec); } catch { /* live tap — fail-silent, can never disturb the tracker */ }
     return rec;
   }
 

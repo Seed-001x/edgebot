@@ -41,6 +41,15 @@ import { configStamp } from './stamp.js';
 // still being viewed (a re-view afterward starts a fresh session).
 const SCAN_SESSION_MAX_MS = 3 * 3600e3;
 
+// BASE MODE (owner order 2026-10-16 23:00 EDT): the setups that ARE a
+// formed base — the only shapes allowed to buy while the base strategy
+// is on. Every other live setup demotes to a watch enrollment at the
+// onSignal seam (default-deny: a future setup demotes too until it is
+// named here).
+const BASE_ENTRY_SETUPS = new Set(['range', 'staircase', 'bottom']);
+
+const fmtUsd = (x) => '$' + Math.round(x).toLocaleString('en-US');
+
 export class Bot {
   /**
    * deps: { discover(cfg), fetchViews(mints), fetchSolUsd(), fetchRug(mint), exec, now }
@@ -55,7 +64,15 @@ export class Bot {
     this.flowExits = new FlowExits({ cfg, journal: this.journal, now: this.now, positionState: (id) => this._flowExitPosState(id), log: console.log }); // Flow-Exit Watcher (record-only): polls the wallet that triggered a flow entry for its trim/exit and scores the race at close; no decision reads it
     this.staircaseSignal = new StaircaseSignal({ cfg, journal: this.journal, now: this.now, log: console.log }); // Staircase-3 Shadow Signal (record-only, user 2026-10-16): every structure-watch mark at ordinal >= 3 is ALSO journaled as a named shadow signal, scored by the watch's forward scores joined at read time (/staircase); nothing reads it into any decision
     this.structureWatch = new StructureWatch({ cfg, journal: this.journal, now: this.now, fetchHolders: (mint) => this._dasHolderSample(mint), log: console.log, onMark: (rec) => { try { this.staircaseSignal.noteMark(rec); } catch { /* observer only — never disturb the watch */ } try { this._evalStaircase(rec); } catch { /* live tap (STAIRCASE_LIVE) — self-guarded, async, fail-silent: can never disturb the watch */ } } }); // Structure Watch (record-only): seeds every signaled mint into an hours-long staircase + holder-series watch with would-enter marks at confirmed higher lows; holder reads ride the same knob-respecting DAS helper as gate sampling; no decision reads it
-    this.bottomWatch = new BottomWatch({ cfg, journal: this.journal, dir: cfg.dataDir, now: this.now, log: console.log, wasExited: (mint) => this.journal.trades.some(t => t.type === 'close' && t.mint === mint), fetchCandles: (pool, fromTs, toTs) => this.structureWatch.fetchCandles(pool, fromTs, toTs), resolvePool: (mint) => this.structureWatch.resolvePool(mint) }); // Bottom Tracker (record-only, user 2026-10-16): episodes on watched coins dumped >= BOTTOM_DROP_PCT off their sampled peak; a 'first move off the bottom' mark once the low holds quiet and price + flow turn up; forward-scored by the structure watch's own candle tailer (/bottomwatch); fed from the poll + outcome-observer view streams — no sampler of its own, no decision reads it
+    this.bottomWatch = new BottomWatch({ cfg, journal: this.journal, dir: cfg.dataDir, now: this.now, log: console.log, wasExited: (mint) => this.journal.trades.some(t => t.type === 'close' && t.mint === mint), onMark: (rec) => { try { this._evalBottom(rec); } catch { /* live tap (BOTTOM_LIVE) — self-guarded, async, fail-silent: can never disturb the tracker */ } }, fetchCandles: (pool, fromTs, toTs) => this.structureWatch.fetchCandles(pool, fromTs, toTs), resolvePool: (mint) => this.structureWatch.resolvePool(mint) }); // Bottom Tracker (record-only, user 2026-10-16): episodes on watched coins dumped >= BOTTOM_DROP_PCT off their sampled peak; a 'first move off the bottom' mark once the low holds quiet and price + flow turn up; forward-scored by the structure watch's own candle tailer (/bottomwatch); fed from the poll + outcome-observer view streams — no sampler of its own. Marks ALSO route live entries via the onMark tap (BOTTOM_LIVE, base strategy: only QUALIFIED marks — the retrace setups)
+    // BASE MODE state (owner order 2026-10-16): enrollment provenance
+    // (mint -> { setup, ts } of the latest demoted signal — the journal
+    // is the durable record, this is the live lookup), deferred range
+    // dip watches (episodeId -> watch), and the bottom no-view retry
+    // queue (the _evalFlow discipline, shared with staircase/range).
+    this.baseEnrolled = new Map();
+    this.rangeDipWatch = new Map();
+    this.bottomPending = new Map();
     this.rangeWatch = new RangeWatch({ cfg, journal: this.journal, dir: cfg.dataDir, now: this.now, log: console.log, wasExited: (mint) => this.journal.trades.some(t => t.type === 'close' && t.mint === mint), isHeld: (mint) => this.positions.some(p => p.mint === mint), onMark: (rec) => { try { this._evalRange(rec); } catch { /* live tap (RANGE_LIVE) — self-guarded, async, fail-silent: can never disturb the study */ } }, fetchCandles: (pool, fromTs, toTs) => this.structureWatch.fetchCandles(pool, fromTs, toTs), resolvePool: (mint) => this.structureWatch.resolvePool(mint) }); // Range Study (owner 2026-10-16): a tight sideways base held over the trailing window journals one mark per range episode to range_marks.jsonl; forward-scored by the structure watch's own candle tailer (/rangewatch) — expanded / broke down / ranged; fed from the poll + outcome-observer view streams — no sampler of its own. Marks ALSO route live entries via the onMark tap (RANGE_LIVE, default on — his correction: "None of this is shadow btw — Real")
     this.scanLab = new ScanLab({ cfg, journal: this.journal, now: this.now, log: console.log }); // Scan Ledger scorer (record-only): r15/r60 after each finalized scan session; no decision reads it
     this.scanFold = new Map(); // Scan Ledger: mint -> live watch-session fold (cheap scalars only; finalized into the journal by _scanSweep)
@@ -116,6 +133,11 @@ export class Bot {
     this.birthVerdicts = this.loadBirthVerdicts(); // mint -> { mint, kind, evidence, firstSeenTs }
     this._backfillBirthVerdicts();
     this._birthStats().known = this.birthVerdicts.size;
+    // BASE MODE enrollment restore (owner decision 2026-10-16 23:16
+    // EDT): range entries require a NOMINATED mint — re-arm the
+    // enrollment map from the journal's enrollment records inside the
+    // TTL so a restart does not un-nominate the watchlist.
+    this._restoreBaseEnrollments();
     // Flow-Exit Watcher: re-establish watches for flow positions that were
     // open across this restart (their start records carry the attribution;
     // fired trims/exits are rebuilt from the journal and never re-fire).
@@ -188,6 +210,11 @@ export class Bot {
     // build carries only {armed, fired}, so normalize the shape here or the
     // first wave event would increment an undefined field into NaN.
     if (this.stats.deadflow) { this.stats.deadflow.waves = this.stats.deadflow.waves || 0; this.stats.deadflow.floor = this.stats.deadflow.floor || 0; }
+    // BASE MODE (owner order 2026-10-16): the tally exists from boot so
+    // /state shows the strategy's shape even before the first enrollment.
+    this.stats.baseMode = { enrolled: 0, bySetup: {}, dipWatches: 0, dipEntries: 0, structureStops: 0, pulseSkips: { total: 0, bySetup: {} }, rangeUnenrolled: 0, ...(this.stats.baseMode || {}) };
+    if (!this.stats.baseMode.bySetup) this.stats.baseMode.bySetup = {};
+    if (!this.stats.baseMode.pulseSkips) this.stats.baseMode.pulseSkips = { total: 0, bySetup: {} };
     if (loaded) return;
     // Seed from journal history so dashboard isn't empty after first deploy with persistence
     try {
@@ -1467,7 +1494,7 @@ export class Bot {
     try {
       this.evictBlacklisted(); // marked coins never even get priced, let alone signal
       const mints = [...new Set([...this.watch.keys(), ...this.positions.map(p => p.mint)])];
-      if (!mints.length) { try { await this.outcomeTick(this.now()); } catch { /* observer only */ } try { await this._flowRetryTick(this.now()); } catch { /* record-only retry */ } try { await this._staircaseRetryTick(this.now()); } catch { /* staircase retry */ } try { await this._rangeRetryTick(this.now()); } catch { /* range-live retry */ } try { await this._walletRetryTick(this.now()); } catch { /* wallet-live retry */ } try { await this.walletWatch.finalizeTick(this.now()); } catch { /* shadow outcomes */ } try { await this.calloutLab.tick(this.now()); } catch { /* shadow callouts */ } try { await this.flowExits.tick(this.now()); } catch { /* shadow flow exits */ } try { await this.structureWatch.tick(this.now()); } catch { /* shadow structure watch */ } try { await this.bottomWatch.tick(this.now()); } catch { /* shadow bottom tracker */ } try { await this.rangeWatch.tick(this.now()); } catch { /* shadow range study */ } try { this._scanSweep(this.now()); } catch { /* scan ledger */ } return; }
+      if (!mints.length) { try { await this.outcomeTick(this.now()); } catch { /* observer only */ } try { await this._flowRetryTick(this.now()); } catch { /* record-only retry */ } try { await this._staircaseRetryTick(this.now()); } catch { /* staircase retry */ } try { await this._rangeRetryTick(this.now()); } catch { /* range-live retry */ } try { await this._bottomRetryTick(this.now()); } catch { /* bottom-live retry */ } try { await this._rangeDipTick(this.now()); } catch { /* range dip watch */ } try { await this._walletRetryTick(this.now()); } catch { /* wallet-live retry */ } try { await this.walletWatch.finalizeTick(this.now()); } catch { /* shadow outcomes */ } try { await this.calloutLab.tick(this.now()); } catch { /* shadow callouts */ } try { await this.flowExits.tick(this.now()); } catch { /* shadow flow exits */ } try { await this.structureWatch.tick(this.now()); } catch { /* shadow structure watch */ } try { await this.bottomWatch.tick(this.now()); } catch { /* shadow bottom tracker */ } try { await this.rangeWatch.tick(this.now()); } catch { /* shadow range study */ } try { this._scanSweep(this.now()); } catch { /* scan ledger */ } return; }
       const views = await this.d.fetchViews(mints);
       const n = this.now();
       // D4 (user 2026-10-13): market breadth — the share of sampled coins green on the hour —
@@ -1545,7 +1572,7 @@ export class Bot {
       try { await this.outcomeTick(n); } catch { /* observer only */ }
       try { await this._flowRetryTick(n); } catch { /* record-only retry */ }
       try { await this._staircaseRetryTick(n); } catch { /* staircase retry */ }
-      try { await this._rangeRetryTick(n); } catch { /* range-live retry */ }
+      try { await this._rangeRetryTick(n); } catch { /* range-live retry */ } try { await this._bottomRetryTick(n); } catch { /* bottom-live retry */ } try { await this._rangeDipTick(n); } catch { /* range dip watch */ }
       try { await this._walletRetryTick(n); } catch { /* wallet-live retry */ }
       try { await this.walletWatch.finalizeTick(n); } catch { /* shadow outcomes */ }
       try { await this.calloutLab.tick(n); } catch { /* shadow callouts */ }
@@ -1622,7 +1649,7 @@ export class Bot {
   }
 
   skip(v, sig, reasons, warnings = [], gates = null, gatePass = null, shadowGates = null, shadowGatePass = null) {
-    this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'skipped', reasons, price: v.price, mc: v.mc, metrics: sig.metrics, warnings, label: sig.label || null, gates, gatePass, fields: this._signalFields(v, sig.metrics), shadowGates, shadowGatePass });
+    this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'skipped', reasons, price: v.price, mc: v.mc, metrics: sig.metrics, warnings, label: sig.label || null, gates, gatePass, fields: this._fieldsFor(v, sig), shadowGates, shadowGatePass });
   }
 
   // Setups currently in shadow-only mode (user 2026-10-14, forward plan step 1b):
@@ -1641,7 +1668,7 @@ export class Bot {
   shadow(v, sig, gates = null, gatePass = null) {
     this.stats.shadowSignals = this.stats.shadowSignals || {};
     this.stats.shadowSignals[sig.setup] = (this.stats.shadowSignals[sig.setup] || 0) + 1;
-    const sigId = this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'shadow', reasons: [sig.shadowReason || `shadow: ${sig.setup} is shadow-only — logged + outcome-tracked, no buy`], price: v.price, mc: v.mc, metrics: sig.metrics, warnings: [], label: sig.label || null, gates, gatePass, fields: this._signalFields(v, sig.metrics) });
+    const sigId = this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'shadow', reasons: [sig.shadowReason || `shadow: ${sig.setup} is shadow-only — logged + outcome-tracked, no buy`], price: v.price, mc: v.mc, metrics: sig.metrics, warnings: [], label: sig.label || null, gates, gatePass, fields: this._fieldsFor(v, sig) });
     // Trade-grade shadow (record-only, user 2026-10-14): a shadow signal that
     // PASSED its gate evaluation opens a VIRTUAL position at the signal
     // price, managed by the real exit stack (src/shadowTrades.js) — the
@@ -1672,6 +1699,78 @@ export class Bot {
   // DexScreener hammer, yet a coin that graduates a minute later still gets
   // measured on its next signal. Never throws.
   _birthStats() { const s = this.stats.birthMemory || (this.stats.birthMemory = {}); s.blocked = s.blocked || 0; s.written = s.written || 0; s.known = s.known || 0; return s; }
+
+  _baseStats() { const s = this.stats.baseMode || (this.stats.baseMode = { enrolled: 0, bySetup: {}, dipWatches: 0, dipEntries: 0, structureStops: 0, pulseSkips: { total: 0, bySetup: {} }, rangeUnenrolled: 0 }); if (!s.bySetup) s.bySetup = {}; if (!s.pulseSkips) s.pulseSkips = { total: 0, bySetup: {} }; if (!s.pulseSkips.bySetup) s.pulseSkips.bySetup = {}; return s; }
+
+  // PULSE FLOOR (owner decision 2026-10-16 23:16 EDT): a base-shape
+  // entry needs a LIVE TAPE at eval time — the fresh view's volM5 at or
+  // above BASE_MIN_VOL_M5. Under the floor (or unmeasurable: a base
+  // with no measurable pulse is dead by definition here) the eval
+  // journal-skips with the pulse reason and tallies, and the caller
+  // stops. Returns true when the candidate was pulse-skipped. Callers
+  // gate on cfg.baseMode — BASE_MODE=0 leaves every path untouched.
+  _basePulseSkip(v, sig) {
+    const floor = this.cfg.baseMinVolM5;
+    if (!(floor > 0)) return false;
+    const vol = v && Number.isFinite(v.volM5) ? v.volM5 : null;
+    if (vol != null && vol >= floor) return false;
+    const bm = this._baseStats();
+    bm.pulseSkips.total++;
+    bm.pulseSkips.bySetup[sig.setup] = (bm.pulseSkips.bySetup[sig.setup] || 0) + 1;
+    const reason = vol == null
+      ? `base pulse: volM5 unknown under the ${fmtUsd(floor)} floor — dead base`
+      : `base pulse: volM5 ${fmtUsd(vol)} under the ${fmtUsd(floor)} floor — dead base`;
+    this.skip(v, sig, [reason], [], {});
+    console.log(`[basemode] ${v.symbol} (${sig.setup}): ${reason}`);
+    return true;
+  }
+
+  // ENROLLMENT (owner decision 2026-10-16 23:16 EDT): is this mint
+  // currently NOMINATED — a live signal demoted into an enrollment for
+  // it inside ENROLL_TTL_H? The demotion block writes the map live;
+  // _restoreBaseEnrollments re-arms it at boot from the journal.
+  _baseEnrolled(mint, n) {
+    const e = this.baseEnrolled && this.baseEnrolled.get(mint);
+    if (!e) return false;
+    const ttlH = this.cfg.enrollTtlH > 0 ? this.cfg.enrollTtlH : 24;
+    return n - e.ts <= ttlH * 3600000;
+  }
+
+  // Boot restore: enrollment records are journal facts (decision
+  // 'skipped', fields.enrolledBy) — fold the ones inside the TTL back
+  // into the live map, the _backfillBirthVerdicts discipline. A
+  // restart must not un-nominate every coin the signals pointed at.
+  _restoreBaseEnrollments() {
+    let restored = 0;
+    try {
+      const ttlH = this.cfg.enrollTtlH > 0 ? this.cfg.enrollTtlH : 24;
+      const n = this.now();
+      for (const rec of (this.journal && this.journal.signals) || []) {
+        if (!rec || !rec.mint || !rec.ts) continue;
+        const by = rec.fields && rec.fields.enrolledBy;
+        if (!by) continue;
+        if (n - rec.ts > ttlH * 3600000) continue;
+        const cur = this.baseEnrolled.get(rec.mint);
+        if (!cur || rec.ts > cur.ts) { this.baseEnrolled.set(rec.mint, { setup: by, ts: rec.ts }); restored++; }
+      }
+    } catch { /* best effort — live demotions re-arm enrollments as they fire */ }
+    if (restored) console.log(`[basemode] boot restore: ${restored} enrollment(s) recovered from journal history`);
+  }
+
+  // Signal-record fields for a journaled signal: the computed
+  // _signalFields block plus the BASE MODE stamps the signal object
+  // itself carries (enrollment provenance, a deferred-dip provenance,
+  // the base-entry TP1 stamp). A signal carrying none of them gets the
+  // computed block back untouched — records byte-identical to before.
+  _fieldsFor(v, sig) {
+    const f = this._signalFields(v, sig && sig.metrics);
+    if (!sig || (!sig.enrolledBy && !sig.deferredDip && !sig.baseTp1)) return f;
+    const out = { ...(f || {}) };
+    if (sig.enrolledBy) out.enrolledBy = sig.enrolledBy;
+    if (sig.deferredDip) out.deferredDip = true;
+    if (sig.baseTp1) out.baseTp1 = true;
+    return out;
+  }
 
   // Birth-verdict memory (owner order 2026-10-16, the FMR hole — see gate.js
   // birthMemoryVerdict for the incident): _absorbBirthVerdict is the single
@@ -1995,8 +2094,19 @@ export class Bot {
     if (n - (this.lastSignal.get(mint) || 0) < this.cfg.signalCooldownMin * 60000) return; // signaled moments ago — the mark's shadow record is the trace; no re-judge spam
     const metrics = { staircase: { ordinal: rec.ordinal, markId: rec.markId || null, watchId: rec.watchId || null, markPrice: rec.price ?? null, lowPrev: rec.lowPrev ?? null, lowNew: rec.lowNew ?? null } };
     const sig = { setup: 'staircase', strength: rec.ordinal, metrics };
+    // BASE MODE (owner order 2026-10-16): a staircase higher low is one
+    // of the three formed-base shapes — while the strategy is on, its
+    // entries are born with TP1 pinned at +50% (see onSignal's birth
+    // stamps). No structure low: a staircase is a continuation shape,
+    // not a range — the structural stop is range/bottom only.
+    if (this.cfg.baseMode) sig.baseTp1 = true;
     const el = eligible(v, this.cfg, n);
     if (el.length) { this.skip(v, sig, el.map(r => `staircase-live: ${r}`), [], {}); return; }
+    // PULSE FLOOR (owner decision 2026-10-16 23:16 EDT): a base-shape
+    // entry needs a live tape at eval time — see _basePulseSkip. (No
+    // enrollment gate on this path: a confirmed higher-low mark is
+    // itself a structure nomination.)
+    if (this.cfg.baseMode && this._basePulseSkip(v, sig)) return;
     this.lastSignal.set(mint, n);
     console.log(`[staircase] ${v.symbol}: higher low #${rec.ordinal} — STAIRCASE-3 LIVE eval`);
     await this.onSignal(v, sig);
@@ -2057,7 +2167,7 @@ export class Bot {
    * re-judges. Kill switch: RANGE_LIVE=0 (study reverts to pure
    * record-only: marks + scores, zero signal records).
    */
-  _evalRange(rec) {
+  _evalRange(rec, opts = {}) {
     if (!this.cfg.rangeLive) return;
     if (!rec || rec.type !== 'mark' || !rec.mint) return;
     const mint = rec.mint;
@@ -2072,25 +2182,127 @@ export class Bot {
         this._queueRangeRetry(rec, n);
         return;
       }
-      await this._evalRangeWithView(rec, v, n);
+      await this._evalRangeWithView(rec, v, n, opts);
     })().catch(e => this.err('rangeEval', e));
   }
 
   /** The judged half of a range live eval: a fresh view exists, so run
-   *  the guards and route into onSignal. Shared by the fire-time path
-   *  and the retry tick. */
-  async _evalRangeWithView(rec, v, n) {
+   *  the guards and route into onSignal. Shared by the fire-time path,
+   *  the retry tick and the deferred dip watch (opts.deferredDip). */
+  async _evalRangeWithView(rec, v, n, opts = {}) {
     const mint = rec.mint;
     this.latest.set(mint, v); this.latestAt.set(mint, n); this.history.record(v, n);
     if (this.positions.some(p => p.mint === mint)) return; // already holding — the study record carries the mark; nothing to decide
     if (n - (this.lastSignal.get(mint) || 0) < this.cfg.signalCooldownMin * 60000) return; // signaled moments ago — the mark's study record is the trace; no re-judge spam
     const metrics = { range: { markId: rec.markId || null, episodeId: rec.episodeId || null, bandPct: rec.bandPct ?? null, tightness: rec.tightness ?? null, durationMin: rec.durationMin ?? null, rangeHi: rec.rangeHi ?? null, rangeLo: rec.rangeLo ?? null, rangeMid: rec.rangeMid ?? null, markMc: rec.markMc ?? null, markPrice: rec.markPrice ?? null } };
     const sig = { setup: 'range', strength: rec.bandPct != null ? Math.max(1, Math.round(100 - rec.bandPct)) : 1, metrics };
+    // BASE MODE stamps (owner order 2026-10-16): while the strategy is
+    // on, a range entry is born with TP1 pinned at +50% and carries the
+    // range's own low for the structural stop. A deferred-dip eval also
+    // stamps its provenance — the journal record shows HOW the entry
+    // was reached, not just that it was.
+    if (opts.deferredDip) sig.deferredDip = true;
+    if (this.cfg.baseMode) {
+      sig.baseTp1 = true;
+      if (Number.isFinite(rec.rangeLo) && rec.rangeLo > 0) sig.structureLow = rec.rangeLo;
+    }
     const el = eligible(v, this.cfg, n);
     if (el.length) { this.skip(v, sig, el.map(r => `range-live: ${r}`), [], {}); return; }
+    // ENROLLMENT + PULSE gates (owner decision 2026-10-16 23:16 EDT,
+    // off tonight's range burst — the path bought DEAD coins: entry
+    // volM5 stamps of $0 / $17 / $137 / $186 / $524 / $958 against a
+    // $22.1K loser-median in his last-50 study). They sit here, with
+    // the eligible() floor guards, BEFORE the band test and onSignal —
+    // and because the deferred-dip eval runs through this same method,
+    // both gates re-judge it too:
+    // (1) ENROLLMENT — a range is not a nomination: the entry routes
+    // only when a live signal (pop/flow/confluence/trend/devlaunch)
+    // was demoted into an enrollment for this mint inside
+    // ENROLL_TTL_H. Something with a pulse pointed at the coin first;
+    // the base alone never nominates. The study layer is untouched —
+    // unenrolled coins still mark and score; only the entry is gated.
+    // (2) PULSE FLOOR — the fresh view must carry a live tape
+    // (volM5 >= BASE_MIN_VOL_M5, unknown counting as dead).
+    // Base-strategy machinery: BASE_MODE=0 leaves the range path
+    // exactly as it shipped.
+    if (this.cfg.baseMode && !this._baseEnrolled(mint, n)) {
+      const bm = this._baseStats();
+      bm.rangeUnenrolled = (bm.rangeUnenrolled || 0) + 1;
+      this.skip(v, sig, ['range: coin never enrolled by a signal — base alone is not a nomination'], [], {});
+      console.log(`[range] ${v.symbol}: range mark not enrolled by any signal — no entry (base alone is not a nomination)`);
+      return;
+    }
+    if (this.cfg.baseMode && this._basePulseSkip(v, sig)) return;
+    // BASE STRATEGY range refinement: enter INSIDE the base — the mark's
+    // current mc must sit in the LOWER TWO-THIRDS of its band. A mark
+    // printing in the top third is the range's own local top: no buy.
+    // The episode instead opens a DEFERRED DIP WATCH (one entry attempt
+    // per episode, ever): if the sampled mc later dips into the lower
+    // two-thirds while the range is still intact, the deferred eval
+    // runs then. Judged on the fresh view's mc against the mark's band;
+    // an unmeasurable band or mc never blocks (fail-open, the house
+    // discipline). Base-strategy machinery: BASE_MODE=0 leaves the
+    // range path exactly as it shipped.
+    if (this.cfg.baseMode && Number.isFinite(v.mc) && v.mc > 0 && Number.isFinite(rec.rangeHi) && Number.isFinite(rec.rangeLo) && rec.rangeHi >= rec.rangeLo) {
+      const frac = rec.rangeHi > rec.rangeLo ? (v.mc - rec.rangeLo) / (rec.rangeHi - rec.rangeLo) : 0; // a zero-width band counts as lower
+      if (frac > 2 / 3) {
+        if (!opts.deferredDip) this._openRangeDipWatch(rec, n);
+        this.skip(v, sig, ['range top-third — watching for the dip'], [], {});
+        console.log(`[range] ${v.symbol}: range mark in the top third of its band (${(frac * 100).toFixed(0)}% up) — no buy${opts.deferredDip ? ' (deferred attempt spent)' : ', dip watch open'}`);
+        return;
+      }
+    }
     this.lastSignal.set(mint, n);
-    console.log(`[range] ${v.symbol}: range base held ${rec.durationMin}m at a ${rec.bandPct}% band — RANGE LIVE eval`);
+    console.log(`[range] ${v.symbol}: range base held ${rec.durationMin}m at a ${rec.bandPct}% band — RANGE LIVE eval${opts.deferredDip ? ' (deferred dip)' : ''}`);
     await this.onSignal(v, sig);
+  }
+
+  /** Open the deferred dip watch for a top-third range mark (base
+   *  strategy): one per episode, keyed by episodeId so a later episode
+   *  on the same mint gets its own watch. The watch's max life is the
+   *  episode end + 30 minutes (see _rangeDipTick). */
+  _openRangeDipWatch(rec, n) {
+    if (!rec.episodeId || this.rangeDipWatch.has(rec.episodeId)) return;
+    this.rangeDipWatch.set(rec.episodeId, { rec, mint: rec.mint, openedTs: n, nextAt: n + 60000, endedAt: null });
+    this._baseStats().dipWatches++;
+  }
+
+  /** Deferred dip watch tick (base strategy): rides the poll loop's
+   *  retry seam, each watch re-checked at most every ~60s against the
+   *  bot's OWN sampled history (no external fetch for the check — the
+   *  entry eval itself fetches its fresh view as always). A watch fires
+   *  its ONE deferred entry eval when the mint's latest sampled mc sits
+   *  in the lower two-thirds of the mark's band WHILE the rangeWatch
+   *  episode (same episodeId) is still intact. An ended episode makes
+   *  the watch inert; it is collected 30 minutes after the end was
+   *  first seen. RANGE_LIVE=0 retires every watch — the deferred path
+   *  is part of the live range path it refines. */
+  async _rangeDipTick(n) {
+    if (!this.rangeDipWatch || !this.rangeDipWatch.size) return;
+    if (!this.cfg.rangeLive) { this.rangeDipWatch.clear(); return; }
+    for (const [episodeId, w] of [...this.rangeDipWatch]) {
+      if (n < w.nextAt) continue;
+      w.nextAt = n + 60000;
+      const ep = this.rangeWatch ? this.rangeWatch.episodeFor(w.mint) : null;
+      if (!ep || ep.episodeId !== episodeId) {
+        if (w.endedAt == null) w.endedAt = n;
+        if (n - w.endedAt > 30 * 60000) this.rangeDipWatch.delete(episodeId);
+        continue;
+      }
+      const samples = this.history.get(w.mint);
+      const last = samples && samples[samples.length - 1];
+      const mc = last && Number.isFinite(last.mc) && last.mc > 0 ? last.mc : null;
+      if (mc == null) continue;
+      const { rangeHi, rangeLo } = w.rec;
+      if (!(Number.isFinite(rangeHi) && Number.isFinite(rangeLo) && rangeHi >= rangeLo)) continue;
+      const frac = rangeHi > rangeLo ? (mc - rangeLo) / (rangeHi - rangeLo) : 0;
+      if (frac <= 2 / 3) {
+        this.rangeDipWatch.delete(episodeId);
+        this._baseStats().dipEntries++;
+        console.log(`[range] ${w.rec.symbol || w.mint}: dipped to ${(frac * 100).toFixed(0)}% of its base band with the range intact — deferred range entry eval`);
+        this._evalRange(w.rec, { deferredDip: true });
+      }
+    }
   }
 
   /** A range mark whose mint had no market view at fire time: queue it
@@ -2123,6 +2335,109 @@ export class Bot {
       if (!v) continue; // still no view — the next tick retries until the window closes
       this.rangePending.delete(mint);
       await this._evalRangeWithView(p.rec, v, n);
+    }
+  }
+
+  /**
+   * BOTTOM LIVE (owner order 2026-10-16, the base strategy's third
+   * shape): a QUALIFIED bottom mark — a coin that ran (episode peak mc
+   * over the BOTTOM_MIN_PEAK_MC floor), dumped, held a quiet low and
+   * printed its first move off it — routes into the exact same
+   * onSignal pipeline as every setup, via the same guard shape as
+   * _evalRange/_evalStaircase: fetch a fresh view, refuse a coin
+   * already held or signaled inside the per-mint cooldown, apply the
+   * eligible() tradability floor (a floor failure journals a skipped
+   * 'bottom' signal), then let the pipeline judge EVERY metric. DUST
+   * marks (qualified !== true) never route — they stay the tracker's
+   * dataset, exactly as before. The tracker in bottomWatch.js keeps
+   * journaling + forward-scoring untouched; this tap is the only
+   * bridge, wired as the watch's onMark dep and self-guarded on
+   * cfg.bottomLive (default 1; BOTTOM_LIVE=0 keeps bottoms
+   * record-only). A mark whose view is missing queues and retries
+   * off-cluster for up to 5 minutes (the sibling discipline). The
+   * entry carries the episode's low as its structural low — the base
+   * this shape formed on — stamped from the mark record itself.
+   * Qualified marks are rare (zero finalized at build time):
+   * correctness over eagerness, no backfill, no catch-up fires.
+   */
+  _evalBottom(rec) {
+    if (!this.cfg.bottomLive) return;
+    if (!rec || rec.type !== 'mark' || !rec.mint || rec.qualified !== true) return;
+    const mint = rec.mint;
+    (async () => {
+      const n = this.now();
+      this.stats.bottom = this.stats.bottom || { evals: 0, noView: 0, retries: 0 };
+      this.stats.bottom.evals++;
+      const views = await this.d.fetchViews([mint]).catch(() => null);
+      const v = views && views.get(mint);
+      if (!v) {
+        this.stats.bottom.noView++;
+        this._queueBottomRetry(rec, n);
+        return;
+      }
+      await this._evalBottomWithView(rec, v, n);
+    })().catch(e => this.err('bottomEval', e));
+  }
+
+  /** The judged half of a bottom live eval: a fresh view exists, so
+   *  run the guards and route into onSignal. Shared by the fire-time
+   *  path and the retry tick. */
+  async _evalBottomWithView(rec, v, n) {
+    const mint = rec.mint;
+    this.latest.set(mint, v); this.latestAt.set(mint, n); this.history.record(v, n);
+    if (this.positions.some(p => p.mint === mint)) return; // already holding — the tracker record carries the mark; nothing to decide
+    if (n - (this.lastSignal.get(mint) || 0) < this.cfg.signalCooldownMin * 60000) return; // signaled moments ago — the mark's tracker record is the trace; no re-judge spam
+    const metrics = { bottom: { markId: rec.markId || null, episodeId: rec.episodeId || null, peakMc: rec.peakMc ?? null, peakPrice: rec.peakPrice ?? null, lowMc: rec.lowMc ?? null, lowPrice: rec.lowPrice ?? null, lowTs: rec.lowTs ?? null, drawdownPct: rec.drawdownPct ?? null, pctOffLow: rec.pctOffLow ?? null, pctOfPeakRecovered: rec.pctOfPeakRecovered ?? null, markPrice: rec.markPrice ?? null } };
+    const sig = { setup: 'bottom', strength: rec.pctOffLow != null ? rec.pctOffLow : 1, metrics };
+    // BASE MODE stamps (owner order 2026-10-16): a bottom entry is born
+    // with TP1 pinned at +50% and carries the episode low as its
+    // structural low — the base it retraces from is the stop.
+    if (this.cfg.baseMode) {
+      sig.baseTp1 = true;
+      if (Number.isFinite(rec.lowMc) && rec.lowMc > 0) sig.structureLow = rec.lowMc;
+    }
+    const el = eligible(v, this.cfg, n);
+    if (el.length) { this.skip(v, sig, el.map(r => `bottom-live: ${r}`), [], {}); return; }
+    // PULSE FLOOR (owner decision 2026-10-16 23:16 EDT): a base-shape
+    // entry needs a live tape at eval time — see _basePulseSkip. (No
+    // enrollment gate on this path: a qualified bottom mark is itself
+    // a structure nomination.)
+    if (this.cfg.baseMode && this._basePulseSkip(v, sig)) return;
+    this.lastSignal.set(mint, n);
+    console.log(`[bottom] ${v.symbol}: qualified bottom — low ${rec.drawdownPct}% under a $${Math.round(rec.peakMc || 0)} peak, +${rec.pctOffLow}% off the low — BOTTOM LIVE eval`);
+    await this.onSignal(v, sig);
+  }
+
+  /** A bottom mark whose mint had no market view at fire time: queue it
+   *  and retry for up to 5 minutes instead of dropping it silently (the
+   *  _queueRangeRetry pattern). A newer mark for the same mint
+   *  supersedes the queued record; the retry window stays anchored to
+   *  the first queueing. */
+  _queueBottomRetry(rec, n) {
+    this.bottomPending = this.bottomPending || new Map();
+    const cur = this.bottomPending.get(rec.mint);
+    if (cur) { cur.rec = rec; return; }
+    this.bottomPending.set(rec.mint, { rec, firstTs: n, nextAt: n + 20000 });
+  }
+
+  async _bottomRetryTick(n) {
+    if (!this.bottomPending || !this.bottomPending.size) return;
+    for (const [mint, p] of [...this.bottomPending]) {
+      if (n - p.firstTs > 5 * 60000) {
+        this.bottomPending.delete(mint);
+        this.stats.bottom = this.stats.bottom || { evals: 0, noView: 0, retries: 0 };
+        this.stats.bottom.noViewFinal = (this.stats.bottom.noViewFinal || 0) + 1;
+        console.log(`[bottom] ${p.rec.symbol || mint}: live eval dropped — no market view within 5m of the bottom mark`);
+        continue;
+      }
+      if (n < p.nextAt) continue;
+      p.nextAt = n + 20000;
+      this.stats.bottom.retries = (this.stats.bottom.retries || 0) + 1;
+      const views = await this.d.fetchViews([mint]).catch(() => null);
+      const v = views && views.get(mint);
+      if (!v) continue; // still no view — the next tick retries until the window closes
+      this.bottomPending.delete(mint);
+      await this._evalBottomWithView(p.rec, v, n);
     }
   }
 
@@ -2625,6 +2940,38 @@ export class Bot {
       } else this.stats.fastBond.passed++;
     }
 
+    // BASE MODE demotion (owner order 2026-10-16 23:00 EDT, "Build the
+    // base strategy" — his diagnosis: "the parameters, the rules,
+    // everything is just noise blocking the bot... the same way bad
+    // coins run, good coins do, and the same way they die, so do bad
+    // coins" — the signals were never the problem; the ENTRIES were:
+    // every live trigger fires on the move itself, so fills land on the
+    // blast, not the base). "Buy the base, not the blast": while
+    // BASE_MODE is on, a candidate that survived the whole stack above
+    // (vetoes, gates, insider / birth-memory / top-guard / fast-bond
+    // seams — all of which still judge and still write their verdicts
+    // to the memory) but whose setup is NOT a formed-base shape is not
+    // bought. It is ENROLLED: journaled 'skipped' with the enrollment
+    // reason and fields.enrolledBy, tallied in stats.baseMode, its
+    // provenance remembered — a watch order. The bot buys only when a
+    // base actually forms under the coin: a range mark (lower two
+    // thirds, or the deferred dip), a staircase-3 higher low, a
+    // qualified bottom — the BASE_ENTRY_SETUPS allowlist, default-deny
+    // for any future setup. Shadow evaluations never reach here (they
+    // returned at the shadow branch above), so record-only judging is
+    // untouched. BASE_MODE=0: no stamp, no tally, no record — the
+    // pipeline below runs exactly as tonight.
+    if (this.cfg.baseMode && !BASE_ENTRY_SETUPS.has(sig.setup)) {
+      const bm = this._baseStats();
+      bm.enrolled++;
+      bm.bySetup[sig.setup] = (bm.bySetup[sig.setup] || 0) + 1;
+      this.baseEnrolled.set(v.address, { setup: sig.setup, ts: n });
+      sig.enrolledBy = sig.setup;
+      checks.baseMode = { pass: false, enrolled: true, reason: 'base mode: enrolled for base watch — entries only from a formed base' };
+      console.log(`[basemode] ${v.symbol} (${sig.setup}) enrolled for base watch — no direct entry`);
+      return this.skip(v, sig, ['base mode: enrolled for base watch — entries only from a formed base'], g.warnings, checks, g.pass);
+    }
+
     // exit-value check: price a buy AND the immediate sell-back before spending anything
     let rt;
     try { rt = await this.exec.roundTrip(v.address, size); }
@@ -2654,6 +3001,14 @@ export class Bot {
     const pos = {
       id: `${v.address.slice(0, 6)}-${n}`, mint: v.address, symbol: v.symbol, setup: sig.setup,
       entryTs: n, entrySol: fill.solSpent, tokensRaw: fill.tokensRaw, entryTokensRaw: fill.tokensRaw, remainingFrac: 1, peakRatio: 1, tp1Done: false, tp2Done: false, tp1Arm: null, flowHist: [], suspectUnbookedSell: false,
+      // BASE MODE birth stamps (owner order 2026-10-16): a base-setup
+      // entry (sig.baseTp1, set by the base eval routes while BASE_MODE
+      // is on) is born with TP1 pinned at +50% — the /tp1at override
+      // mechanism, applied by the strategy instead of by hand — and a
+      // range/bottom entry also carries its base's low (sig.structureLow)
+      // for the structural stop in managePosition. A signal carrying
+      // neither stamp produces the exact position shape of tonight.
+      ...(sig.baseTp1 ? { tp1AtPct: 0.5 } : {}), ...(sig.structureLow > 0 ? { structureLow: sig.structureLow } : {}),
       entryPrice: v.price, entryMc: v.mc, realizedSol: 0, simulated: fill.simulated, sigBuy: fill.sig, markFails: 0,
       stamp: this.cfgStamp, gates: checks, gatePass: g.pass, decimals: dec,
       entryFillSol: tokensWhole > 0 ? fill.solSpent / tokensWhole : null, solUsdEntry: solUsd || null, ticks: [],
@@ -2684,7 +3039,7 @@ export class Bot {
         this.lastCallout = { ok: false, error: e.message, symbol: v.symbol, ts: Date.now() };
       });
     }
-    this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'taken', reasons: [], price: v.price, mc: v.mc, metrics: { ...sig.metrics, roundTrip: +rt.ratio.toFixed(3), sizeSol: size }, warnings: g.warnings, label: sig.label || null, gates: checks, gatePass: g.pass, fields: this._signalFields(v, sig.metrics) });
+    this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'taken', reasons: [], price: v.price, mc: v.mc, metrics: { ...sig.metrics, roundTrip: +rt.ratio.toFixed(3), sizeSol: size }, warnings: g.warnings, label: sig.label || null, gates: checks, gatePass: g.pass, fields: this._fieldsFor(v, sig) });
     this.journal.trade({ type: 'open', id: pos.id, mint: pos.mint, symbol: pos.symbol, setup: pos.setup, entrySol: pos.entrySol, sig: fill.sig, simulated: fill.simulated, ts: n, stamp: pos.stamp, tokensRaw: fill.tokensRaw, entryFillSol: pos.entryFillSol, entryFillUsd: pos.entryFillSol != null && solUsd > 0 ? +(pos.entryFillSol * solUsd).toFixed(10) : null });
     // Flow-Exit Watcher (record-only): a flow-triggered entry starts a watch
     // on the wallet whose buy nominated it — its trim/exit get journaled and
@@ -2839,6 +3194,35 @@ export class Bot {
       pos.flowHist.push({ ts: n, buys: markNow.buysM5, sells: markNow.sellsM5, tx: (markNow.buysM5 != null || markNow.sellsM5 != null) ? (markNow.buysM5 || 0) + (markNow.sellsM5 || 0) : null });
       if (pos.flowHist.length > 45) pos.flowHist.splice(0, pos.flowHist.length - 45);
       decision = evaluateExit(pos, markNow, this.cfg, n);
+    }
+    // STRUCTURAL STOP (base strategy, owner order 2026-10-16): a
+    // range/bottom entry's base is its stop. While the position is
+    // pre-TP1, TWO CONSECUTIVE checks whose realizable mc — the same
+    // sell quote this judge just pulled, marked through the entry
+    // round-trip exactly as the ratchet judge reads it — print below
+    // the base's own low (pos.structureLow, stamped at entry) exit in
+    // full: the base broke, the thesis is dead. One print is a wick
+    // and only counts; any check back at/above the low resets the
+    // count. The stop retires permanently once TP1 fires (the ladder
+    // owns the position from there), and it is suppressed while the
+    // position is protected (the owner's hands-off ride is never
+    // second-guessed) or taken over. Overrides whatever evaluateExit
+    // decided on this check — pre-TP1 and under the base low, no other
+    // judge has a live claim.
+    if (valueSol != null && pos.structureLow > 0 && !pos.tp1Done && !pos.protected && !pos.takenOver) {
+      const basis = pos.entrySol * pos.remainingFrac;
+      const base = pos.entryRoundTrip > 0 ? pos.entryRoundTrip : 1;
+      const realizableMc = basis > 0 && pos.entryMc > 0 ? pos.entryMc * ((valueSol / basis) / base) : null;
+      if (realizableMc != null) {
+        if (realizableMc < pos.structureLow) {
+          pos.structureBreach = (pos.structureBreach || 0) + 1;
+          if (pos.structureBreach >= 2) {
+            this._baseStats().structureStops++;
+            console.log(`[basemode] ${pos.symbol}: base broke — realizable mc ${Math.round(realizableMc)} under the base low ${Math.round(pos.structureLow)} on 2 consecutive checks — full exit`);
+            decision = { fraction: 1, reason: 'base broke: fell below the base low', newPeak: decision.newPeak || pos.peakRatio, structureStop: true };
+          }
+        } else pos.structureBreach = 0;
+      }
     }
     pos.peakRatio = decision.newPeak || pos.peakRatio;
     // position-tick journal (record-only): this check's mark, recorded AFTER the

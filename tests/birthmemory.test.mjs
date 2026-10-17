@@ -40,7 +40,7 @@ function seedHistory(bot, mint, price = 1) {
 // evaluations to replay the incident (first eval measures, later evals
 // find every source dark).
 function rig({ cfgOver = {}, rug = healthyRug, dataDir = null } = {}) {
-  const cfg = testCfg({ tradeSol: 0.02, ...(dataDir ? { dataDir } : {}), ...cfgOver });
+  const cfg = testCfg({ tradeSol: 0.02, baseMode: 0, ...(dataDir ? { dataDir } : {}), ...cfgOver });
   const clock = { t: T0 };
   const live = { curve: null, curveLife: null, curveLifeCalls: 0 };
   const q = { valueLam: 19_000_000 };
