@@ -325,6 +325,16 @@ export function startServer(bot, port) {
       if (!bot.staircaseCard) return json(res, 200, { enabled: false });
       return json(res, 200, bot.staircaseCard());
     }
+    if (req.method === 'GET' && u.pathname === '/bottomwatch') {
+      // Bottom Tracker (record-only, user 2026-10-16): watched coins that
+      // dumped >= BOTTOM_DROP_PCT off their sampled peak, and the first
+      // move back up off the established bottom — journaled to
+      // bottom_marks.jsonl, forward-scored with the structure tailer,
+      // split bot-exited vs watched; ready at 30 finalized. Nothing here
+      // gates or trades.
+      if (!bot.bottomWatchCard) return json(res, 200, { enabled: false });
+      return json(res, 200, bot.bottomWatchCard());
+    }
     if (req.method === 'GET' && u.pathname === '/confluencesignal') {
       // Confluence Shadow Signal (record-only, user 2026-10-16): every
       // walletWatch confluence fire as a pair of DETECTION-time virtual

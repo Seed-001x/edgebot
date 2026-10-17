@@ -75,6 +75,18 @@ export function loadConfig(env = process.env) {
     // finalized marks) and scored by the watch's own forward scores, joined
     // at read time (/staircase). No path reads it back into a decision.
     staircaseSignal: num(env, 'STAIRCASE_SIGNAL', 1),        // 1 = staircase-3 shadow signal on (0 = no records, card off)
+    // Bottom Tracker (user order 2026-10-16, RECORD-ONLY): watched coins that
+    // dump >= BOTTOM_DROP_PCT off their sampled peak open an episode; once the
+    // low has held quiet for BOTTOM_QUIET_MIN minutes, the first move >=
+    // BOTTOM_MOVE_PCT off the low (with buy flow back, when flow is known)
+    // journals a 'first move' mark to bottom_marks.jsonl, forward-scored with
+    // the structure watch's tailer (/bottomwatch). The twitchy cousin of
+    // churn's patient basing — measured, never traded. 0 = fully off.
+    bottomWatch: num(env, 'BOTTOM_WATCH', 1),                 // 1 = bottom tracker on (0 = no observing, no records, card off)
+    bottomDropPct: num(env, 'BOTTOM_DROP_PCT', 50),           // drawdown off the watched peak that opens an episode (PERCENT)
+    bottomQuietMin: num(env, 'BOTTOM_QUIET_MIN', 3),          // minutes with no new low before the bottom counts as established
+    bottomMovePct: num(env, 'BOTTOM_MOVE_PCT', 18),           // first move off the low that fires the mark (PERCENT)
+    bottomExpireMin: num(env, 'BOTTOM_EXPIRE_MIN', 60),       // minutes out of the sampling orbit before tracking a mint ends
     // Confluence Shadow Signal (user order 2026-10-16, RECORD-ONLY): every
     // walletWatch confluence fire ALSO opens two virtual positions stamped
     // at DETECTION time (the classification study's decisive unknowns are
@@ -681,6 +693,11 @@ export function validateConfig(cfg) {
   if (cfg.shadowSellerPriorK < 0) errs.push('SHADOW_SELLER_PRIOR_K must be >= 0');
   if (cfg.shadowSellerRefitMin < 1) errs.push('SHADOW_SELLER_REFIT_MIN must be >= 1');
   if (cfg.staircaseSignal < 0 || cfg.staircaseSignal > 1) errs.push('STAIRCASE_SIGNAL must be 0 or 1');
+  if (cfg.bottomWatch < 0 || cfg.bottomWatch > 1) errs.push('BOTTOM_WATCH must be 0 or 1');
+  if (cfg.bottomDropPct <= 0 || cfg.bottomDropPct >= 100) errs.push('BOTTOM_DROP_PCT must be between 0 and 100 (percent)');
+  if (cfg.bottomQuietMin < 0 || cfg.bottomQuietMin > 120) errs.push('BOTTOM_QUIET_MIN must be 0..120');
+  if (cfg.bottomMovePct <= 0 || cfg.bottomMovePct > 500) errs.push('BOTTOM_MOVE_PCT must be between 0 and 500 (percent)');
+  if (cfg.bottomExpireMin < 10) errs.push('BOTTOM_EXPIRE_MIN must be >= 10');
   if (cfg.confluenceSignal < 0 || cfg.confluenceSignal > 1) errs.push('CONFLUENCE_SIGNAL must be 0 or 1');
   if (cfg.confluenceScalpPct <= 0 || cfg.confluenceScalpPct > 2) errs.push('CONFLUENCE_SCALP_PCT must be between 0 and 2');
   if (cfg.staircaseLive < 0 || cfg.staircaseLive > 1) errs.push('STAIRCASE_LIVE must be 0 or 1');
