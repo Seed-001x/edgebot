@@ -100,6 +100,17 @@
 // A MOONBAG TRIM (owner order 2026-10-17 ~00:27 EDT, section 3c1) rides
 // alongside in both modes: at +200% from the TP2 print, half the bag
 // banks, once per position.
+// TRAIL REMOVED IN SMALL-BAG MODE (owner order 2026-10-17 ~04:38 EDT,
+// "let's do that cause it wouldn't have cost me too much anyways"): the
+// moonbag trail (3c) is closeted alongside the waves — in small-bag mode
+// it never judges, never stamps a pending, never sells; the post-TP2
+// stub (~5% of the original) simply rides to the 3c3 floor, its only
+// full exit (the 3c1 trim still banks half at 3× the TP2 print).
+// Founding case: MAKERS' stub trailed out at 8.05x while the coin kept
+// running — at the moment he decided, the unstopped stub was worth
+// ~3× what the trail banked, and the downside he actually risks is a
+// 5%-of-original stub riding back to +10% over entry. Mode off restores
+// the trail exactly as it was, confirm timer included.
 const STRIP = {
   stopFamily: true,
   stallProbation: true,
@@ -268,10 +279,18 @@ export function evaluateExit(pos, mark, cfg, now) {
   // Scope: the trail exists only post-TP2 and only while its window is on
   // — anything else drops a carried stamp, and with the window at 0 no
   // stamp ever accrues (the instant fire is restored exactly).
+  // SMALL-BAG MODE (owner order 2026-10-17 ~04:38 EDT): the trail is
+  // closeted with the waves — bagSmallHold is declared HERE (above both
+  // consumers) because the breach read itself is mode-gated: in small
+  // mode trailBreached is always false, section 3c never judges, no
+  // trail-pending ever stamps, and a stamp a position somehow carries
+  // drops silently (no trail-cleared event — the trail simply isn't a
+  // thing in this mode). The bag's only full exit is the 3c3 floor.
+  const bagSmallHold = (cfg.bagSmallHold ?? 1) > 0;
   const bagTrailConfirmSec = cfg.bagTrailConfirmSec ?? 60;
   let bagTrailSince = pos.bagTrailSince ?? null;
-  const trailBreached = !!pos.tp2Done && ratio <= peakRatio * (1 - cfg.bagTrailPct);
-  if (!(bagTrailConfirmSec > 0) || !pos.tp2Done) bagTrailSince = null;
+  const trailBreached = !bagSmallHold && !!pos.tp2Done && ratio <= peakRatio * (1 - cfg.bagTrailPct);
+  if (bagSmallHold || !(bagTrailConfirmSec > 0) || !pos.tp2Done) bagTrailSince = null;
   else if (trailBreached) {
     if (bagTrailSince == null) { bagTrailSince = now; deadflowEvents.push({ type: 'trail-pending' }); }
   } else if (bagTrailSince != null) {
@@ -292,7 +311,6 @@ export function evaluateExit(pos, mark, cfg, now) {
   // accrues (the instant fire). The caller threads the stamp back from
   // every decision, so a pending survives restarts; a position opened
   // before this build carries none and starts unpended.
-  const bagSmallHold = (cfg.bagSmallHold ?? 1) > 0;
   const bagFloorConfirmSec = cfg.bagFloorConfirmSec ?? 30;
   let bagFloorSince = pos.bagFloorSince ?? null;
   const floorBreached = bagSmallHold && !!pos.tp2Done && ratio <= 1 + cfg.bagFloorPct;
@@ -505,6 +523,11 @@ export function evaluateExit(pos, mark, cfg, now) {
 
   // 3c. moonbag: the post-TP2 remainder trails bagTrailPct below its peak — no at-entry floor, and
   //     the generic trailing stop / profit lock below skip tp2Done positions: the bag's job is to ride.
+  //     SMALL-BAG MODE (owner order 2026-10-17 ~04:38 EDT): this section NEVER judges —
+  //     trailBreached is mode-gated false in state prep, so a small-bag position falls
+  //     straight through to the trim (3c1) and the floor (3c3), its only full exit. The
+  //     trail lives on in the closet: BAG_SMALL_HOLD=0 restores every line below
+  //     byte-for-byte, confirm timer included.
   //     CONFIRMATION (owner order 2026-10-16 23:12 EDT, "Give it a 1 min timer"): while
   //     BAG_TRAIL_CONFIRM_SEC > 0, a breach only sells once it has HELD — state prep
   //     stamped bagTrailSince on the first sub-line check and clears it on any check back

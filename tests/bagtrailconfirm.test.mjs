@@ -16,7 +16,10 @@ import { testCfg, tmp } from './helpers.mjs';
 // byte-for-byte. The position shape mirrors exits.test.mjs's moonbag test:
 // peak 2.8x, trail line 2.8 × (1 − 0.15) = 2.38 on the remaining basis.
 const NOW = 1_000_000_000_000;
-const cfg = testCfg({ stallProbationSec: 0 }); // bagTrailConfirmSec rides the config default (60)
+// bagSmallHold: 0 — this file's subject is the trail itself, which since
+// 2026-10-17 ~04:38 EDT lives only in the closeted big-bag mode (in
+// small-bag mode 3c never judges; that is pinned in smallbag.test.mjs).
+const cfg = testCfg({ stallProbationSec: 0, bagSmallHold: 0 }); // bagTrailConfirmSec rides the config default (60)
 const pos = (o = {}) => ({ entrySol: 0.02, remainingFrac: 1, peakRatio: 1, tp1Done: false, entryTs: NOW - 5 * 60000, ...o });
 const mark = (valueSol, o = {}) => ({ valueSol, liqUsd: 200_000, buysM5: 30, sellsM5: 10, solUsd: 150, ...o });
 const bag = (o = {}) => pos({ tp1Done: true, tp2Done: true, remainingFrac: 0.25, peakRatio: 2.8, ...o });
@@ -65,7 +68,7 @@ test('(b) a breach that holds the full window sells the bag in full, reason carr
 });
 
 test('(c) BAG_TRAIL_CONFIRM_SEC=0 restores the instant fire exactly — same check, same string, no state', () => {
-  const cfg0 = testCfg({ stallProbationSec: 0, bagTrailConfirmSec: 0 });
+  const cfg0 = testCfg({ stallProbationSec: 0, bagTrailConfirmSec: 0, bagSmallHold: 0 });
   const d = evaluateExit(bag(), mark(BELOW), cfg0, NOW);
   assert.equal(d.fraction, 1);
   assert.match(d.reason, /^moonbag trail \(15% off peak 2\.80x, now 135\.0%\)$/);

@@ -21,7 +21,7 @@ const T0 = 1_000_000_000_000;
 const healthyRug = { token: { supply: 1e15, decimals: 6 }, creatorBalance: 0, totalHolders: 2000, markets: [{ pubkey: 'POOL', lp: { base: 1e8, quote: 1400, lpLockedUSD: 3e5, lpLockedPct: 100 } }], knownAccounts: { POOL: { type: 'AMM' } }, topHolders: Array.from({ length: 12 }, (_, i) => ({ owner: 'h' + i, address: 'h' + i, amount: 9e12 - i * 3.1e10, pct: 2 })), insiderNetworks: [] };
 
 function rig(cfgOver = {}) {
-  const cfg = testCfg({ tradeSol: 0.02, baseMode: 0, bagTrailConfirmSec: 0, ...cfgOver }); // trail timer off in rigs (see bagtrailconfirm.test.mjs)
+  const cfg = testCfg({ tradeSol: 0.02, baseMode: 0, bagTrailConfirmSec: 0, bagSmallHold: 0, ...cfgOver }); // trail timer off in rigs (see bagtrailconfirm.test.mjs); bagSmallHold 0: the trail lives in the closeted big-bag mode since 2026-10-17 ~04:38
   const clock = { t: T0 };
   const q = { valueLam: 19_000_000 };
   const quote = async (input, _o, amount) => (input === SOL_MINT

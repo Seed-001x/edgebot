@@ -13,7 +13,7 @@ const healthyRug = { token: { supply: 1e15, decimals: 6 }, creatorBalance: 0, to
 const riggedRug = { ...healthyRug, topHolders: Array.from({ length: 18 }, (_, i) => ({ owner: 'w' + i, address: 'w' + i, amount: 498001881166, pct: 0.05 })) };
 
 function rig({ rug = healthyRug, cfgOver = {}, others = [] } = {}) {
-  const cfg = testCfg({ baseMode: 0, bagTrailConfirmSec: 0, ...cfgOver }); // trail timer off in rigs: lifecycle tests pin the line's fire, the timer is pinned in bagtrailconfirm.test.mjs
+  const cfg = testCfg({ baseMode: 0, bagTrailConfirmSec: 0, bagSmallHold: 0, ...cfgOver }); // trail timer off in rigs: lifecycle tests pin the line's fire, the timer is pinned in bagtrailconfirm.test.mjs; bagSmallHold 0: the trail lives in the closeted big-bag mode since 2026-10-17 ~04:38 (small-bag inertness is pinned in smallbag.test.mjs)
   const clock = { t: T0 };
   const market = { price: 1, liq: 100_000, buysM5: 30, sellsM5: 10 };
   const q = { valueLam: 19_000_000 };   // value of the FULL 1e9-token holding, in lamports

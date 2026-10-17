@@ -20,7 +20,7 @@ import { testCfg, view } from './helpers.mjs';
 const T0 = 1_800_000_000_000;
 
 function rig(over = {}) {
-  const cfg = testCfg({ fastPop: 0, dipStopPct: 0, bagTrailConfirmSec: 0, ...over }); // trail timer off here: this file pins the trail's fire, the timer is pinned in bagtrailconfirm.test.mjs
+  const cfg = testCfg({ fastPop: 0, dipStopPct: 0, bagTrailConfirmSec: 0, bagSmallHold: 0, ...over }); // trail timer off here: this file pins the trail's fire, the timer is pinned in bagtrailconfirm.test.mjs; bagSmallHold 0: the trail lives in the closeted big-bag mode since 2026-10-17 ~04:38
   const clock = { t: T0 };
   const r = { cfg, clock, mark: 0, markThrows: false };
   r.exec = {

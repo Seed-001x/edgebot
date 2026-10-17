@@ -100,12 +100,13 @@ test('(c2) a pre-stamp moonbag (crossed TP2 before the stamp existed) judges aga
   assert.equal(d2.fraction, 0.5); assert.equal(d2.bagTrim, true);
 });
 
-test('(d) the post-trim remainder still exits via the trail normally', () => {
+test('(d) the post-trim remainder still exits via the trail normally (big-bag mode — the trail is closeted there)', () => {
+  const cfgBig = { ...cfg, bagSmallHold: 0 }; // since 2026-10-17 ~04:38 the trail judges only with the closet open; the trim itself is mode-agnostic (above)
   const p0 = bag();
-  const d1 = evaluateExit(p0, mark(p0, 5.45), cfg, NOW);
+  const d1 = evaluateExit(p0, mark(p0, 5.45), cfgBig, NOW);
   assert.equal(d1.bagTrim, true);
   const p1 = carry(p0, d1); // half the bag survives, peak now 5.45, trail line 4.63
-  const d2 = evaluateExit(p1, mark(p1, 4.50), cfg, NOW + 4000); // a deep retrace off the peak: the trail takes the rest
+  const d2 = evaluateExit(p1, mark(p1, 4.50), cfgBig, NOW + 4000); // a deep retrace off the peak: the trail takes the rest
   assert.equal(d2.fraction, 1);
   assert.match(d2.reason, /^moonbag trail \(15% off peak 5\.45x, now 350\.0%\)$/);
 });

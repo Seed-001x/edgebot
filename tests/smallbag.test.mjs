@@ -136,6 +136,59 @@ test('(d) BAG_FLOOR_CONFIRM_SEC=0 restores the instant floor in small-bag mode �
   assert.equal(d2.fraction, 0);
 });
 
+// ---- TRAIL REMOVED IN SMALL-BAG MODE (owner order 2026-10-17 ~04:38 EDT,
+// "let's do that cause it wouldn't have cost me too much anyways"): the
+// moonbag trail (3c) is closeted with the waves. Judged here on the LIVE
+// dials — bagTrailPct / bagTrailConfirmSec / bagFloorConfirmSec all ride
+// the config defaults, no timer pins — so the trail, were it live, would
+// be fully armed: peak 2.80, trail line 2.38 (and 1.96 at the live store's
+// -30%): a print of 1.60 is 43% off the peak, past either line.
+const cfgLive = testCfg({ txFeeSol: 0, dipStopPct: 0, lockKeep: 0, stallSec: 0, stallProbationSec: 0, beArmPct: 0 });
+const bagStub = (o = {}) => fresh({ tp1Done: true, tp2Done: true, pathClass: 'ladder', remainingFrac: 0.05, peakRatio: 2.8, peakMove: 2.8, postTp1PeakMove: 2.8, bagTp2Ratio: 1.8, ...o });
+
+test('(e) small-bag mode: a 30%+ retrace held well past the trail window sells nothing, stamps no trail pending — the floor alone exits the bag', () => {
+  const p = bagStub();
+  const crash = drive(p, flat(40, 1.60, 300)); // ~160s deep under the trail line, way past the 60s confirm
+  for (const d of crash) {
+    assert.equal(d.fraction, 0);
+    assert.equal(d.reason, null);
+    assert.equal(d.bagTrailSince, null); // never arms, never stamps
+    assert.ok(!d.deadflowEvents.some(e => e.type === 'trail-pending' || e.type === 'trail-cleared'));
+    assert.equal(d.bagDeadWaves, 0);
+  }
+  assert.equal(p.remainingFrac, 0.05); // the whole stub still rides
+  // Now the fall continues to the +10% floor line: the first check pends,
+  // and only the floor's own 30s confirm sells — in full, as the floor.
+  const fall = drive(p, flat(9, 1.05, 300)); // pends on #1, matures at +32s on #9
+  assert.equal(fall[0].fraction, 0);
+  assert.notEqual(fall[0].bagFloorSince, null);
+  assert.ok(fall[0].deadflowEvents.some(e => e.type === 'floor-pending'));
+  const sale = fall[fall.length - 1];
+  assert.equal(sale.fraction, 1);
+  assert.match(sale.reason, /^moonbag floor \(\+10% over entry, held 30s\)$/);
+  assert.equal(fall.filter(d => d.fraction === 1).length, 1); // exactly one sale…
+  assert.ok(fall.slice(0, -1).every(d => d.fraction === 0)); // …and nothing before the floor matured
+});
+
+test('(f) small-bag mode: a trail stamp a position somehow carries drops silently — no event, no sale', () => {
+  const p = bagStub({ bagTrailSince: T0 }); // e.g. armed under the closet, judged after the mode flipped
+  const d = evaluateExit(p, mark(p, 1.60), cfgLive, T0 + 4000);
+  assert.equal(d.fraction, 0);
+  assert.equal(d.bagTrailSince, null);
+  assert.ok(!d.deadflowEvents.some(e => e.type === 'trail-pending' || e.type === 'trail-cleared'));
+});
+
+test('(g) small-bag mode: the moonbag trim still fires at 3x the TP2 stamp — 50%, once', () => {
+  const p = bagStub({ peakRatio: 5.45, peakMove: 5.45, postTp1PeakMove: 5.45 }); // trim line = 3 × 1.8 = 5.4
+  const ds = drive(p, [{ ratio: 5.45, buys: 300 }, { ratio: 5.50, buys: 300 }], cfgLive);
+  assert.equal(ds[0].fraction, 0.5);
+  assert.equal(ds[0].bagTrim, true);
+  assert.match(ds[0].reason, /^moonbag trim/);
+  assert.equal(ds[0].bagTrailSince, null);
+  assert.equal(ds[1].fraction, 0); // once per position — the re-cross sells nothing
+  assert.ok(!ds[1].bagTrim);
+});
+
 test('scope: no floor pending accrues pre-TP2 or in the closeted mode, and a carried stamp drops outside the mode', () => {
   const mid = fresh({ tp1Done: true, remainingFrac: 0.6, peakRatio: 1.25, peakMove: 1.25 }); // pre-TP2, under the line
   const d = evaluateExit(mid, mark(mid, 1.05), cfg, T0 + 4000);
