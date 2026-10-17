@@ -3244,6 +3244,9 @@ export class Bot {
     if ('bagDeadWaves' in decision) pos.bagDeadWaves = decision.bagDeadWaves;
     if ('bagDeadHot' in decision) pos.bagDeadHot = decision.bagDeadHot;
     if ('bagTrailSince' in decision) pos.bagTrailSince = decision.bagTrailSince;
+    if ('bagFloorSince' in decision) pos.bagFloorSince = decision.bagFloorSince;
+    if ('bagTp2Ratio' in decision) pos.bagTp2Ratio = decision.bagTp2Ratio;
+    if ('bagTrimDone' in decision) pos.bagTrimDone = decision.bagTrimDone;
     // fail-safe confirmation outcomes (user 2026-10-14): count the windows that held to a
     // sell vs the triggers that recovered and were cancelled — the layer's report card.
     if (decision.exitConfirmEvents && decision.exitConfirmEvents.length) {
@@ -3281,6 +3284,8 @@ export class Bot {
         else if (ev.type === 'floor') { this.stats.deadflow.floor = (this.stats.deadflow.floor || 0) + 1; console.log(`[deadflow] ${pos.symbol}: stub floor (+${Math.round(this.cfg.bagFloorPct * 100)}% over entry) — selling the rest`); }
         else if (ev.type === 'trail-pending') { this.stats.deadflow.trailPends = (this.stats.deadflow.trailPends || 0) + 1; console.log(`[bagtrail] ${pos.symbol}: moonbag trail breached — ${this.cfg.bagTrailConfirmSec}s confirm window started, bag rides unless it holds`); }
         else if (ev.type === 'trail-cleared') { this.stats.deadflow.trailClears = (this.stats.deadflow.trailClears || 0) + 1; console.log(`[bagtrail] ${pos.symbol}: back above the trail line inside the window — pending bag sell disarmed`); }
+        else if (ev.type === 'floor-pending') { this.stats.deadflow.floorPends = (this.stats.deadflow.floorPends || 0) + 1; console.log(`[bagfloor] ${pos.symbol}: small-bag floor breached — ${this.cfg.bagFloorConfirmSec}s confirm window started, bag rides unless it holds`); }
+        else if (ev.type === 'floor-cleared') { this.stats.deadflow.floorClears = (this.stats.deadflow.floorClears || 0) + 1; console.log(`[bagfloor] ${pos.symbol}: back above the floor line inside the window — pending floor sell disarmed`); }
       }
     }
     // STALL EXIT (user order 2026-10-16 19:24 EDT): lifecycle counts —
@@ -3445,6 +3450,14 @@ export class Bot {
       // same fraction, exactly as a TP bank books; the position stays open.
       pos.remainingFrac *= (1 - decision.fraction);
       console.log(`[deadflow] ${pos.symbol}: wave ${decision.bagWave} booked — bag remainder now ${(pos.remainingFrac * 100).toFixed(1)}% of the original position`);
+    }
+    if (decision.bagTrim) {
+      // Moonbag trim (owner order 2026-10-17 ~00:27 EDT): the +200%-from-TP2
+      // take sold half the CURRENT bag — shrink the book's remainder exactly
+      // as a wave booking does; the position stays open. bagTrimDone rode
+      // the decision's threaded state above, so it can never fire twice.
+      pos.remainingFrac *= (1 - decision.fraction);
+      console.log(`[bagtrim] ${pos.symbol}: moonbag trim booked — bag remainder now ${(pos.remainingFrac * 100).toFixed(1)}% of the original position`);
     }
     this.journal.trade({ type: 'sell', id: pos.id, mint: pos.mint, symbol: pos.symbol, fraction: decision.fraction, solOut: res.solOut, reason: decision.reason, sig: res.sig, simulated: res.simulated, ts: n, path: pos.pathClass || undefined });
     // Callout Shadow Lab (record-only): a banked TP is a would-call moment —

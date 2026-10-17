@@ -97,7 +97,7 @@ export class ShadowTrades {
         remainingFrac: 1, peakRatio: 1, peakMove: 1,
         tp1Done: false, tp2Done: false, tp1Arm: null,
         stallSince: null, stopArmedTs: null, floorChecks: 0, floorSince: null,
-        probationSince: null, moveHist: [], exitPending: {}, stallPending: null, bagDeadWaves: 0, bagDeadHot: false, bagTrailSince: null, flowHist: [],
+        probationSince: null, moveHist: [], exitPending: {}, stallPending: null, bagDeadWaves: 0, bagDeadHot: false, bagTrailSince: null, bagFloorSince: null, bagTp2Ratio: null, bagTrimDone: false, flowHist: [],
         realizedSol: 0, sells: 0, legs: [],
         lastValueSol: sizeSol, lastTickTs: 0,
         marks: 0, firstMarkTs: null, lastMarkTs: null,
@@ -165,6 +165,9 @@ export class ShadowTrades {
         if ('bagDeadWaves' in d) s.bagDeadWaves = d.bagDeadWaves;
         if ('bagDeadHot' in d) s.bagDeadHot = d.bagDeadHot;
         if ('bagTrailSince' in d) s.bagTrailSince = d.bagTrailSince;
+        if ('bagFloorSince' in d) s.bagFloorSince = d.bagFloorSince;
+        if ('bagTp2Ratio' in d) s.bagTp2Ratio = d.bagTp2Ratio;
+        if ('bagTrimDone' in d) s.bagTrimDone = d.bagTrimDone;
         if ('tp1Arm' in d) s.tp1Arm = d.tp1Arm;
         this._dirty = true;
         if (!(d.fraction > 0)) continue;

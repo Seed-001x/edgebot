@@ -89,6 +89,17 @@
 // the whole remaining bag at every stage, stub included. BAG_DEAD_STAGED=0
 // restores the legacy behavior entire: one dead-flow fire sells the whole
 // bag and the floor does not exist.
+//
+// SMALL-BAG MOONBAG METHOD (owner order 2026-10-17 ~00:22-00:25 EDT, "no
+// dead flow no 50% cut just hold" / "definitely closet this method… once
+// we start leaving bigger moon bags we utilize it"): the staged design
+// above is the CLOSETED method. While BAG_SMALL_HOLD is on (the live
+// default), 3c2 sells nothing on a post-TP2 bag and the 3c3 floor — armed
+// from TP2, confirming for BAG_FLOOR_CONFIRM_SEC (default 30) — is the
+// bag's downside exit; mode off restores the staged design byte-for-byte.
+// A MOONBAG TRIM (owner order 2026-10-17 ~00:27 EDT, section 3c1) rides
+// alongside in both modes: at +200% from the TP2 print, half the bag
+// banks, once per position.
 const STRIP = {
   stopFamily: true,
   stallProbation: true,
@@ -229,6 +240,16 @@ export function evaluateExit(pos, mark, cfg, now) {
   // starts at wave 0, not hot.
   let bagDeadWaves = pos.bagDeadWaves || 0;
   let bagDeadHot = !!pos.bagDeadHot;
+  // Moonbag trim state (owner order 2026-10-17 ~00:27 EDT, section 3c1):
+  // bagTp2Ratio is the realizable ratio the TP2 fire check printed — the
+  // trim's baseline, stamped by that check's decision (below) and threaded
+  // back by the caller like every other state field; null until TP2 banks
+  // (a position that crossed TP2 before the stamp existed carries none and
+  // 3c1 judges it against the TP2 trigger level instead). bagTrimDone is
+  // the once-per-position flag: persisted, never reset, so no partial sell
+  // or re-crossing can ever re-arm the trim.
+  let bagTp2Ratio = pos.bagTp2Ratio ?? null;
+  let bagTrimDone = !!pos.bagTrimDone;
   // Moonbag-trail confirmation state (owner order 2026-10-16 23:12 EDT,
   // "Give it a 1 min timer"): the ms stamp of the first check the 3c trail
   // line read breached — null = no breach pending. The trail no longer
@@ -256,6 +277,31 @@ export function evaluateExit(pos, mark, cfg, now) {
   } else if (bagTrailSince != null) {
     bagTrailSince = null;
     deadflowEvents.push({ type: 'trail-cleared' });
+  }
+  // Small-bag floor confirmation state (owner order 2026-10-17 ~00:22 EDT,
+  // "no dead flow no 50% cut just hold" — section 3c3): in small-bag mode
+  // the 3c3 floor is the bag's downside exit and it confirms exactly like
+  // the trail above — the first check at/below the floor line stamps
+  // bagFloorSince, the bag sells only after BAG_FLOOR_CONFIRM_SEC
+  // (default 30) CONTINUOUS seconds at/below the line, and any check back
+  // above the line clears the stamp with no accumulated credit. Judged
+  // here in state prep for the same reason as the trail's: the breach is
+  // a level read off this check's own ratio, so section 3c3 only reads
+  // the clock. Scope: small-bag mode + post-TP2 + window on — anything
+  // else drops a carried stamp, and with the window at 0 no stamp ever
+  // accrues (the instant fire). The caller threads the stamp back from
+  // every decision, so a pending survives restarts; a position opened
+  // before this build carries none and starts unpended.
+  const bagSmallHold = (cfg.bagSmallHold ?? 1) > 0;
+  const bagFloorConfirmSec = cfg.bagFloorConfirmSec ?? 30;
+  let bagFloorSince = pos.bagFloorSince ?? null;
+  const floorBreached = bagSmallHold && !!pos.tp2Done && ratio <= 1 + cfg.bagFloorPct;
+  if (!bagSmallHold || !(bagFloorConfirmSec > 0) || !pos.tp2Done) bagFloorSince = null;
+  else if (floorBreached) {
+    if (bagFloorSince == null) { bagFloorSince = now; deadflowEvents.push({ type: 'floor-pending' }); }
+  } else if (bagFloorSince != null) {
+    bagFloorSince = null;
+    deadflowEvents.push({ type: 'floor-cleared' });
   }
   // PROTECT switch (user 2026-10-15, "just the stop loss… no ratchet", "no SL until I
   // say"): a one-time, per-position flag set via POST /protect while the user rides a
@@ -299,9 +345,9 @@ export function evaluateExit(pos, mark, cfg, now) {
   // section 4b), so no clock that matured during the takeover can fire. Takeover
   // supersedes protect: with both flags set, this return wins and nothing judges.
   const taken = !!pos.takenOver;
-  const out = (fraction, reason) => ({ fraction, reason, newPeak: peakRatio, newPeakMove: peakMove, ratio, stallSince: null, stopArmedTs, floorChecks, floorSince, probationSince, tp1Arm, moveHist, exitPending, exitConfirmEvents, protectedBlock, killZone, postTp1PeakMove, killzoneEvents, deadflowArmed, deadflowEvents, stallPending, stallEvents, bagDeadWaves, bagDeadHot, bagTrailSince });
+  const out = (fraction, reason) => ({ fraction, reason, newPeak: peakRatio, newPeakMove: peakMove, ratio, stallSince: null, stopArmedTs, floorChecks, floorSince, probationSince, tp1Arm, moveHist, exitPending, exitConfirmEvents, protectedBlock, killZone, postTp1PeakMove, killzoneEvents, deadflowArmed, deadflowEvents, stallPending, stallEvents, bagDeadWaves, bagDeadHot, bagTrailSince, bagFloorSince, bagTp2Ratio, bagTrimDone });
   if (taken) {
-    stopArmedTs = null; floorChecks = 0; floorSince = null; probationSince = null; tp1Arm = null; stallPending = null; bagDeadHot = false; bagTrailSince = null;
+    stopArmedTs = null; floorChecks = 0; floorSince = null; probationSince = null; tp1Arm = null; stallPending = null; bagDeadHot = false; bagTrailSince = null; bagFloorSince = null;
     if (exitPending != null) exitPending = {};
     return { ...out(0, null), takenOver: true };
   }
@@ -449,6 +495,11 @@ export function evaluateExit(pos, mark, cfg, now) {
   //     An un-split MODEST remainder never reaches this section's rule (3a owns it until the split).
   if (!modestActive && pos.tp1Done && !pos.tp2Done && !pos.noTp && cfg.tp2Frac > 0 && gain >= cfg.tp2Pct) {
     const frac = Math.min(1, cfg.tp2Frac / Math.max(pos.remainingFrac, 1e-9));
+    // Moonbag trim baseline (owner order 2026-10-17 ~00:27 EDT): stamp the
+    // realizable ratio THIS check prints — the bag's value at the TP2
+    // moment — so section 3c1 can judge +200% from here. Stamped once:
+    // a position that somehow re-judges TP2 keeps its original stamp.
+    if (bagTp2Ratio == null) bagTp2Ratio = ratio;
     return { ...out(frac, `TP2 +${(gain * 100).toFixed(0)}%`), tp2: true };
   }
 
@@ -469,6 +520,32 @@ export function evaluateExit(pos, mark, cfg, now) {
       return out(1, `moonbag trail (${Math.round(cfg.bagTrailPct * 100)}% off peak ${peakRatio.toFixed(2)}x, now ${((ratio - 1) * 100).toFixed(1)}%, held ${Math.round(bagTrailConfirmSec)}s)`);
     }
     return out(1, `moonbag trail (${Math.round(cfg.bagTrailPct * 100)}% off peak ${peakRatio.toFixed(2)}x, now ${((ratio - 1) * 100).toFixed(1)}%)`);
+  }
+
+  // 3c1. MOONBAG TRIM (owner order 2026-10-17 ~00:27 EDT, "200% from TP2 —
+  //      trim 50%"): a TP-ladder-family profit take on the bag, judged in
+  //      BOTH bag modes (a moonbag-stage rule, not a mode rule). Once per
+  //      position: when the realizable ratio reaches BAG_TRIM_MULT (3) ×
+  //      the ratio stamped at the TP2 print — +200% measured from the TP2
+  //      moment, ≈5.4x entry — sell half the CURRENT remainder; the
+  //      surviving half stays under the moonbag rules (the 3c trail judged
+  //      above, dead flow / floor below). Judged on ratio — the remainder's
+  //      value per its share of entry cost — never on remainingFrac, so
+  //      wave/partial sells (and the trim's own booking) cannot move the
+  //      line or re-arm it: the persisted bagTrimDone flag is the
+  //      once-only guarantee. A position that crossed TP2 before the stamp
+  //      existed judges against 1 + tp2Pct, the TP2 trigger level — the
+  //      same ≈5.4x-entry figure the order names. PROTECT does not
+  //      suppress it (a profit take like TP1/TP2, which protection has
+  //      never blocked); TAKEOVER returned long before here. PLACEMENT:
+  //      after the trail, like every moonbag-stage rule — a trail breach
+  //      on the same check keeps the trail's label.
+  if (pos.tp2Done && !bagTrimDone && (cfg.bagTrimMult ?? 3) > 0) {
+    const trimBase = bagTp2Ratio != null ? bagTp2Ratio : 1 + cfg.tp2Pct;
+    if (trimBase > 0 && ratio >= (cfg.bagTrimMult ?? 3) * trimBase) {
+      bagTrimDone = true;
+      return { ...out(0.5, `moonbag trim (+200% from TP2 — sold 50%, now +${((ratio - 1) * 100).toFixed(1)}%)`), bagTrim: true };
+    }
   }
 
   // 3c2. DEAD FLOW AFTER TP2 (exit-stack v2, user 2026-10-15 ~20:26 EDT): the
@@ -521,7 +598,16 @@ export function evaluateExit(pos, mark, cfg, now) {
   //      (plus the untouched 3c trail, which outranks everything here).
   //      BAG_DEAD_STAGED=0 keeps the legacy branch below: the first dead
   //      check sells the whole bag, exactly as this section read before.
-  if (pos.tp2Done && cfg.deadflowWindowSec > 0 && deadflowArmed) {
+  //      SMALL-BAG MODE (owner order 2026-10-17 ~00:22 EDT; BAG_SMALL_HOLD,
+  //      default on): this whole section is INERT — dead flow sells NOTHING
+  //      on the bag, staged or legacy: no waves, no wave counting, the bag
+  //      simply holds, and the 3c3 floor (with its confirmation) is the
+  //      downside exit. The waves machinery stays in the code intact behind
+  //      the mode switch — closeted for the bigger-bag regime per the
+  //      owner's amendment ("once we start leaving bigger moon bags we
+  //      utilize it") — and with the mode off every line below judges
+  //      exactly as it did before the small-bag build.
+  if (!bagSmallHold && pos.tp2Done && cfg.deadflowWindowSec > 0 && deadflowArmed) {
     const winMs = cfg.deadflowWindowSec * 1000;
     const winStart = now - winMs;
     let fStart = null, fNow = null;
@@ -580,6 +666,28 @@ export function evaluateExit(pos, mark, cfg, now) {
   //      death (1) outranks both. PROTECT does not suppress it (a price-
   //      level exit like the trail, which protection has never blocked);
   //      TAKEOVER returned long before here.
+  //      SMALL-BAG MODE (owner order 2026-10-17 ~00:22 EDT): the floor is
+  //      the bag's downside exit outright — armed from TP2, no wave
+  //      precondition, no BAG_DEAD_STAGED gate — and it confirms: state
+  //      prep stamped bagFloorSince on the first at/below check, and the
+  //      bag sells only once the breach has HELD BAG_FLOOR_CONFIRM_SEC
+  //      (default 30) continuous seconds; inside the window this section
+  //      returns a no-sale that owns the check, exactly like the trail's
+  //      pending (3c), and the first check at/after the window with the
+  //      line still breached sells in full, its reason carrying the hold.
+  //      Window 0 = the instant fire on the line, same string as the
+  //      closeted floor's. The branch below is the closeted mode's floor,
+  //      untouched.
+  if (bagSmallHold && pos.tp2Done && ratio <= 1 + cfg.bagFloorPct) {
+    if (bagFloorConfirmSec > 0) {
+      const heldMs = bagFloorSince != null ? now - bagFloorSince : 0;
+      if (heldMs < bagFloorConfirmSec * 1000) return out(0, null);
+      deadflowEvents.push({ type: 'floor' });
+      return out(1, `moonbag floor (+${Math.round(cfg.bagFloorPct * 100)}% over entry, held ${Math.round(bagFloorConfirmSec)}s)`);
+    }
+    deadflowEvents.push({ type: 'floor' });
+    return out(1, `moonbag floor (+${Math.round(cfg.bagFloorPct * 100)}% over entry)`);
+  }
   if (cfg.bagDeadStaged > 0 && pos.tp2Done && bagDeadWaves >= 2 && ratio <= 1 + cfg.bagFloorPct) {
     deadflowEvents.push({ type: 'floor' });
     return out(1, `moonbag floor (+${Math.round(cfg.bagFloorPct * 100)}% over entry)`);

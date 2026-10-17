@@ -20,7 +20,7 @@ const S = 1000;
 // Same isolation as deadflow.test.mjs: txFeeSol 0 (move == ratio), the stall /
 // dip / lock family inert, real dead-flow defaults (arm +8%, window 45s,
 // maxBuyDelta 1, peakGap 0.01) and the real trail default (bagTrailPct 0.15).
-const cfg = testCfg({ txFeeSol: 0, dipStopPct: 0, lockKeep: 0, stallSec: 0, stallProbationSec: 0, beArmPct: 0, bagTrailConfirmSec: 0 }); // trail timer off: this file pins the trail's precedence, the timer is pinned in bagtrailconfirm.test.mjs
+const cfg = testCfg({ txFeeSol: 0, dipStopPct: 0, lockKeep: 0, stallSec: 0, stallProbationSec: 0, beArmPct: 0, bagTrailConfirmSec: 0, bagSmallHold: 0 }); // trail timer off: this file pins the trail's precedence, the timer is pinned in bagtrailconfirm.test.mjs; small-bag mode off: this file's subject is the closeted waves method (the small-bag regime is pinned in smallbag.test.mjs)
 const mark = (pos, ratio, o = {}) => ({ valueSol: pos.entrySol * pos.remainingFrac * ratio, liqUsd: 200_000, buysM5: 30, sellsM5: 10, solUsd: 150, volH1: 0, ...o });
 const thread = (p, d) => {
   if (d.newPeak != null) p.peakRatio = d.newPeak;
@@ -116,7 +116,7 @@ test('after wave 2, dead flow never sells again — a third dead episode is iner
 });
 
 test('stub floor: at ratio <= 1.10 the stub sells in full — above it, it rides', () => {
-  const cfgFloor = testCfg({ txFeeSol: 0, dipStopPct: 0, lockKeep: 0, stallSec: 0, stallProbationSec: 0, beArmPct: 0, bagTrailPct: 0.85 }); // trail neutralized: the floor is the only price exit in this test
+  const cfgFloor = testCfg({ txFeeSol: 0, dipStopPct: 0, lockKeep: 0, stallSec: 0, stallProbationSec: 0, beArmPct: 0, bagTrailPct: 0.85, bagSmallHold: 0 }); // trail neutralized: the floor is the only price exit in this test; small-bag mode off: the closeted (post-wave) floor is the subject
   const p = bag();
   driveTwoWaves(p, cfgFloor);
   const high = drive(p, [{ ratio: 1.30, buys: 430, sells: 40 }, { ratio: 1.11, buys: 430, sells: 40 }], cfgFloor);
@@ -128,7 +128,7 @@ test('stub floor: at ratio <= 1.10 the stub sells in full — above it, it rides
 });
 
 test('the floor governs the final stub only: a dip to 1.05 after wave 1 sells nothing — flow, not price, still stages the bag', () => {
-  const cfgFloor = testCfg({ txFeeSol: 0, dipStopPct: 0, lockKeep: 0, stallSec: 0, stallProbationSec: 0, beArmPct: 0, bagTrailPct: 0.85 });
+  const cfgFloor = testCfg({ txFeeSol: 0, dipStopPct: 0, lockKeep: 0, stallSec: 0, stallProbationSec: 0, beArmPct: 0, bagTrailPct: 0.85, bagSmallHold: 0 });
   const p = bag();
   const d1 = drive(p, [...CLIMB, ...flat(14, 1.86, 312)], cfgFloor);
   assert.equal(wavesOf(d1).length, 1);
@@ -165,7 +165,7 @@ test('the trail is untouched: it fires 100% before any wave, between waves, and 
 });
 
 test('kill switch: BAG_DEAD_STAGED=0 restores the legacy whole-bag fire — and the floor does not exist', () => {
-  const cfgLegacy = testCfg({ txFeeSol: 0, dipStopPct: 0, lockKeep: 0, stallSec: 0, stallProbationSec: 0, beArmPct: 0, bagDeadStaged: 0 });
+  const cfgLegacy = testCfg({ txFeeSol: 0, dipStopPct: 0, lockKeep: 0, stallSec: 0, stallProbationSec: 0, beArmPct: 0, bagDeadStaged: 0, bagSmallHold: 0 });
   const p = bag();
   const ds = drive(p, [...CLIMB, ...flat(14, 1.86, 312)], cfgLegacy);
   const fire = ds.find(d => d.fraction === 1);
@@ -174,7 +174,7 @@ test('kill switch: BAG_DEAD_STAGED=0 restores the legacy whole-bag fire — and 
   assert.deepEqual(fire.deadflowEvents, [{ type: 'fired' }]);
   assert.equal(p.bagDeadWaves, 0, 'no wave ever counts under the legacy rule');
 
-  const cfgLegacyFloor = testCfg({ txFeeSol: 0, dipStopPct: 0, lockKeep: 0, stallSec: 0, stallProbationSec: 0, beArmPct: 0, bagDeadStaged: 0, bagTrailPct: 0.85 }); // trail neutralized so only a floor could sell
+  const cfgLegacyFloor = testCfg({ txFeeSol: 0, dipStopPct: 0, lockKeep: 0, stallSec: 0, stallProbationSec: 0, beArmPct: 0, bagDeadStaged: 0, bagTrailPct: 0.85, bagSmallHold: 0 }); // trail neutralized so only a floor could sell
   const stub = bag({ bagDeadWaves: 2 }); // even a position carrying wave state gets no floor with the switch off
   const live = drive(stub, seq([1.05, 1.05, 1.05, 1.05, 1.05], [300, 320, 340, 360, 380]), cfgLegacyFloor);
   assert.ok(live.every(d => d.fraction === 0), 'ratio 1.05 with live flow: no floor, no dead-flow fire — nothing');

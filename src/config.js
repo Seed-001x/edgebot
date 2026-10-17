@@ -591,6 +591,23 @@ export function loadConfig(env = process.env) {
     // sells the whole bag at once, exactly as before, and the floor does not exist.
     bagDeadStaged: num(env, 'BAG_DEAD_STAGED', 1),        // staged waves on (1) / legacy whole-bag dead-flow sell (0)
     bagFloorPct: num(env, 'BAG_FLOOR_PCT', 0.10),         // post-wave-2 stub floor: sell in full when ratio <= 1 + this ("10% above avg entry")
+    // SMALL-BAG MOONBAG METHOD (owner order 2026-10-17 ~00:22 EDT, "no dead flow no 50% cut just
+    // hold"; amendment ~00:24 EDT, "definitely closet this method… once we start leaving bigger
+    // moon bags we utilize it"): while BAG_SMALL_HOLD is on (the live default), the post-TP2 bag's
+    // dead-flow section (exits.js 3c2) sells NOTHING — no waves, no legacy whole-bag fire — and the
+    // 3c3 floor becomes the bag's downside exit, armed from TP2 (no wave precondition) with a
+    // BAG_FLOOR_CONFIRM_SEC confirmation (default 30; 0 = instant fire on the line). Mode OFF
+    // restores the staged waves + instant post-wave-2 floor byte-for-byte: the waves method is
+    // closeted in the code, not deleted, and returns when bags get bigger (a TP2_FRAC trim that
+    // leaves ~20% riding instead of ~5%).
+    bagSmallHold: num(env, 'BAG_SMALL_HOLD', 1),          // small-bag moonbag mode on (1) / closeted waves method (0)
+    bagFloorConfirmSec: num(env, 'BAG_FLOOR_CONFIRM_SEC', 30), // small-bag floor confirmation: the floor breach must HOLD this many seconds before the bag sells (0 = instant fire)
+    // MOONBAG TRIM (owner order 2026-10-17 ~00:27 EDT, "200% from TP2 — trim 50%"): once per
+    // position, when the bag's realizable ratio reaches BAG_TRIM_MULT × the ratio stamped at the
+    // TP2 print (3x ≈ +200% from TP2 ≈ 5.4x entry), sell half the current remainder; the surviving
+    // half rides the trail/floor as before (exits.js 3c1). Applies in both bag modes; protect does
+    // not suppress it (a TP-ladder-family profit take, like TP1/TP2). 0 = trim off.
+    bagTrimMult: num(env, 'BAG_TRIM_MULT', 3),            // moonbag trim level: this multiple of the TP2-stamp ratio (0 = off)
     lockArm: num(env, 'PROFIT_LOCK_ARM', 0.15),           // once up +15% or more after fees...
     lockKeep: num(env, 'PROFIT_LOCK_KEEP', 0.5),          // ...sell the rest if it falls below half of its best gain (0 = off)
     trailArm: num(env, 'TRAIL_ARM', 1.00),
@@ -752,6 +769,9 @@ export function validateConfig(cfg) {
   if (cfg.deadflowPeakGapPct < 0 || cfg.deadflowPeakGapPct > 0.5) errs.push('DEADFLOW_PEAK_GAP_PCT must be between 0 and 0.5');
   if (cfg.bagDeadStaged < 0 || cfg.bagDeadStaged > 1) errs.push('BAG_DEAD_STAGED must be 0 or 1');
   if (cfg.bagFloorPct < 0 || cfg.bagFloorPct >= 1) errs.push('BAG_FLOOR_PCT must be between 0 and 1');
+  if (cfg.bagSmallHold < 0 || cfg.bagSmallHold > 1) errs.push('BAG_SMALL_HOLD must be 0 or 1');
+  if (cfg.bagFloorConfirmSec < 0 || cfg.bagFloorConfirmSec > 3600) errs.push('BAG_FLOOR_CONFIRM_SEC must be between 0 and 3600');
+  if (cfg.bagTrimMult < 0 || cfg.bagTrimMult > 100) errs.push('BAG_TRIM_MULT must be between 0 (off) and 100');
   if (cfg.stallBandPct < -0.5 || cfg.stallBandPct > 1) errs.push('STALL_BAND_PCT must be between -0.5 and 1 (breakout bar above entry for the entry stall)');
   if (cfg.stallBandUpPct < 0 || cfg.stallBandUpPct > 1) errs.push('STALL_BAND_UP_PCT must be between 0 and 1 (upside edge of the entry-stall dead zone)');
   if (cfg.stallProbationSec < 0) errs.push('STALL_PROBATION_SEC must be >= 0 (0 = probation off, sell at the stall deadline)');
