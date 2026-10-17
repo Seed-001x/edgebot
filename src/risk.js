@@ -181,17 +181,32 @@ export class Risk {
     if (!this.s.closed[mint] || ts > this.s.closed[mint]) { this.s.closed[mint] = ts; this.save(); }
   }
 
-  /** The size new entries actually use: the configured size, halved while the risk
-   *  brake is tripped. Never changes a live position — sizeFor is entry-time only. */
-  effectiveTradeSol() {
-    if (!this.s.sizeHalved) return this.cfg.tradeSol;
-    return +((this.cfg.tradeSol || 0) * (this.cfg.lossHalveFactor || 1)).toFixed(6);
+  /** The base size for an entry opened with `openCount` positions already
+   *  open (owner order 2026-10-17: "open up one more trading slot but
+   *  .025"): slot 1 (nothing open) sizes at tradeSol; an entry taken while
+   *  a position is already open is the second slot and sizes at slot2Sol.
+   *  slot2Sol <= 0 is the kill switch — every slot sizes at tradeSol,
+   *  byte-identical to the pre-slot stack. The count is the caller's live
+   *  positions length — the same count canEnter's cap judges, adopted
+   *  positions included (they sit in that list like any other). */
+  baseTradeSol(openCount = 0) {
+    if (openCount >= 1 && this.cfg.slot2Sol > 0) return this.cfg.slot2Sol;
+    return this.cfg.tradeSol;
+  }
+
+  /** The size new entries actually use: the slot's base size, halved while the
+   *  risk brake is tripped (the brake factors whichever base the slot
+   *  selected, exactly as it factors slot 1). Never changes a live
+   *  position — sizeFor is entry-time only. */
+  effectiveTradeSol(openCount = 0) {
+    if (!this.s.sizeHalved) return this.baseTradeSol(openCount);
+    return +((this.baseTradeSol(openCount) || 0) * (this.cfg.lossHalveFactor || 1)).toFixed(6);
   }
 
   /** Position size: effective size, capped at maxPoolFraction of pool liquidity. */
-  sizeFor(liqUsd, solUsd) {
+  sizeFor(liqUsd, solUsd, openCount = 0) {
     const poolCapSol = (liqUsd * this.cfg.maxPoolFraction) / (solUsd || 150);
-    return Math.max(0, Math.min(this.effectiveTradeSol(), poolCapSol));
+    return Math.max(0, Math.min(this.effectiveTradeSol(openCount), poolCapSol));
   }
 
   recordEntry(mint) {

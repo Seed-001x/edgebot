@@ -18,6 +18,7 @@ export function loadConfig(env = process.env) {
     // ---- hard limits (enforced in risk.js, not advisory) ----
     tradeSol: num(env, 'TRADE_SOL', 0.05),
     maxPositions: num(env, 'MAX_POSITIONS', 5),
+    slot2Sol: num(env, 'SLOT2_SOL', 0.025),             // size for an entry opened while a position is already open (owner order 2026-10-17: "open up one more trading slot but .025" — slot 1 keeps tradeSol, the second concurrent slot trades this); 0 = off (uniform sizing, the pre-slot stack)
     dailyLossSol: num(env, 'DAILY_LOSS_SOL', 0),        // realized loss in a UTC day that halts new entries; 0 = disabled
     haltAfterCloses: num(env, 'HALT_AFTER_CLOSES', 0),  // one-shot: halt new entries after this many more closes; 0 = off
     // Risk brake (user 2026-10-15, his rule: "after the next 3 L trade half... if 1 trade
@@ -649,6 +650,7 @@ export function validateConfig(cfg) {
   if (cfg.tradeSol <= 0) errs.push('TRADE_SOL must be > 0');
   if (cfg.tradeSol > 0.25 && !cfg.allowLarge) errs.push(`TRADE_SOL=${cfg.tradeSol} looks like a typo (>0.25). Set ALLOW_LARGE=1 if intentional.`);
   if (cfg.maxPositions < 1 || cfg.maxPositions > 10) errs.push('MAX_POSITIONS must be 1..10');
+  if (cfg.slot2Sol < 0) errs.push('SLOT2_SOL must be >= 0 (0 = off)');
   if (cfg.dailyLossSol < 0) errs.push('DAILY_LOSS_SOL must be >= 0 (0 = disabled)');
   if (cfg.haltAfterCloses < 0) errs.push('HALT_AFTER_CLOSES must be >= 0');
   if (cfg.lossHalveN < 0) errs.push('LOSS_HALVE_N must be >= 0');

@@ -2748,7 +2748,14 @@ export class Bot {
     this.risk.checkKill(walletSol, open);
     this.risk.checkBalanceHalt(walletSol, open);
 
-    const size = this.risk.sizeFor(v.liq, solUsd);
+    // Slot ordinal for sizing (owner order 2026-10-17: "open up one more
+    // trading slot but .025"): an entry opened while a position is already
+    // open is the SECOND slot and sizes at SLOT2_SOL; slot 1 sizes at
+    // tradeSol. The count is this.positions.length — the same count the
+    // canEnter cap below judges (adopted bags sit in this list too), so
+    // the cap and the size can never disagree about which slot this is.
+    const slot = this.positions.length >= 1 ? 2 : 1;
+    const size = this.risk.sizeFor(v.liq, solUsd, this.positions.length);
     const gate0 = this.risk.canEnter({ mint: v.address, walletSol, openCount: this.positions.length, sizeSol: size, halted: this.halted() });
     if (!gate0.ok) {
       checks.risk = { pass: false, reason: gate0.reason || null };
@@ -3009,6 +3016,12 @@ export class Bot {
       // for the structural stop in managePosition. A signal carrying
       // neither stamp produces the exact position shape of tonight.
       ...(sig.baseTp1 ? { tp1AtPct: 0.5 } : {}), ...(sig.structureLow > 0 ? { structureLow: sig.structureLow } : {}),
+      // SLOT stamp (owner order 2026-10-17): a second-slot entry (priced at
+      // SLOT2_SOL by the seam above) carries slot: 2 on the position and
+      // its open record. With SLOT2_SOL=0 (kill switch) nothing is priced
+      // by the slot rule and nothing is stamped — the record is exactly
+      // the pre-slot shape, like every other disabled knob tonight.
+      ...(slot === 2 && this.cfg.slot2Sol > 0 ? { slot: 2 } : {}),
       entryPrice: v.price, entryMc: v.mc, realizedSol: 0, simulated: fill.simulated, sigBuy: fill.sig, markFails: 0,
       stamp: this.cfgStamp, gates: checks, gatePass: g.pass, decimals: dec,
       entryFillSol: tokensWhole > 0 ? fill.solSpent / tokensWhole : null, solUsdEntry: solUsd || null, ticks: [],
@@ -3040,7 +3053,7 @@ export class Bot {
       });
     }
     this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'taken', reasons: [], price: v.price, mc: v.mc, metrics: { ...sig.metrics, roundTrip: +rt.ratio.toFixed(3), sizeSol: size }, warnings: g.warnings, label: sig.label || null, gates: checks, gatePass: g.pass, fields: this._fieldsFor(v, sig) });
-    this.journal.trade({ type: 'open', id: pos.id, mint: pos.mint, symbol: pos.symbol, setup: pos.setup, entrySol: pos.entrySol, sig: fill.sig, simulated: fill.simulated, ts: n, stamp: pos.stamp, tokensRaw: fill.tokensRaw, entryFillSol: pos.entryFillSol, entryFillUsd: pos.entryFillSol != null && solUsd > 0 ? +(pos.entryFillSol * solUsd).toFixed(10) : null });
+    this.journal.trade({ type: 'open', id: pos.id, mint: pos.mint, symbol: pos.symbol, setup: pos.setup, entrySol: pos.entrySol, sig: fill.sig, simulated: fill.simulated, ts: n, stamp: pos.stamp, tokensRaw: fill.tokensRaw, entryFillSol: pos.entryFillSol, entryFillUsd: pos.entryFillSol != null && solUsd > 0 ? +(pos.entryFillSol * solUsd).toFixed(10) : null, ...(slot === 2 && this.cfg.slot2Sol > 0 ? { slot: 2 } : {}) });
     // Flow-Exit Watcher (record-only): a flow-triggered entry starts a watch
     // on the wallet whose buy nominated it — its trim/exit get journaled and
     // scored against this position's own close in ensureClose. No-op for
