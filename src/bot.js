@@ -172,6 +172,11 @@ export class Bot {
     // SL ladder's counters die with it — a stats file persisted during the
     // ladder's few live hours must not resurrect them on /state.
     delete this.stats.slLadder; delete this.stats.ladderOff;
+    // STAGED MOONBAG DEAD FLOW (user order 2026-10-16): the deadflow tally
+    // gains waves/floor counters — a stats file persisted by the pre-staging
+    // build carries only {armed, fired}, so normalize the shape here or the
+    // first wave event would increment an undefined field into NaN.
+    if (this.stats.deadflow) { this.stats.deadflow.waves = this.stats.deadflow.waves || 0; this.stats.deadflow.floor = this.stats.deadflow.floor || 0; }
     if (loaded) return;
     // Seed from journal history so dashboard isn't empty after first deploy with persistence
     try {
@@ -2373,8 +2378,8 @@ export class Bot {
       for (const ev of decision.deadflowEvents) {
         if (ev.type === 'armed') { this.stats.deadflow.armed++; console.log(`[deadflow] ${pos.symbol}: armed (peak move reached +${Math.round(this.cfg.deadflowArmPct * 100)}% post-TP2)`); }
         else if (ev.type === 'fired') this.stats.deadflow.fired++;
-        else if (ev.type === 'wave') { this.stats.deadflow.fired++; this.stats.deadflow.waves++; console.log(`[deadflow] ${pos.symbol}: wave ${ev.wave} — sold 50% of the bag`); }
-        else if (ev.type === 'floor') { this.stats.deadflow.floor++; console.log(`[deadflow] ${pos.symbol}: stub floor (+${Math.round(this.cfg.bagFloorPct * 100)}% over entry) — selling the rest`); }
+        else if (ev.type === 'wave') { this.stats.deadflow.fired++; this.stats.deadflow.waves = (this.stats.deadflow.waves || 0) + 1; console.log(`[deadflow] ${pos.symbol}: wave ${ev.wave} — sold 50% of the bag`); }
+        else if (ev.type === 'floor') { this.stats.deadflow.floor = (this.stats.deadflow.floor || 0) + 1; console.log(`[deadflow] ${pos.symbol}: stub floor (+${Math.round(this.cfg.bagFloorPct * 100)}% over entry) — selling the rest`); }
       }
     }
     // STALL EXIT (user order 2026-10-16 19:24 EDT): lifecycle counts —
