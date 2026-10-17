@@ -10,7 +10,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { History } from './history.js';
-import { detect, detectChurn, detectLiftoff, eligible, fastPop, fastPopFloors } from './detect.js';
+import { detect, detectChurn, detectLiftoff, eligible, fastPop, fastPopFloors, judgeScan, closestCall, betterScanVerdict } from './detect.js';
 import { runGates, hasHardFail, tempRuleViolation, blockedNameWord, extensionCheck, freshHistoryCheck, flowSnapshotCheck, shallowDipCheck, summarizeGateChecks, holderSamples, foldLastTrades } from './gate.js';
 import { computeSignalFields } from './signalFields.js';
 import { evaluateExit } from './exits.js';
@@ -1252,6 +1252,33 @@ export class Bot {
     } catch { /* record-only — never disturb the poll */ }
   }
 
+  // Scan evaluation stamps (record-only, user order 2026-10-16): fold one
+  // poll evaluation's per-setup verdicts into the live session, keeping the
+  // BEST verdict per setup (a pass beats everything; then the further stage;
+  // then the tighter bottleneck margin — see betterScanVerdict). Bounded by
+  // construction: four small verdict objects ride the fold, however many
+  // ticks the session runs. Inert unless the ledger + stamps are both on.
+  _foldScanVerdicts(mint, verdicts) {
+    if (!this.cfg.scanLedger || !this.cfg.scanStamps || !verdicts) return;
+    const s = this.scanFold.get(mint);
+    if (!s) return;
+    s.evalTicks = (s.evalTicks || 0) + 1;
+    if (!s.verdicts) s.verdicts = {};
+    for (const [setup, vd] of Object.entries(verdicts)) {
+      s.verdicts[setup] = betterScanVerdict(s.verdicts[setup] || null, vd);
+    }
+  }
+
+  /** A view folded while the mint sat in an open position: the scan
+   *  detectors never judge held mints (the poll loop skips them), so a
+   *  session that only ever folded this way must SAY it was never evaluated
+   *  rather than sit blank at finalize. */
+  _noteScanHeld(mint) {
+    if (!this.cfg.scanLedger || !this.cfg.scanStamps) return;
+    const s = this.scanFold.get(mint);
+    if (s) s.heldFold = true;
+  }
+
   _finalizeScanSession(s) {
     const inWin = (this.journal.signals || []).filter(g => g.mint === s.mint && g.ts >= s.firstTs && g.ts <= s.lastTs);
     const rec = {
@@ -1266,6 +1293,23 @@ export class Bot {
       setups: [...new Set(inWin.map(g => g.setup))],
       stamp: this.cfgStamp,
     };
+    // Evaluation stamps ride the record (SCAN_STAMPS=0 = the record is
+    // exactly what it was before stamps shipped): the best verdict per
+    // setup + the closest-call summary when the session was poll-evaluated,
+    // or an explicit evaluated:false + why when views folded but the
+    // detector loop never judged the mint (held, or stream/position folds).
+    if (this.cfg.scanStamps) {
+      rec.evals = s.evalTicks || 0;
+      if (s.verdicts) {
+        rec.verdicts = s.verdicts;
+        rec.closest = closestCall(s.verdicts);
+      } else {
+        rec.evaluated = false;
+        rec.evalWhy = s.heldFold
+          ? 'watched while held as an open position — the scan detectors do not judge held mints'
+          : 'views folded outside the detector loop (stream/position folds) — never poll-evaluated while watched';
+      }
+    }
     this.journal.scanSession(rec);
     try { if (this.scanLab) this.scanLab.register(rec); } catch { /* scorer is best-effort */ }
     return rec;
@@ -1390,7 +1434,7 @@ export class Bot {
         this.journal.observe(v);
         try { if (this.scanLab) this.scanLab.observe(v, n); } catch { /* scan scorer — record-only */ }
         this.outcomeSeenAt.set(mint, n); // the trading poll just fed the outcome tracker for this mint
-        if (this.positions.some(p => p.mint === mint)) continue;
+        if (this.positions.some(p => p.mint === mint)) { try { if (this.cfg.scanStamps) this._noteScanHeld(mint); } catch { /* record-only */ } continue; }
         if (tickCfg.churnEnabled) this._updateChurnPins(mint, n);
         // Pop/trend first, exactly as before; churn is an ADDITIONAL detector judged
         // only when the classic pair passed (user 2026-10-14: "we still keep pop tho,
@@ -1401,6 +1445,15 @@ export class Bot {
         let sig = detect(v, this.history.get(mint), tickCfg, n);
         if (!sig && tickCfg.churnEnabled) sig = detectChurn(v, this.history.get(mint), tickCfg, n);
         if (!sig && tickCfg.liftoffEnabled) sig = detectLiftoff(v, this.history.get(mint), tickCfg, n);
+        // Scan evaluation stamps (record-only instrumentation, user order
+        // 2026-10-16): the detectors above are pure and silent — a null left
+        // no trace of WHICH numbers rejected the coin, so ledger sessions
+        // carried empty decisions/setups for everything that never fired.
+        // judgeScan re-walks the same legs (the same code the detectors are
+        // wrappers over) and the verdicts fold into the session's stamp
+        // accumulator. This cannot affect sig — the detect* calls above
+        // already decided — and nothing anywhere branches on a stamp.
+        try { if (this.cfg.scanStamps) this._foldScanVerdicts(mint, judgeScan(v, this.history.get(mint), tickCfg, n)); } catch { /* stamps are record-only */ }
         if (!sig) continue;
         const last = this.lastSignal.get(mint) || 0;
         if (n - last < this.cfg.signalCooldownMin * 60000) continue;

@@ -125,12 +125,37 @@ export function buildScanCard(sessions, scoreOf, now = Date.now()) {
     return { ...s, r15: sc ? sc.r15 : null, r60: sc ? sc.r60 : null };
   };
   const signaled = all.filter(s => s.signaled).length;
+  // Evaluation-stamp aggregate (2026-10-16): failing-condition counts per
+  // setup over finalized sessions — each session contributes the failing
+  // metrics of its BEST verdict per setup, once per metric. Read-time
+  // computed from the retained records; sessions finalized before stamps
+  // shipped carry no verdicts and simply don't contribute.
+  const failHistogram = {};
+  let evaluatedSessions = 0, neverEvaluated = 0, passedNotSignaled = 0;
+  for (const s of all) {
+    if (s.verdicts) {
+      evaluatedSessions++;
+      let anyPass = false;
+      for (const [setup, vd] of Object.entries(s.verdicts)) {
+        if (!vd) continue;
+        if (vd.passed) anyPass = true;
+        if (!vd.evaluated || vd.passed || !Array.isArray(vd.fails)) continue;
+        const h = failHistogram[setup] || (failHistogram[setup] = {});
+        for (const m of new Set(vd.fails.map(f => f.metric))) if (m) h[m] = (h[m] || 0) + 1;
+      }
+      if (anyPass && !s.signaled) passedNotSignaled++;
+    } else if (s.evaluated === false) neverEvaluated++;
+  }
   return {
     generatedTs: now,
     totals: {
       sessions: all.length,
       signaled,
       signaledPct: all.length ? round(100 * signaled / all.length, 1) : 0,
+      evaluatedSessions,
+      neverEvaluated,
+      passedNotSignaled,
+      failHistogram,
     },
     recent: all.slice(-100).reverse().map(join),
     signaledSessions: all

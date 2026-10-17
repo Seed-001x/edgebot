@@ -55,6 +55,7 @@ export function loadConfig(env = process.env) {
     // history. Nothing in trading reads the ledger. 0 disables it entirely.
     scanLedger: num(env, 'SCAN_LEDGER', 1),                 // 1 = scan ledger on
     scanSessionIdleSec: num(env, 'SCAN_SESSION_IDLE_SEC', 600), // a watch session finalizes after this long with no fresh view (or at 3h old)
+    scanStamps: num(env, 'SCAN_STAMPS', 1),                 // 1 = per-setup evaluation verdicts (judgeScan) stamped on scan-ledger sessions — record-only instrumentation; 0 = session records exactly as before stamps shipped
     // Shadow Seller (user order 2026-10-16, RECORD-ONLY): a LEARNED exit judge
     // with no ladder rules and no borrowed thresholds — it buckets each open
     // position's state (peak band × drawdown band × buy-share-trend sign),
@@ -547,6 +548,7 @@ export function validateConfig(cfg) {
   if (cfg.stopXcheckPct < 0.05 || cfg.stopXcheckPct > 0.9) errs.push('STOP_XCHECK_PCT must be between 0.05 and 0.9');
   if (cfg.extMaxFromBase < 0 || cfg.extMaxFromBase > 20) errs.push('EXT_MAX_FROM_BASE must be between 0 and 20 (0 = off)');
   if (cfg.paceRelax < 0 || cfg.paceRelax > 1) errs.push('PACE_RELAX must be 0 or 1');
+  if (cfg.scanStamps < 0 || cfg.scanStamps > 1) errs.push('SCAN_STAMPS must be 0 or 1');
   if (cfg.fastPopMaxGainPct < 0 || cfg.fastPopMaxGainPct > 5000) errs.push('FAST_POP_MAX_GAIN_PCT must be between 0 and 5000 (0 = off)');
   if (cfg.trendEnabled < 0 || cfg.trendEnabled > 1) errs.push('TREND_ENABLED must be 0 or 1');
   if (cfg.trendShadow < 0 || cfg.trendShadow > 1) errs.push('TREND_SHADOW must be 0 or 1');
