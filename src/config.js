@@ -219,6 +219,25 @@ export function loadConfig(env = process.env) {
     minLiqUsd: num(env, 'MIN_LIQ_USD', 15000),
     minLiqToMc: num(env, 'MIN_LIQ_TO_MC', 0.03),
     minPairAgeMin: num(env, 'MIN_PAIR_AGE_MIN', 0),   // skip pools younger than N min (0 = off). Off: winners W/GTRADE/Playground/19 were all bought 1–5m after pool open
+    // LIQ RE-CHECK (owner order 2026-10-17, "Ship the liquidity fix" — "The
+    // liquidity re-check, for every lane, not just confluence. A $0 reading
+    // on a coin that's seconds old is a broken read, not a decision."): when
+    // a YOUNG coin's (pair age <= LIQ_RECHECK_MAX_AGE_MIN) entry evaluation
+    // is about to terminal-skip SOLELY because liquidity read $0/missing
+    // (the eligible() liq + liqToMc legs), the skip is deferred instead: the
+    // view is re-fetched every LIQ_RECHECK_INTERVAL_SEC for up to
+    // LIQ_RECHECK_WINDOW_SEC and the SAME evaluation resumes the moment
+    // liquidity reads real — through every remaining gate, all still
+    // binding; the re-check bypasses nothing but the broken read. A broken
+    // read never stamps the per-mint signal cooldown and never journals a
+    // skip; only the final verdict (taken, or the terminal skip after the
+    // window) does. Step-6 audit (2026-10-17): this read was the FIRST
+    // blocker on 46% of never-taken confluence mints. LIQ_RECHECK=0
+    // restores the one-and-done skips byte-identically.
+    liqRecheck: env.LIQ_RECHECK !== '0',
+    liqRecheckIntervalSec: num(env, 'LIQ_RECHECK_INTERVAL_SEC', 10),
+    liqRecheckWindowSec: num(env, 'LIQ_RECHECK_WINDOW_SEC', 90),
+    liqRecheckMaxAgeMin: num(env, 'LIQ_RECHECK_MAX_AGE_MIN', 10),
 
     // ---- 'pop' detector (needs live history: flat → vertical) ----
     popWindowSec: num(env, 'POP_WINDOW_SEC', 300),

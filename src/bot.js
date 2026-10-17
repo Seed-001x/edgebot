@@ -10,7 +10,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { History } from './history.js';
-import { detect, detectChurn, detectLiftoff, eligible, fastPop, fastPopFloors, judgeScan, closestCall, betterScanVerdict } from './detect.js';
+import { detect, detectChurn, detectLiftoff, eligible, eligibleChecks, liqFamilyChecks, fastPop, fastPopFloors, judgeScan, closestCall, betterScanVerdict } from './detect.js';
 import { runGates, hasHardFail, tempRuleViolation, blockedNameWord, extensionCheck, freshHistoryCheck, flowSnapshotCheck, shallowDipCheck, summarizeGateChecks, holderSamples, foldLastTrades, insiderCountVerdict, fastBondVerdict, birthMemoryVerdict, topGuardVerdict } from './gate.js';
 import { computeSignalFields } from './signalFields.js';
 import { evaluateExit } from './exits.js';
@@ -74,6 +74,13 @@ export class Bot {
     this.baseEnrolled = new Map();
     this.rangeDipWatch = new Map();
     this.bottomPending = new Map();
+    // LIQ RE-CHECK queue (owner order 2026-10-17): `${setup}:${mint}` ->
+    // a deferred entry evaluation whose only blocker was a $0/missing
+    // liquidity read on a young coin — see _queueLiqRecheck. In-memory
+    // like the sibling no-view retry queues; a restart drops pending
+    // re-checks (the coin simply re-signals later, exactly as a dropped
+    // no-view retry behaves).
+    this.liqPending = new Map();
     this.rangeWatch = new RangeWatch({ cfg, journal: this.journal, dir: cfg.dataDir, now: this.now, log: console.log, wasExited: (mint) => this.journal.trades.some(t => t.type === 'close' && t.mint === mint), isHeld: (mint) => this.positions.some(p => p.mint === mint), onMark: (rec) => { try { this._evalRange(rec); } catch { /* live tap (RANGE_LIVE) — self-guarded, async, fail-silent: can never disturb the study */ } }, fetchCandles: (pool, fromTs, toTs) => this.structureWatch.fetchCandles(pool, fromTs, toTs), resolvePool: (mint) => this.structureWatch.resolvePool(mint) }); // Range Study (owner 2026-10-16): a tight sideways base held over the trailing window journals one mark per range episode to range_marks.jsonl; forward-scored by the structure watch's own candle tailer (/rangewatch) — expanded / broke down / ranged; fed from the poll + outcome-observer view streams — no sampler of its own. Marks ALSO route live entries via the onMark tap (RANGE_LIVE, default on — his correction: "None of this is shadow btw — Real")
     this.scanLab = new ScanLab({ cfg, journal: this.journal, now: this.now, log: console.log }); // Scan Ledger scorer (record-only): r15/r60 after each finalized scan session; no decision reads it
     this.scanFold = new Map(); // Scan Ledger: mint -> live watch-session fold (cheap scalars only; finalized into the journal by _scanSweep)
@@ -220,6 +227,11 @@ export class Bot {
     // fire; fires counted at the would-fire, paired/deltaSol at the close
     // pairing (see ensureClose / managePosition).
     this.stats.neverGreen = { fires: 0, paired: 0, deltaSol: 0, ...(this.stats.neverGreen || {}) };
+    // LIQ RE-CHECK tally (owner order 2026-10-17): with the switch on the
+    // counters exist from boot so /state shows them at 0 before the first
+    // deferred evaluation; with LIQ_RECHECK=0 the key never exists and
+    // records/counters stay exactly as before the fix.
+    if (this.cfg.liqRecheck) this.stats.liqRecheck = { queued: 0, recovered: 0, expired: 0, ...(this.stats.liqRecheck || {}) };
     if (!this.stats.baseMode.bySetup) this.stats.baseMode.bySetup = {};
     if (!this.stats.baseMode.pulseSkips) this.stats.baseMode.pulseSkips = { total: 0, bySetup: {} };
     if (loaded) return;
@@ -1234,11 +1246,12 @@ export class Bot {
     console.log(`[ratchet-shadow] ${pos.symbol}: WOULD FIRE — sells ${Math.round(fire.sellShare * 100)}% of last ${this.cfg.ratchetFlowWindowSec}s flow (${fire.sellSol.toFixed(2)} SOL), move ${move.toFixed(3)} off peak ${pos.peakMove.toFixed(3)} (record only)`);
   }
 
-  async _evalFastPop(mint, buf, n) {
+  async _evalFastPop(mint, buf, n, liqRechecks = 0) {
     if (this.positions.some(p => p.mint === mint)) return;
     if (n - (this.lastSignal.get(mint) || 0) < this.cfg.signalCooldownMin * 60000) return;
     const sig = fastPop(buf, this.cfg, n);
     if (!sig) return;
+    if (liqRechecks > 0) sig.liqRechecks = liqRechecks;
     // The pipeline needs a DexScreener view for gates/sizing. Reuse the poll's
     // latest; refresh just this mint if it's missing or stale.
     let v = this.latest.get(mint);
@@ -1247,7 +1260,22 @@ export class Bot {
       if (views && views.get(mint)) { v = views.get(mint); this.latest.set(mint, v); this.latestAt.set(mint, n); this.history.record(v, n); this._foldScan(v, n); }
     }
     if (!v) return;
-    if (eligible(v, this.cfg, n).length) return; // same tradability floor the classic detectors apply
+    // Same tradability floor the classic detectors apply — with the LIQ
+    // RE-CHECK deferral (owner order 2026-10-17): a young coin whose only
+    // failure is the $0/missing liquidity read is queued and this eval
+    // re-runs on the healed view (the stream buffer is re-read at resume
+    // time; if its window has gone stale the re-judged fire simply does
+    // not recur — exactly as if fresh). No expire journal: this path's
+    // legacy liq drop is silent and the re-check invents no record.
+    const elcFP = eligibleChecks(v, this.cfg, n);
+    if (elcFP.length) {
+      if (liqFamilyChecks(elcFP).length === elcFP.length && this._queueLiqRecheck({
+        mint, setup: 'pop', v, n,
+        resume: (fv, checks) => this._evalFastPop(mint, this.streamBuf.get(mint) || buf, this.now(), checks),
+        expire: null,
+      })) return;
+      return;
+    }
     const streamVolSol = sig.metrics.volM5; // fastPop reports window volume in SOL
     sig.metrics.streamVolSol = streamVolSol;
     const solUsd = await this.d.fetchSolUsd().catch(() => null);
@@ -1523,7 +1551,7 @@ export class Bot {
     try {
       this.evictBlacklisted(); // marked coins never even get priced, let alone signal
       const mints = [...new Set([...this.watch.keys(), ...this.positions.map(p => p.mint)])];
-      if (!mints.length) { try { await this.outcomeTick(this.now()); } catch { /* observer only */ } try { await this._flowRetryTick(this.now()); } catch { /* record-only retry */ } try { await this._staircaseRetryTick(this.now()); } catch { /* staircase retry */ } try { await this._rangeRetryTick(this.now()); } catch { /* range-live retry */ } try { await this._bottomRetryTick(this.now()); } catch { /* bottom-live retry */ } try { await this._rangeDipTick(this.now()); } catch { /* range dip watch */ } try { await this._walletRetryTick(this.now()); } catch { /* wallet-live retry */ } try { await this.walletWatch.finalizeTick(this.now()); } catch { /* shadow outcomes */ } try { await this.calloutLab.tick(this.now()); } catch { /* shadow callouts */ } try { await this.flowExits.tick(this.now()); } catch { /* shadow flow exits */ } try { await this.structureWatch.tick(this.now()); } catch { /* shadow structure watch */ } try { await this.bottomWatch.tick(this.now()); } catch { /* shadow bottom tracker */ } try { await this.rangeWatch.tick(this.now()); } catch { /* shadow range study */ } try { this._scanSweep(this.now()); } catch { /* scan ledger */ } return; }
+      if (!mints.length) { try { await this.outcomeTick(this.now()); } catch { /* observer only */ } try { await this._flowRetryTick(this.now()); } catch { /* record-only retry */ } try { await this._staircaseRetryTick(this.now()); } catch { /* staircase retry */ } try { await this._rangeRetryTick(this.now()); } catch { /* range-live retry */ } try { await this._bottomRetryTick(this.now()); } catch { /* bottom-live retry */ } try { await this._rangeDipTick(this.now()); } catch { /* range dip watch */ } try { await this._walletRetryTick(this.now()); } catch { /* wallet-live retry */ } try { await this._liqRecheckTick(this.now()); } catch { /* liq re-check */ } try { await this.walletWatch.finalizeTick(this.now()); } catch { /* shadow outcomes */ } try { await this.calloutLab.tick(this.now()); } catch { /* shadow callouts */ } try { await this.flowExits.tick(this.now()); } catch { /* shadow flow exits */ } try { await this.structureWatch.tick(this.now()); } catch { /* shadow structure watch */ } try { await this.bottomWatch.tick(this.now()); } catch { /* shadow bottom tracker */ } try { await this.rangeWatch.tick(this.now()); } catch { /* shadow range study */ } try { this._scanSweep(this.now()); } catch { /* scan ledger */ } return; }
       const views = await this.d.fetchViews(mints);
       const n = this.now();
       // D4 (user 2026-10-13): market breadth — the share of sampled coins green on the hour —
@@ -1573,7 +1601,38 @@ export class Bot {
         // accumulator. This cannot affect sig — the detect* calls above
         // already decided — and nothing anywhere branches on a stamp.
         try { if (this.cfg.scanStamps) this._foldScanVerdicts(mint, judgeScan(v, this.history.get(mint), tickCfg, n)); } catch { /* stamps are record-only */ }
-        if (!sig) continue;
+        if (!sig) {
+          // LIQ RE-CHECK (owner order 2026-10-17): a young coin the
+          // detectors turned away SOLELY at the eligibility door's
+          // liquidity legs gets the deferred re-read like every other
+          // lane — the queue keeps fetching it for up to the window
+          // even if it falls off the watch lists, and on recovery the
+          // detect chain re-judges it exactly as a fresh poll view.
+          // (No expire journal: the poll's legacy drop of a non-signal
+          // writes no record, and the re-check invents none.)
+          const elc = eligibleChecks(v, tickCfg, n);
+          if (elc.length && liqFamilyChecks(elc).length === elc.length) {
+            this._queueLiqRecheck({
+              mint, setup: 'poll', v, n,
+              resume: async (fv, checks) => {
+                const n2 = this.now();
+                this.latest.set(mint, fv); this.latestAt.set(mint, n2); this.history.record(fv, n2);
+                if (this.positions.some(p => p.mint === mint)) return;
+                if (n2 - (this.lastSignal.get(mint) || 0) < this.cfg.signalCooldownMin * 60000) return;
+                const { cfg: pc } = this.paceCfg(n2);
+                let s2 = detect(fv, this.history.get(mint), pc, n2);
+                if (!s2 && pc.churnEnabled) s2 = detectChurn(fv, this.history.get(mint), pc, n2);
+                if (!s2 && pc.liftoffEnabled) s2 = detectLiftoff(fv, this.history.get(mint), pc, n2);
+                if (!s2) return;
+                this.lastSignal.set(mint, n2);
+                s2.liqRechecks = checks;
+                await this.onSignal(fv, s2);
+              },
+              expire: null,
+            });
+          }
+          continue;
+        }
         const last = this.lastSignal.get(mint) || 0;
         if (n - last < this.cfg.signalCooldownMin * 60000) continue;
         candidates.push({ v, sig });
@@ -1603,6 +1662,7 @@ export class Bot {
       try { await this._staircaseRetryTick(n); } catch { /* staircase retry */ }
       try { await this._rangeRetryTick(n); } catch { /* range-live retry */ } try { await this._bottomRetryTick(n); } catch { /* bottom-live retry */ } try { await this._rangeDipTick(n); } catch { /* range dip watch */ }
       try { await this._walletRetryTick(n); } catch { /* wallet-live retry */ }
+      try { await this._liqRecheckTick(n); } catch { /* liq re-check */ }
       try { await this.walletWatch.finalizeTick(n); } catch { /* shadow outcomes */ }
       try { await this.calloutLab.tick(n); } catch { /* shadow callouts */ }
       try { await this.flowExits.tick(n); } catch { /* shadow flow exits */ }
@@ -1678,7 +1738,7 @@ export class Bot {
   }
 
   skip(v, sig, reasons, warnings = [], gates = null, gatePass = null, shadowGates = null, shadowGatePass = null) {
-    this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'skipped', reasons, price: v.price, mc: v.mc, metrics: sig.metrics, warnings, label: sig.label || null, gates, gatePass, fields: this._fieldsFor(v, sig), shadowGates, shadowGatePass });
+    this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'skipped', reasons, price: v.price, mc: v.mc, metrics: sig.metrics, warnings, label: sig.label || null, gates, gatePass, fields: this._fieldsFor(v, sig), shadowGates, shadowGatePass, liqRechecks: sig.liqRechecks ?? null });
   }
 
   // Setups currently in shadow-only mode (user 2026-10-14, forward plan step 1b):
@@ -1697,7 +1757,7 @@ export class Bot {
   shadow(v, sig, gates = null, gatePass = null) {
     this.stats.shadowSignals = this.stats.shadowSignals || {};
     this.stats.shadowSignals[sig.setup] = (this.stats.shadowSignals[sig.setup] || 0) + 1;
-    const sigId = this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'shadow', reasons: [sig.shadowReason || `shadow: ${sig.setup} is shadow-only — logged + outcome-tracked, no buy`], price: v.price, mc: v.mc, metrics: sig.metrics, warnings: [], label: sig.label || null, gates, gatePass, fields: this._fieldsFor(v, sig) });
+    const sigId = this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'shadow', reasons: [sig.shadowReason || `shadow: ${sig.setup} is shadow-only — logged + outcome-tracked, no buy`], price: v.price, mc: v.mc, metrics: sig.metrics, warnings: [], label: sig.label || null, gates, gatePass, fields: this._fieldsFor(v, sig), liqRechecks: sig.liqRechecks ?? null });
     // Trade-grade shadow (record-only, user 2026-10-14): a shadow signal that
     // PASSED its gate evaluation opens a VIRTUAL position at the signal
     // price, managed by the real exit stack (src/shadowTrades.js) — the
@@ -2022,7 +2082,7 @@ export class Bot {
    * eligible() tradability floor, then the exact same onSignal pipeline — gates,
    * risk, exits all unchanged. The wallet nominates; it never bypasses.
    */
-  async _evalFlow(mint, agg) {
+  async _evalFlow(mint, agg, liqRechecks = 0) {
     const n = this.now();
     const views = await this.d.fetchViews([mint]).catch(() => null);
     const v = views && views.get(mint);
@@ -2042,7 +2102,23 @@ export class Bot {
     const blocked = [];
     if (this.positions.some(p => p.mint === mint)) blocked.push('already holding this coin — buy recorded, not re-evaluated');
     else if (n - (this.lastSignal.get(mint) || 0) < this.cfg.signalCooldownMin * 60000) blocked.push(`this coin was already signaled in the last ${this.cfg.signalCooldownMin}m — buy recorded, not re-evaluated`);
-    if (!blocked.length) { const el = eligible(v, this.cfg, n); if (el.length) blocked.push(...el); }
+    if (!blocked.length) {
+      const elc = eligibleChecks(v, this.cfg, n);
+      if (elc.length) {
+        // LIQ RE-CHECK (owner order 2026-10-17): the eligibility failure
+        // is SOLELY the $0/missing liquidity read on a young coin — a
+        // broken read, not a decision. Queue the re-check instead of
+        // recording the skip: nothing journals, the cooldown is not
+        // stamped, and on recovery this eval re-runs whole. On expiry
+        // the record-only skip lands once with the original reasons.
+        if (liqFamilyChecks(elc).length === elc.length && this._queueLiqRecheck({
+          mint, setup: 'flow', v, n,
+          resume: (fv, checks) => this._evalFlow(mint, agg, checks),
+          expire: (fv, checks) => this._recordFlowOnly(fv, agg, metrics, elc.map(c => c.reason), this.now(), checks),
+        })) return;
+        blocked.push(...elc.map(c => c.reason));
+      }
+    }
     if (blocked.length) { this._recordFlowOnly(v, agg, metrics, blocked, n); return; }
     this.lastSignal.set(mint, n);
     this.stats.flow = this.stats.flow || { fires: 0 };
@@ -2059,18 +2135,18 @@ export class Bot {
       this.stats.flow.shadow = (this.stats.flow.shadow || 0) + 1;
       console.log(`[flow] ${v.symbol} flow trigger is shadow-only (not a live-flow wallet) — logged + outcome-tracked, no buy: ${agg.label}`);
     }
-    await this.onSignal(v, { setup: 'flow', strength: agg.maxSol || 0, metrics, label: agg.label || null, flowShadowOnly: !live, shadowReason: live ? null : 'shadow: flow is shadow-only for this wallet — logged + outcome-tracked, no buy' });
+    await this.onSignal(v, { setup: 'flow', strength: agg.maxSol || 0, metrics, label: agg.label || null, flowShadowOnly: !live, shadowReason: live ? null : 'shadow: flow is shadow-only for this wallet — logged + outcome-tracked, no buy', ...(liqRechecks > 0 ? { liqRechecks } : {}) });
   }
 
   /** Journal a flow buy that a pipeline guard kept out of evaluation (record-only). */
-  _recordFlowOnly(v, agg, metrics, reasons, n) {
+  _recordFlowOnly(v, agg, metrics, reasons, n, liqRechecks = null) {
     this.stats.flow = this.stats.flow || { fires: 0 };
     // One record-only entry per mint per cooldown window — a wallet dribbling
     // buys into the same coin must not spam the feed.
     this.flowOnlyAt = this.flowOnlyAt || new Map();
     if (n - (this.flowOnlyAt.get(v.address) || 0) < this.cfg.signalCooldownMin * 60000) return;
     this.flowOnlyAt.set(v.address, n);
-    this.journal.signal({ mint: v.address, symbol: v.symbol, setup: 'flow', decision: 'skipped', reasons, price: v.price, mc: v.mc, metrics, label: agg.label || null, fields: this._signalFields(v, metrics) });
+    this.journal.signal({ mint: v.address, symbol: v.symbol, setup: 'flow', decision: 'skipped', reasons, price: v.price, mc: v.mc, metrics, label: agg.label || null, fields: this._signalFields(v, metrics), liqRechecks });
     this.stats.flow.recordOnly = (this.stats.flow.recordOnly || 0) + 1;
     console.log(`[flow] ${v.symbol} recorded (not evaluated: ${reasons[0]}) — ${agg.label}`);
   }
@@ -2116,21 +2192,33 @@ export class Bot {
   /** The judged half of a staircase live eval: a fresh view exists, so run
    *  the guards and route into onSignal. Shared by the fire-time path and
    *  the retry tick. */
-  async _evalStaircaseWithView(rec, v, n) {
+  async _evalStaircaseWithView(rec, v, n, liqRechecks = 0) {
     const mint = rec.mint;
     this.latest.set(mint, v); this.latestAt.set(mint, n); this.history.record(v, n);
     if (this.positions.some(p => p.mint === mint)) return; // already holding — the shadow record carries the mark; nothing to decide
     if (n - (this.lastSignal.get(mint) || 0) < this.cfg.signalCooldownMin * 60000) return; // signaled moments ago — the mark's shadow record is the trace; no re-judge spam
     const metrics = { staircase: { ordinal: rec.ordinal, markId: rec.markId || null, watchId: rec.watchId || null, markPrice: rec.price ?? null, lowPrev: rec.lowPrev ?? null, lowNew: rec.lowNew ?? null } };
     const sig = { setup: 'staircase', strength: rec.ordinal, metrics };
+    if (liqRechecks > 0) sig.liqRechecks = liqRechecks;
     // BASE MODE (owner order 2026-10-16): a staircase higher low is one
     // of the three formed-base shapes — while the strategy is on, its
     // entries are born with TP1 pinned at +50% (see onSignal's birth
     // stamps). No structure low: a staircase is a continuation shape,
     // not a range — the structural stop is range/bottom only.
     if (this.cfg.baseMode) sig.baseTp1 = true;
-    const el = eligible(v, this.cfg, n);
-    if (el.length) { this.skip(v, sig, el.map(r => `staircase-live: ${r}`), [], {}); return; }
+    const elc = eligibleChecks(v, this.cfg, n);
+    if (elc.length) {
+      // LIQ RE-CHECK (owner order 2026-10-17): a sole $0/missing-liquidity
+      // failure on a young coin defers (see _queueLiqRecheck) — the mark's
+      // evaluation resumes whole on the healed view; on expiry the skip
+      // lands once with the original reasons.
+      if (liqFamilyChecks(elc).length === elc.length && this._queueLiqRecheck({
+        mint, setup: 'staircase', v, n,
+        resume: (fv, checks) => this._evalStaircaseWithView(rec, fv, this.now(), checks),
+        expire: (fv, checks) => this.skip(fv, { ...sig, liqRechecks: checks }, elc.map(c => `staircase-live: ${c.reason}`), [], {}),
+      })) return;
+      this.skip(v, sig, elc.map(c => `staircase-live: ${c.reason}`), [], {}); return;
+    }
     // PULSE FLOOR (owner decision 2026-10-16 23:16 EDT): a base-shape
     // entry needs a live tape at eval time — see _basePulseSkip. (No
     // enrollment gate on this path: a confirmed higher-low mark is
@@ -2231,12 +2319,24 @@ export class Bot {
     // stamps its provenance — the journal record shows HOW the entry
     // was reached, not just that it was.
     if (opts.deferredDip) sig.deferredDip = true;
+    if (opts.liqRechecks > 0) sig.liqRechecks = opts.liqRechecks;
     if (this.cfg.baseMode) {
       sig.baseTp1 = true;
       if (Number.isFinite(rec.rangeLo) && rec.rangeLo > 0) sig.structureLow = rec.rangeLo;
     }
-    const el = eligible(v, this.cfg, n);
-    if (el.length) { this.skip(v, sig, el.map(r => `range-live: ${r}`), [], {}); return; }
+    const elc = eligibleChecks(v, this.cfg, n);
+    if (elc.length) {
+      // LIQ RE-CHECK (owner order 2026-10-17): a sole $0/missing-liquidity
+      // failure on a young coin defers (see _queueLiqRecheck) — the mark's
+      // evaluation resumes whole on the healed view; on expiry the skip
+      // lands once with the original reasons.
+      if (liqFamilyChecks(elc).length === elc.length && this._queueLiqRecheck({
+        mint, setup: 'range', v, n,
+        resume: (fv, checks) => this._evalRangeWithView(rec, fv, this.now(), { ...opts, liqRechecks: checks }),
+        expire: (fv, checks) => this.skip(fv, { ...sig, liqRechecks: checks }, elc.map(c => `range-live: ${c.reason}`), [], {}),
+      })) return;
+      this.skip(v, sig, elc.map(c => `range-live: ${c.reason}`), [], {}); return;
+    }
     // ENROLLMENT + PULSE gates (owner decision 2026-10-16 23:16 EDT,
     // off tonight's range burst — the path bought DEAD coins: entry
     // volM5 stamps of $0 / $17 / $137 / $186 / $524 / $958 against a
@@ -2411,13 +2511,14 @@ export class Bot {
   /** The judged half of a bottom live eval: a fresh view exists, so
    *  run the guards and route into onSignal. Shared by the fire-time
    *  path and the retry tick. */
-  async _evalBottomWithView(rec, v, n) {
+  async _evalBottomWithView(rec, v, n, liqRechecks = 0) {
     const mint = rec.mint;
     this.latest.set(mint, v); this.latestAt.set(mint, n); this.history.record(v, n);
     if (this.positions.some(p => p.mint === mint)) return; // already holding — the tracker record carries the mark; nothing to decide
     if (n - (this.lastSignal.get(mint) || 0) < this.cfg.signalCooldownMin * 60000) return; // signaled moments ago — the mark's tracker record is the trace; no re-judge spam
     const metrics = { bottom: { markId: rec.markId || null, episodeId: rec.episodeId || null, peakMc: rec.peakMc ?? null, peakPrice: rec.peakPrice ?? null, lowMc: rec.lowMc ?? null, lowPrice: rec.lowPrice ?? null, lowTs: rec.lowTs ?? null, drawdownPct: rec.drawdownPct ?? null, pctOffLow: rec.pctOffLow ?? null, pctOfPeakRecovered: rec.pctOfPeakRecovered ?? null, markPrice: rec.markPrice ?? null } };
     const sig = { setup: 'bottom', strength: rec.pctOffLow != null ? rec.pctOffLow : 1, metrics };
+    if (liqRechecks > 0) sig.liqRechecks = liqRechecks;
     // BASE MODE stamps (owner order 2026-10-16): a bottom entry is born
     // with TP1 pinned at +50% and carries the episode low as its
     // structural low — the base it retraces from is the stop.
@@ -2425,8 +2526,19 @@ export class Bot {
       sig.baseTp1 = true;
       if (Number.isFinite(rec.lowMc) && rec.lowMc > 0) sig.structureLow = rec.lowMc;
     }
-    const el = eligible(v, this.cfg, n);
-    if (el.length) { this.skip(v, sig, el.map(r => `bottom-live: ${r}`), [], {}); return; }
+    const elc = eligibleChecks(v, this.cfg, n);
+    if (elc.length) {
+      // LIQ RE-CHECK (owner order 2026-10-17): a sole $0/missing-liquidity
+      // failure on a young coin defers (see _queueLiqRecheck) — the mark's
+      // evaluation resumes whole on the healed view; on expiry the skip
+      // lands once with the original reasons.
+      if (liqFamilyChecks(elc).length === elc.length && this._queueLiqRecheck({
+        mint, setup: 'bottom', v, n,
+        resume: (fv, checks) => this._evalBottomWithView(rec, fv, this.now(), checks),
+        expire: (fv, checks) => this.skip(fv, { ...sig, liqRechecks: checks }, elc.map(c => `bottom-live: ${c.reason}`), [], {}),
+      })) return;
+      this.skip(v, sig, elc.map(c => `bottom-live: ${c.reason}`), [], {}); return;
+    }
     // PULSE FLOOR (owner decision 2026-10-16 23:16 EDT): a base-shape
     // entry needs a live tape at eval time — see _basePulseSkip. (No
     // enrollment gate on this path: a qualified bottom mark is itself
@@ -2532,16 +2644,28 @@ export class Bot {
   /** The judged half of a wallet-event live eval: a fresh view exists, so run
    *  the guards and route into onSignal. Shared by the fire-time path and the
    *  retry tick. */
-  async _evalWalletLiveWithView(ev, setup, v, n) {
+  async _evalWalletLiveWithView(ev, setup, v, n, liqRechecks = 0) {
     const mint = ev.mint;
     this.latest.set(mint, v); this.latestAt.set(mint, n); this.history.record(v, n);
     const st = this._walletLiveStats(setup);
     const sig = this._walletLiveSig(ev, setup);
+    if (liqRechecks > 0) sig.liqRechecks = liqRechecks;
     const blocked = [];
     if (this.positions.some(p => p.mint === mint)) blocked.push('already holding this coin — event recorded, not re-evaluated');
     else if (n - (this.lastSignal.get(mint) || 0) < this.cfg.signalCooldownMin * 60000) blocked.push(`this coin was already signaled in the last ${this.cfg.signalCooldownMin}m — event recorded, not re-evaluated`);
-    if (!blocked.length) { const el = eligible(v, this.cfg, n); if (el.length) blocked.push(...el); }
+    let elc = [];
+    if (!blocked.length) { elc = eligibleChecks(v, this.cfg, n); if (elc.length) blocked.push(...elc.map(c => c.reason)); }
     if (blocked.length) {
+      // LIQ RE-CHECK (owner order 2026-10-17): the blockers are SOLELY
+      // the eligible() $0/missing-liquidity legs on a young coin — a
+      // broken read, not a decision. Queue the re-check instead of
+      // journaling the skip (the lane's skipped tally, like the signal
+      // cooldown, is stamped only by the final verdict — at expiry).
+      if (elc.length && blocked.length === elc.length && liqFamilyChecks(elc).length === elc.length && this._queueLiqRecheck({
+        mint, setup, v, n,
+        resume: (fv, checks) => this._evalWalletLiveWithView(ev, setup, fv, this.now(), checks),
+        expire: (fv, checks) => { st.skipped++; this.skip(fv, { ...this._walletLiveSig(ev, setup), liqRechecks: checks }, elc.map(c => `${setup}-live: ${c.reason}`)); },
+      })) return;
       st.skipped++;
       this.skip(v, sig, blocked.map(r => `${setup}-live: ${r}`));
       return;
@@ -2614,6 +2738,132 @@ export class Bot {
       if (n < p.nextAt) continue;
       p.nextAt = n + 20000;
       await this._evalFlow(mint, p.agg); // re-queues itself (same entry) if the view is still missing
+    }
+  }
+
+  // ------------------------------------------------------------ LIQ RE-CHECK
+  // (owner order 2026-10-17, "Ship the liquidity fix" — every lane, not
+  // just confluence: "A $0 reading on a coin that's seconds old is a
+  // broken read, not a decision.") When an entry evaluation of a YOUNG
+  // coin (pair age <= LIQ_RECHECK_MAX_AGE_MIN at the read) is about to
+  // terminal-skip SOLELY because liquidity read $0/missing — the
+  // eligible() 'liq' / 'liqToMc' legs, which a seconds-old curve coin
+  // fails on a view artifact (DexScreener prints liq $0 for a pool that
+  // exists; the step-6 audit found this read was the FIRST blocker on
+  // 46% of never-taken confluence mints) — the skip does NOT happen.
+  // The evaluation is queued instead: the view is re-fetched every
+  // LIQ_RECHECK_INTERVAL_SEC for up to LIQ_RECHECK_WINDOW_SEC, and the
+  // moment liquidity reads real the SAME evaluation resumes through ALL
+  // remaining gates exactly as if fresh (insider block, fast-bond,
+  // birth-memory, top guard, round-trip sell check all still bind — the
+  // re-check bypasses nothing but the broken read). If liquidity is
+  // still $0/missing when the window closes, the lane's terminal skip
+  // lands ONCE with the original liq reasons.
+  // COOLDOWN DISCIPLINE: a queued evaluation journals nothing and never
+  // stamps the per-mint signal cooldown — only the final verdict does.
+  // A fresh signal for the same mint inside the window is therefore
+  // never deduped by the pending re-check: it evaluates normally, and
+  // if it stamps the cooldown the queued entry is dropped quietly (the
+  // coin got its evaluation). Kill switch LIQ_RECHECK=0: _queueLiqRecheck
+  // always declines and every lane falls through to its legacy
+  // one-and-done skip, byte-identical.
+  _liqStats() {
+    this.stats.liqRecheck = this.stats.liqRecheck || { queued: 0, recovered: 0, expired: 0 };
+    return this.stats.liqRecheck;
+  }
+
+  /** Young enough for a $0 read to be a broken read: pair age at the
+   *  read <= the configured ceiling. The view's own createdAt is the age
+   *  source every lane already carries; an unmeasurable age is NOT young
+   *  (an old coin's $0 print is a real judgment, never deferred).
+   *  Negative age is clock skew and reads as just-born, the same
+   *  tolerance eligible() applies. */
+  _liqYoung(v, n) {
+    if (!v || !v.createdAt) return false;
+    const ageMin = (n - v.createdAt) / 60000;
+    return ageMin >= -1 && ageMin <= (this.cfg.liqRecheckMaxAgeMin ?? 10);
+  }
+
+  /**
+   * Offer an about-to-skip evaluation to the re-check queue. Callers
+   * invoke this ONLY when the evaluation's failures are exclusively
+   * liq-family (detect.js liqFamilyChecks) — mixed failures keep their
+   * legacy terminal skip. The queue itself applies the two remaining
+   * conditions centrally, so no lane can defer a real judgment: the
+   * coin must be YOUNG (_liqYoung) and the read must be BROKEN — the
+   * view's liq is not a positive number ($0, or missing, which
+   * sources.js normalizes to 0). A positive-but-thin liquidity print is
+   * a real read: it declines here and the caller's legacy skip stands
+   * with the true figure. `resume(freshView, checks)` re-runs the
+   * lane's full evaluation on the healed view with the re-check count
+   * to stamp; `expire(bestView, checks)` journals the lane's terminal
+   * skip with the ORIGINAL liq reasons (null for lanes whose legacy
+   * drop is silent — poll/fast-pop). Returns true when queued: the
+   * caller must return WITHOUT journaling a skip or stamping the
+   * cooldown. A mint already queued for the same setup is never
+   * double-queued: the newest evaluation's resume/expire supersede,
+   * and the window stays anchored to the first queueing (the sibling
+   * retry discipline).
+   */
+  _queueLiqRecheck({ mint, setup, v, n, resume, expire }) {
+    if (!this.cfg.liqRecheck) return false;
+    if (!mint || typeof resume !== 'function') return false;
+    if (!this._liqYoung(v, n)) return false;
+    if (Number(v.liq) > 0) return false; // a real (if thin) read — a judgment, not a glitch
+    this.liqPending = this.liqPending || new Map();
+    const key = `${setup}:${mint}`;
+    const cur = this.liqPending.get(key);
+    if (cur) { cur.resume = resume; cur.expire = expire; cur.lastView = v; return true; }
+    this.liqPending.set(key, {
+      mint, setup, firstTs: n, lastView: v, checks: 0,
+      nextAt: n + (this.cfg.liqRecheckIntervalSec ?? 10) * 1000,
+      resume, expire,
+    });
+    this._liqStats().queued++;
+    const ageMin = Math.max(0, (n - v.createdAt) / 60000);
+    console.log(`[liqrecheck] ${v.symbol || mint} (${setup}): liquidity read $0/missing on a ${ageMin.toFixed(1)}m-old coin — broken read, re-checking for up to ${this.cfg.liqRecheckWindowSec ?? 90}s before the skip stands`);
+    return true;
+  }
+
+  async _liqRecheckTick(n) {
+    if (!this.liqPending || !this.liqPending.size) return;
+    if (!this.cfg.liqRecheck) { this.liqPending.clear(); return; }
+    const windowMs = (this.cfg.liqRecheckWindowSec ?? 90) * 1000;
+    const intervalMs = (this.cfg.liqRecheckIntervalSec ?? 10) * 1000;
+    for (const [key, p] of [...this.liqPending]) {
+      // The coin was evaluated by a fresh signal while its re-check was
+      // pending (the pending read never stamped the cooldown, so the
+      // fresh signal ran) — the queue's work is done; drop it quietly.
+      if ((this.lastSignal.get(p.mint) || 0) > p.firstTs) { this.liqPending.delete(key); continue; }
+      if (n < p.nextAt) continue;
+      p.nextAt = n + intervalMs;
+      p.checks++;
+      const views = await this.d.fetchViews([p.mint]).catch(() => null);
+      const v = views && views.get(p.mint);
+      if (v) p.lastView = v;
+      // Recovered = the READ works again: a view exists and its liq is a
+      // positive number. Whether the coin then CLEARS the liquidity
+      // floors is a judgment for the resumed evaluation, not the
+      // re-check: it re-judges everything fresh and terminal-skips on
+      // the true current figures exactly as a first-read evaluation
+      // would (and _queueLiqRecheck's broken-read gate stops it
+      // re-deferring on a thin-but-real print).
+      const healed = !!v && Number(v.liq) > 0;
+      if (healed) {
+        this.liqPending.delete(key);
+        this._liqStats().recovered++;
+        console.log(`[liqrecheck] ${v.symbol || p.mint} (${p.setup}): liquidity read real after ${p.checks} re-check(s) — resuming the evaluation`);
+        try { await p.resume(v, p.checks); } catch (e) { this.err('liqRecheckResume', e); }
+        continue;
+      }
+      if (n - p.firstTs >= windowMs) {
+        this.liqPending.delete(key);
+        this._liqStats().expired++;
+        console.log(`[liqrecheck] ${p.lastView.symbol || p.mint} (${p.setup}): liquidity still $0/missing after ${p.checks} re-check(s) over ${Math.round((n - p.firstTs) / 1000)}s — the skip stands`);
+        if (typeof p.expire === 'function') {
+          try { await p.expire(p.lastView, p.checks); } catch (e) { this.err('liqRecheckExpire', e); }
+        }
+      }
     }
   }
 
@@ -3081,7 +3331,7 @@ export class Bot {
         this.lastCallout = { ok: false, error: e.message, symbol: v.symbol, ts: Date.now() };
       });
     }
-    this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'taken', reasons: [], price: v.price, mc: v.mc, metrics: { ...sig.metrics, roundTrip: +rt.ratio.toFixed(3), sizeSol: size }, warnings: g.warnings, label: sig.label || null, gates: checks, gatePass: g.pass, fields: this._fieldsFor(v, sig) });
+    this.journal.signal({ mint: v.address, symbol: v.symbol, setup: sig.setup, decision: 'taken', reasons: [], price: v.price, mc: v.mc, metrics: { ...sig.metrics, roundTrip: +rt.ratio.toFixed(3), sizeSol: size }, warnings: g.warnings, label: sig.label || null, gates: checks, gatePass: g.pass, fields: this._fieldsFor(v, sig), liqRechecks: sig.liqRechecks ?? null });
     this.journal.trade({ type: 'open', id: pos.id, mint: pos.mint, symbol: pos.symbol, setup: pos.setup, entrySol: pos.entrySol, sig: fill.sig, simulated: fill.simulated, ts: n, stamp: pos.stamp, tokensRaw: fill.tokensRaw, entryFillSol: pos.entryFillSol, entryFillUsd: pos.entryFillSol != null && solUsd > 0 ? +(pos.entryFillSol * solUsd).toFixed(10) : null, ...(slot === 2 && this.cfg.slot2Sol > 0 ? { slot: 2 } : {}) });
     // Flow-Exit Watcher (record-only): a flow-triggered entry starts a watch
     // on the wallet whose buy nominated it — its trim/exit get journaled and

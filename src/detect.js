@@ -137,6 +137,18 @@ export function eligible(v, cfg, now = Date.now()) {
   return eligibleChecks(v, cfg, now).map(c => c.reason);
 }
 
+// LIQ RE-CHECK family (owner order 2026-10-17): the eligibility legs that
+// judge the liquidity READ itself — absolute depth ('liq') and depth
+// against cap ('liqToMc'). On a seconds-old curve coin the view routinely
+// prints liq $0 / missing for a pool that exists: a broken read, not a
+// quality judgment. Bot defers a skip whose ONLY failures are these legs
+// and re-reads (see bot.js _queueLiqRecheck). Every other leg (price, mc,
+// pair age, dead bounce) is a real judgment and never defers.
+export const LIQ_CHECK_METRICS = new Set(['liq', 'liqToMc']);
+export function liqFamilyChecks(checks) {
+  return (checks || []).filter(c => LIQ_CHECK_METRICS.has(c.metric));
+}
+
 // B3 wash reject (shared pop/trend leg): a small cap whose hourly volume is a
 // multiple of its whole market cap is being churned, not accumulated (Urara:
 // $71k volH1 on a $15.6k cap). Null when the rule doesn't apply (knob off, or

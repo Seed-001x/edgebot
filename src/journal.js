@@ -427,7 +427,7 @@ export class Journal {
     return rec;
   }
 
-  signal({ mint, symbol, setup, decision, reasons = [], price, mc, metrics = null, warnings = [], label = null, gates = null, gatePass = null, fields = null, shadowGates = null, shadowGatePass = null }) {
+  signal({ mint, symbol, setup, decision, reasons = [], price, mc, metrics = null, warnings = [], label = null, gates = null, gatePass = null, fields = null, shadowGates = null, shadowGatePass = null, liqRechecks = null }) {
     const ts = this.now();
     const id = `${ts}-${++this.seq}`;
     const rec = { id, ts, mint, symbol, setup, decision, reasons, price, mc, metrics, warnings, label };
@@ -448,6 +448,12 @@ export class Journal {
     // at signal time by src/signalFields.js (holder growth, curve fill speed,
     // buy velocity). Omitted only when the caller computed none.
     if (fields != null) rec.fields = fields;
+    // LIQ RE-CHECK (record-only, owner order 2026-10-17): how many 10s
+    // re-reads this evaluation needed before its liquidity read healed
+    // (or the window expired) — the provable stamp that the deferred
+    // path produced this record. Omitted when the evaluation never
+    // deferred, so untouched records keep their exact old shape.
+    if (liqRechecks != null) rec.liqRechecks = liqRechecks;
     this.signals.push(rec); this.byId.set(id, rec); rec.out = {};
     if (this.signals.length > KEEP) { const old = this.signals.shift(); this.byId.delete(old.id); }
     this.append(this.f.sig, rec);
