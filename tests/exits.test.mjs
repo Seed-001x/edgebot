@@ -12,7 +12,7 @@ import { testCfg } from './helpers.mjs';
 // live values. Dead flow survives ONLY as a post-TP2 exit (deadflow.test.mjs).
 // What remains live: the TP ladder, the post-TP1 middle trail, TP2 rejection,
 // the stall exit and liquidity death.
-const cfg = testCfg({ stallProbationSec: 0 }); const NOW = 1_000_000_000_000;
+const cfg = testCfg({ stallProbationSec: 0, bagTrailConfirmSec: 0 }); const NOW = 1_000_000_000_000; // trail timer off here: this file pins the trail's line, the timer itself is pinned in bagtrailconfirm.test.mjs
 const pos = (o = {}) => ({ entrySol: 0.02, remainingFrac: 1, peakRatio: 1, tp1Done: false, entryTs: NOW - 5 * 60000, ...o });
 const mark = (valueSol, o = {}) => ({ valueSol, liqUsd: 200_000, buysM5: 30, sellsM5: 10, solUsd: 150, ...o });
 

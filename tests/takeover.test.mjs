@@ -23,7 +23,7 @@ import { SOL_MINT } from '../src/util.js';
 import { testCfg } from './helpers.mjs';
 
 // ---- judge level (exits.test.mjs rig) ----
-const cfg = testCfg({ stallProbationSec: 0 }); const NOW = 1_000_000_000_000;
+const cfg = testCfg({ stallProbationSec: 0, bagTrailConfirmSec: 0 }); const NOW = 1_000_000_000_000; // trail timer off here: the trail family control pins the instant fire, the timer is pinned in bagtrailconfirm.test.mjs
 const S = 1000;
 const pos = (o = {}) => ({ entrySol: 0.02, remainingFrac: 1, peakRatio: 1, tp1Done: false, entryTs: NOW - 5 * 60000, ...o });
 const mark = (valueSol, o = {}) => ({ valueSol, liqUsd: 200_000, buysM5: 30, sellsM5: 10, solUsd: 150, ...o });

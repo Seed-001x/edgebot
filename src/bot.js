@@ -3243,6 +3243,7 @@ export class Bot {
     if ('stallPending' in decision) pos.stallPending = decision.stallPending;
     if ('bagDeadWaves' in decision) pos.bagDeadWaves = decision.bagDeadWaves;
     if ('bagDeadHot' in decision) pos.bagDeadHot = decision.bagDeadHot;
+    if ('bagTrailSince' in decision) pos.bagTrailSince = decision.bagTrailSince;
     // fail-safe confirmation outcomes (user 2026-10-14): count the windows that held to a
     // sell vs the triggers that recovered and were cancelled — the layer's report card.
     if (decision.exitConfirmEvents && decision.exitConfirmEvents.length) {
@@ -3278,6 +3279,8 @@ export class Bot {
         else if (ev.type === 'fired') this.stats.deadflow.fired++;
         else if (ev.type === 'wave') { this.stats.deadflow.fired++; this.stats.deadflow.waves = (this.stats.deadflow.waves || 0) + 1; console.log(`[deadflow] ${pos.symbol}: wave ${ev.wave} — sold 50% of the bag`); }
         else if (ev.type === 'floor') { this.stats.deadflow.floor = (this.stats.deadflow.floor || 0) + 1; console.log(`[deadflow] ${pos.symbol}: stub floor (+${Math.round(this.cfg.bagFloorPct * 100)}% over entry) — selling the rest`); }
+        else if (ev.type === 'trail-pending') { this.stats.deadflow.trailPends = (this.stats.deadflow.trailPends || 0) + 1; console.log(`[bagtrail] ${pos.symbol}: moonbag trail breached — ${this.cfg.bagTrailConfirmSec}s confirm window started, bag rides unless it holds`); }
+        else if (ev.type === 'trail-cleared') { this.stats.deadflow.trailClears = (this.stats.deadflow.trailClears || 0) + 1; console.log(`[bagtrail] ${pos.symbol}: back above the trail line inside the window — pending bag sell disarmed`); }
       }
     }
     // STALL EXIT (user order 2026-10-16 19:24 EDT): lifecycle counts —

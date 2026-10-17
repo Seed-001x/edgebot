@@ -562,6 +562,7 @@ export function loadConfig(env = process.env) {
     tp2Pct: num(env, 'TP2_PCT', 1.00),                    // second bank at +100% net
     tp2Frac: num(env, 'TP2_FRAC', 0.35),                  // ...sells this fraction of the ORIGINAL position (0 = off)
     bagTrailPct: num(env, 'BAG_TRAIL_PCT', 0.15),         // moonbag trail below peak (was 0.35 from the MFE study; user tightened 35→20→15% on 2026-10-13 — exit at -15% under the last recorded peak)
+    bagTrailConfirmSec: num(env, 'BAG_TRAIL_CONFIRM_SEC', 60), // moonbag trail confirmation (owner order 2026-10-16 23:12 EDT, "Give it a 1 min timer"): the 3c breach must HOLD this many seconds before the bag sells — a check back above the line disarms it, so a V-dip that recovers inside the window sells nothing (Chameleon's bag trailed out at a bottom that recovered above the peak in ~3 min); 0 = instant fire on the first sub-line print, exactly as before the timer
     tpTrailPct: num(env, 'TP_TRAIL_PCT', 0.25),           // DEAD KNOB: the post-TP1 middle trail (3d) is stripped in code (user order 2026-10-16) — read only by the disabled section
     tp2RejectZone: num(env, 'TP2_REJECT_ZONE', 0.80),     // middle stage: peak net gain at/above this = it reached for the TP2 mark (user 2026-10-13)
     tp2RejectDrop: num(env, 'TP2_REJECT_DROP', 0.10),     // ...and this far off that peak without converting = rejected → sell the remainder (zone 0 = off)
@@ -735,6 +736,7 @@ export function validateConfig(cfg) {
   if (cfg.tp2Pct < 0 || cfg.tp2Pct > 5) errs.push('TP2_PCT must be between 0 and 5');
   if (cfg.tp2Frac < 0 || cfg.tp2Frac > 1) errs.push('TP2_FRAC must be between 0 and 1 (0 = off)');
   if (cfg.bagTrailPct < 0 || cfg.bagTrailPct >= 0.9) errs.push('BAG_TRAIL_PCT must be between 0 and 0.9');
+  if (cfg.bagTrailConfirmSec < 0 || cfg.bagTrailConfirmSec > 3600) errs.push('BAG_TRAIL_CONFIRM_SEC must be between 0 and 3600');
   if (cfg.tpTrailPct < 0 || cfg.tpTrailPct >= 1) errs.push('TP_TRAIL_PCT must be between 0 and 1');
   if (cfg.tp2RejectZone < 0 || cfg.tp2RejectZone > 5) errs.push('TP2_REJECT_ZONE must be between 0 and 5');
   if (cfg.tp2RejectDrop < 0 || cfg.tp2RejectDrop >= 0.9) errs.push('TP2_REJECT_DROP must be between 0 and 0.9');

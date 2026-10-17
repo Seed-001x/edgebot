@@ -43,7 +43,7 @@ const approx = (a, b, tol = 1e-6) => Math.abs(a - b) <= tol;
 // ------------------------------------------------------------ tracker unit
 test('shadow trades: TP1 bank, post-TP1 fade holds (trail removed), TP2 + moonbag exit completes with coherent P&L math', () => {
   const dir = tmp();
-  const cfg = testCfg({ txFeeSol: 0.001, tp1Pct: 0.25, tp1Frac: 0.4, tp1AdaptMax: 0.60, tp1Giveback: 0.08 });
+  const cfg = testCfg({ txFeeSol: 0.001, tp1Pct: 0.25, tp1Frac: 0.4, tp1AdaptMax: 0.60, tp1Giveback: 0.08, bagTrailConfirmSec: 0 }); // trail timer off: this test pins the line's fire (timer: bagtrailconfirm.test.mjs)
   const tr = new ShadowTrades(dir, () => T0, { txFeeSol: cfg.txFeeSol });
   assert.equal(tr.open({ id: 'sig1', mint: 'MINT1', symbol: 'TEST', setup: 'trend', price: 2, mc: 500000, ts: T0, sizeSol: 0.05 }), true);
   let price = 2;

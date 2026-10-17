@@ -229,6 +229,34 @@ export function evaluateExit(pos, mark, cfg, now) {
   // starts at wave 0, not hot.
   let bagDeadWaves = pos.bagDeadWaves || 0;
   let bagDeadHot = !!pos.bagDeadHot;
+  // Moonbag-trail confirmation state (owner order 2026-10-16 23:12 EDT,
+  // "Give it a 1 min timer"): the ms stamp of the first check the 3c trail
+  // line read breached — null = no breach pending. The trail no longer
+  // sells on the first sub-line print: the breach must HOLD for
+  // BAG_TRAIL_CONFIRM_SEC (default 60) before the bag sells, and any check
+  // back above the line clears the stamp outright — a snap-back disarms,
+  // the floorSince discipline. Founding case: Chameleon's bag trailed out
+  // at a V-bottom that recovered above the peak within ~3 minutes; the bag
+  // is ~$1, so a minute of patience costs nothing and keeps the coin
+  // tracked through the dip. Judged here in state prep (like floorSince)
+  // because the breach is a level read off this check's own peakRatio:
+  // the stamp/clear transitions — and their deadflowEvents notes — are
+  // computed once, and section 3c only reads the clock. The caller threads
+  // the stamp back from every decision, so a pending survives restarts; a
+  // position opened before this build carries none and starts unpended.
+  // Scope: the trail exists only post-TP2 and only while its window is on
+  // — anything else drops a carried stamp, and with the window at 0 no
+  // stamp ever accrues (the instant fire is restored exactly).
+  const bagTrailConfirmSec = cfg.bagTrailConfirmSec ?? 60;
+  let bagTrailSince = pos.bagTrailSince ?? null;
+  const trailBreached = !!pos.tp2Done && ratio <= peakRatio * (1 - cfg.bagTrailPct);
+  if (!(bagTrailConfirmSec > 0) || !pos.tp2Done) bagTrailSince = null;
+  else if (trailBreached) {
+    if (bagTrailSince == null) { bagTrailSince = now; deadflowEvents.push({ type: 'trail-pending' }); }
+  } else if (bagTrailSince != null) {
+    bagTrailSince = null;
+    deadflowEvents.push({ type: 'trail-cleared' });
+  }
   // PROTECT switch (user 2026-10-15, "just the stop loss… no ratchet", "no SL until I
   // say"): a one-time, per-position flag set via POST /protect while the user rides a
   // coin himself. While protected, ONLY the stop-loss family (2a dip stop, 2a2 hard
@@ -271,9 +299,9 @@ export function evaluateExit(pos, mark, cfg, now) {
   // section 4b), so no clock that matured during the takeover can fire. Takeover
   // supersedes protect: with both flags set, this return wins and nothing judges.
   const taken = !!pos.takenOver;
-  const out = (fraction, reason) => ({ fraction, reason, newPeak: peakRatio, newPeakMove: peakMove, ratio, stallSince: null, stopArmedTs, floorChecks, floorSince, probationSince, tp1Arm, moveHist, exitPending, exitConfirmEvents, protectedBlock, killZone, postTp1PeakMove, killzoneEvents, deadflowArmed, deadflowEvents, stallPending, stallEvents, bagDeadWaves, bagDeadHot });
+  const out = (fraction, reason) => ({ fraction, reason, newPeak: peakRatio, newPeakMove: peakMove, ratio, stallSince: null, stopArmedTs, floorChecks, floorSince, probationSince, tp1Arm, moveHist, exitPending, exitConfirmEvents, protectedBlock, killZone, postTp1PeakMove, killzoneEvents, deadflowArmed, deadflowEvents, stallPending, stallEvents, bagDeadWaves, bagDeadHot, bagTrailSince });
   if (taken) {
-    stopArmedTs = null; floorChecks = 0; floorSince = null; probationSince = null; tp1Arm = null; stallPending = null; bagDeadHot = false;
+    stopArmedTs = null; floorChecks = 0; floorSince = null; probationSince = null; tp1Arm = null; stallPending = null; bagDeadHot = false; bagTrailSince = null;
     if (exitPending != null) exitPending = {};
     return { ...out(0, null), takenOver: true };
   }
@@ -426,7 +454,22 @@ export function evaluateExit(pos, mark, cfg, now) {
 
   // 3c. moonbag: the post-TP2 remainder trails bagTrailPct below its peak — no at-entry floor, and
   //     the generic trailing stop / profit lock below skip tp2Done positions: the bag's job is to ride.
-  if (pos.tp2Done && ratio <= peakRatio * (1 - cfg.bagTrailPct)) return out(1, `moonbag trail (${Math.round(cfg.bagTrailPct * 100)}% off peak ${peakRatio.toFixed(2)}x, now ${((ratio - 1) * 100).toFixed(1)}%)`);
+  //     CONFIRMATION (owner order 2026-10-16 23:12 EDT, "Give it a 1 min timer"): while
+  //     BAG_TRAIL_CONFIRM_SEC > 0, a breach only sells once it has HELD — state prep
+  //     stamped bagTrailSince on the first sub-line check and clears it on any check back
+  //     above the line. Inside the window this section returns a no-sale that still OWNS
+  //     the check, exactly as the instant fire did (3c2/3c3 below never judge a breach
+  //     check), and the first check at/after the window with the line still breached
+  //     sells the bag in full, its reason carrying the hold. Window 0 restores the
+  //     pre-timer behavior byte-for-byte: the first sub-line print sells, same string.
+  if (trailBreached) {
+    if (bagTrailConfirmSec > 0) {
+      const heldMs = bagTrailSince != null ? now - bagTrailSince : 0;
+      if (heldMs < bagTrailConfirmSec * 1000) return out(0, null);
+      return out(1, `moonbag trail (${Math.round(cfg.bagTrailPct * 100)}% off peak ${peakRatio.toFixed(2)}x, now ${((ratio - 1) * 100).toFixed(1)}%, held ${Math.round(bagTrailConfirmSec)}s)`);
+    }
+    return out(1, `moonbag trail (${Math.round(cfg.bagTrailPct * 100)}% off peak ${peakRatio.toFixed(2)}x, now ${((ratio - 1) * 100).toFixed(1)}%)`);
+  }
 
   // 3c2. DEAD FLOW AFTER TP2 (exit-stack v2, user 2026-10-15 ~20:26 EDT): the
   //      dead-flow rule, repositioned. Its first incarnation judged PRE-TP1

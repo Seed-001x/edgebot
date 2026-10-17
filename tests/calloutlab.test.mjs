@@ -361,7 +361,7 @@ const healthyRug = { token: { supply: 1e15, decimals: 6 }, creatorBalance: 0, to
 const TE0 = 1_000_000_000_000;
 
 function entryRig(cfgOver = {}) {
-  const cfg = testCfg({ tradeSol: 0.02, tp1Frac: 0.4, baseMode: 0, ...cfgOver });
+  const cfg = testCfg({ tradeSol: 0.02, tp1Frac: 0.4, baseMode: 0, bagTrailConfirmSec: 0, ...cfgOver }); // trail timer off here: the lifecycle pins the trail's final close, the timer is pinned in bagtrailconfirm.test.mjs
   const clock = { t: TE0 };
   const market = { price: 1, liq: 100_000, buysM5: 30, sellsM5: 10 };
   const q = { valueLam: 19_000_000 };

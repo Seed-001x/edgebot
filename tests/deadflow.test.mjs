@@ -27,7 +27,7 @@ const S = 1000;
 // stop and profit lock are off so only dead-flow (and, where a test arms it,
 // TP1) can act. Defaults otherwise real: deadflowArmPct 0.08, window 45s,
 // maxBuyDelta 1, peakGap 0.01.
-const cfg = testCfg({ txFeeSol: 0, dipStopPct: 0, lockKeep: 0, stallSec: 0, stallProbationSec: 0, beArmPct: 0 });
+const cfg = testCfg({ txFeeSol: 0, dipStopPct: 0, lockKeep: 0, stallSec: 0, stallProbationSec: 0, beArmPct: 0, bagTrailConfirmSec: 0 }); // trail timer off: this file pins the trail's precedence, the timer is pinned in bagtrailconfirm.test.mjs
 const mark = (pos, ratio, o = {}) => ({ valueSol: pos.entrySol * pos.remainingFrac * ratio, liqUsd: 200_000, buysM5: 30, sellsM5: 10, solUsd: 150, volH1: 0, ...o });
 const thread = (p, d) => {
   if (d.newPeak != null) p.peakRatio = d.newPeak;
