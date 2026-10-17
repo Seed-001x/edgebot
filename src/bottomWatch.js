@@ -40,6 +40,18 @@
 //   fall from the mark price itself.
 //   SOURCE — 'bot-exited' when the trade journal holds a close for the
 //   mint (the dev/null class: our own exits coming back), else 'watched'.
+//   PEAK QUALIFIER (owner refinement, same night) — the study he means
+//   is coins that RAN first (dev/null peaked ~$100K+; Gato ~$100K),
+//   dumped, and are setting up to retrace toward the old run. A coin
+//   that never ran has no retrace setup, only a dust bottom (the first
+//   two live marks proved it: peaks ~$15K and ~$2.5K). So a mark only
+//   QUALIFIES when its episode peak mc reached BOTTOM_MIN_PEAK_MC
+//   (default $25K). Dust marks are still journaled and forward-scored
+//   in their own bucket — the dataset doesn't go blind — but the card
+//   leads with the qualified numbers, READY counts qualified marks
+//   only, and the alert hook fires on qualified marks only. Every mark
+//   also carries pctOfPeakRecovered (markMc / peakMc, PERCENT) so a
+//   reader can see how much of the old run the first move has reclaimed.
 //   SCORING — marks are forward-scored with the structure watch's OWN
 //   tailer (scoreMark over completed GT 5m candles: r15/r60/r240 +
 //   forward peak + worst dip), candles fetched through the structure
@@ -80,6 +92,21 @@ export function flowOf(view) {
   return { known: true, buys, sells, share: buys / (buys + sells) };
 }
 
+/** The peak qualifier: a mark is a RETRACE SETUP only when the run it
+ *  fell from reached the mc floor. An unknown peak mc can never prove
+ *  the coin ran, so it reads dust — conservative by construction. */
+export function qualifiesPeak(peakMc, minPeakMc) {
+  return Number.isFinite(peakMc) && peakMc > 0 && Number.isFinite(minPeakMc) && minPeakMc > 0 && peakMc >= minPeakMc;
+}
+
+/** How much of the old run the mark has reclaimed: markMc / peakMc as
+ *  a PERCENT (50 = the mark sits at half the peak mc). Null when either
+ *  side is unknown — never fabricated. */
+export function recoveredPctOf(markMc, peakMc) {
+  if (!Number.isFinite(markMc) || !(markMc > 0) || !Number.isFinite(peakMc) || !(peakMc > 0)) return null;
+  return round((markMc / peakMc) * 100, 1);
+}
+
 /** Fold raw journal lines into episode / mark / score sets (first
  *  episode + end per episode wins; latest score per mark wins). */
 export function foldBottomJournal(records) {
@@ -112,17 +139,28 @@ function markAgg(items) {
 }
 
 export function buildBottomCard(records, now = Date.now(), live = {}) {
+  const minPeakMc = Number.isFinite(live.minPeakMc) && live.minPeakMc > 0 ? live.minPeakMc : 25000;
   const f = foldBottomJournal(records);
-  const joined = [...f.marks.values()].map(m => ({ m, score: f.scores.get(m.markId) || null }));
+  // Qualified is derived per mark: the mark's own stamp wins; legacy
+  // marks journaled before the qualifier existed derive from the peak
+  // mc they already carry — so SOFA/lptp-class dust reads dust here
+  // without rewriting history. Recovered-% derives the same way.
+  const joined = [...f.marks.values()].map(m => ({
+    m, score: f.scores.get(m.markId) || null,
+    qualified: m.qualified != null ? !!m.qualified : qualifiesPeak(m.peakMc, minPeakMc),
+    pctOfPeakRecovered: m.pctOfPeakRecovered != null ? m.pctOfPeakRecovered : recoveredPctOf(m.markMc, m.peakMc),
+  }));
   const bySource = { 'bot-exited': [], watched: [] };
   const byBand = { lt25: [], ge25: [] };
+  const qualified = [], dust = [];
   for (const x of joined) {
     (bySource[x.m.source === 'bot-exited' ? 'bot-exited' : 'watched']).push(x);
     (x.m.pctOffLow != null && x.m.pctOffLow >= 25 ? byBand.ge25 : byBand.lt25).push(x);
+    (x.qualified ? qualified : dust).push(x);
   }
-  const recent = [...joined].sort((a, b) => b.m.ts - a.m.ts).slice(0, 10).map(({ m, score }) => ({
+  const recent = [...joined].sort((a, b) => b.m.ts - a.m.ts).slice(0, 10).map(({ m, score, qualified: q, pctOfPeakRecovered }) => ({
     markId: m.markId, episodeId: m.episodeId, ts: m.ts, mint: m.mint || null, symbol: m.symbol ?? null,
-    source: m.source || 'watched',
+    source: m.source || 'watched', qualified: q, pctOfPeakRecovered,
     peakPrice: m.peakPrice ?? null, peakMc: m.peakMc ?? null,
     lowPrice: m.lowPrice ?? null, lowMc: m.lowMc ?? null, lowTs: m.lowTs ?? null,
     drawdownPct: m.drawdownPct ?? null, quietSec: m.quietSec ?? null,
@@ -133,17 +171,28 @@ export function buildBottomCard(records, now = Date.now(), live = {}) {
       peakPct: score.peakPct ?? null, worstDipPct: score.worstDipPct ?? null, final: !!score.final,
     } : null,
   }));
-  const aggregates = markAgg(joined);
+  // The card LEADS with the qualified (retrace-setup) numbers: headline
+  // aggregates, finalized and READY all judge the qualified set. The
+  // all-marks figures stay under aggregatesAll / finalizedAll, and the
+  // bySource / byBand splits keep their original all-marks semantics.
+  const aggregates = markAgg(qualified);
+  const aggregatesAll = markAgg(joined);
   return {
     generatedTs: now,
     tracking: live.tracking ?? null,
     episodesOpen: live.episodesOpen ?? null,
     episodes: f.episodes.size,
     episodesEnded: f.ends.size,
+    minPeakMc,
     marks: joined.length,
+    marksQualified: qualified.length,
+    marksDust: dust.length,
     finalized: aggregates.finalized,
+    finalizedAll: aggregatesAll.finalized,
     ready: aggregates.finalized >= BOTTOM_READY_N,
     aggregates,
+    aggregatesAll,
+    byQualifier: { qualified: aggregates, dust: markAgg(dust) },
     bySource: { 'bot-exited': markAgg(bySource['bot-exited']), watched: markAgg(bySource.watched) },
     byBand: { lt25: markAgg(byBand.lt25), ge25: markAgg(byBand.ge25) },
     recent,
@@ -184,6 +233,7 @@ export class BottomWatch {
   get quietMs() { const v = Number(this.cfg.bottomQuietMin); return (Number.isFinite(v) && v >= 0 ? v : 3) * 60000; }
   get moveFrac() { const v = Number(this.cfg.bottomMovePct); return (Number.isFinite(v) && v > 0 ? v : 18) / 100; }
   get expireMs() { const v = Number(this.cfg.bottomExpireMin); return (Number.isFinite(v) && v > 0 ? v : 60) * 60000; }
+  get minPeakMc() { const v = Number(this.cfg.bottomMinPeakMc); return Number.isFinite(v) && v > 0 ? v : 25000; }
 
   _file() { return this.journal && this.journal.f ? this.journal.f.bwatch : null; }
   _stateFile() { return this.dir ? path.join(this.dir, 'bottom_watch_state.json') : null; }
@@ -315,15 +365,18 @@ export class BottomWatch {
 
   _fireMark(st, ep, view, ts, quietSec, flow) {
     const markId = `${ep.episodeId}-m1`;
+    const markMc = Number.isFinite(view.mc) && view.mc > 0 ? view.mc : null;
+    const qualified = qualifiesPeak(ep.peakMc, this.minPeakMc);
     const rec = {
       type: 'mark', markId, episodeId: ep.episodeId, ts, mint: st.mint, symbol: st.symbol,
-      source: ep.source,
+      source: ep.source, qualified,
       peakPrice: ep.peakPrice, peakMc: ep.peakMc ?? null,
       lowPrice: ep.lowPrice, lowMc: ep.lowMc ?? null, lowTs: ep.lowTs,
       drawdownPct: round((1 - ep.lowPrice / ep.peakPrice) * 100, 1),
       quietSec: Math.round(quietSec),
-      markPrice: view.price, markMc: Number.isFinite(view.mc) && view.mc > 0 ? view.mc : null,
+      markPrice: view.price, markMc,
       pctOffLow: round((view.price / ep.lowPrice - 1) * 100, 1),
+      pctOfPeakRecovered: recoveredPctOf(markMc, ep.peakMc),
       flowKnown: flow.known, buysM5: flow.buys, sellsM5: flow.sells,
       buyShare: flow.share != null ? round(flow.share, 3) : null,
     };
@@ -336,7 +389,7 @@ export class BottomWatch {
     st.peakPrice = view.price; st.peakTs = ts; st.peakMc = rec.markMc;
     this.dirty = true;
     this._save(true);
-    if (this.log) this.log(`[bottomwatch] ${st.symbol || st.mint}: FIRST MOVE off the bottom — low ${rec.drawdownPct}% under peak, now +${rec.pctOffLow}% off the low${flow.known ? `, buy share ${rec.buyShare}` : ' (flow unknown)'} [${ep.source}] — record only`);
+    if (this.log) this.log(`[bottomwatch] ${st.symbol || st.mint}: FIRST MOVE off the bottom — low ${rec.drawdownPct}% under peak, now +${rec.pctOffLow}% off the low${flow.known ? `, buy share ${rec.buyShare}` : ' (flow unknown)'} [${ep.source}${qualified ? ', retrace setup' : `, dust — peak under the $${Math.round(this.minPeakMc / 1000)}k floor`}] — record only`);
     return rec;
   }
 
@@ -405,7 +458,7 @@ export class BottomWatch {
     const records = this._readAll();
     let episodesOpen = 0;
     for (const st of this.track.values()) if (st.episode) episodesOpen++;
-    const card = { enabled: true, journalRecords: records.length, ...buildBottomCard(records, n, { tracking: this.track.size, episodesOpen }) };
+    const card = { enabled: true, journalRecords: records.length, ...buildBottomCard(records, n, { tracking: this.track.size, episodesOpen, minPeakMc: this.minPeakMc }) };
     this.cardCache = card;
     this.cardCacheTs = n;
     return card;

@@ -14,7 +14,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { BottomWatch, flowOf, foldBottomJournal, buildBottomCard, BOTTOM_READY_N } from '../src/bottomWatch.js';
+import { BottomWatch, flowOf, foldBottomJournal, buildBottomCard, qualifiesPeak, recoveredPctOf, BOTTOM_READY_N } from '../src/bottomWatch.js';
 import { Journal } from '../src/journal.js';
 import { Bot } from '../src/bot.js';
 import { loadConfig, validateConfig } from '../src/config.js';
@@ -355,4 +355,105 @@ test('inertness: feeding the tracker never signals, never positions, writes only
   off.bot.journal.signal(sigArgs);
   const read = (cfg) => fs.readFileSync(path.join(cfg.dataDir, 'signals.jsonl'), 'utf8').trim();
   assert.equal(read(on.cfg), read(off.cfg));
+});
+
+// ---- peak qualifier (owner refinement 2026-10-16: retrace setups are
+// coins that RAN first; sub-floor peaks are dust — journaled + scored in
+// their own bucket, never alerted, never in the headline numbers) ----
+test('config: BOTTOM_MIN_PEAK_MC defaults to 25000, parses, junk rejected', () => {
+  assert.equal(loadConfig({}).bottomMinPeakMc, 25000);
+  assert.equal(loadConfig({ BOTTOM_MIN_PEAK_MC: '40000' }).bottomMinPeakMc, 40000);
+  assert.ok(validateConfig(loadConfig({ BOTTOM_MIN_PEAK_MC: '0' })).some(e => e.includes('BOTTOM_MIN_PEAK_MC')));
+  assert.ok(validateConfig(loadConfig({ BOTTOM_MIN_PEAK_MC: '-5' })).some(e => e.includes('BOTTOM_MIN_PEAK_MC')));
+});
+
+test('qualifiesPeak / recoveredPctOf: pure units', () => {
+  assert.equal(qualifiesPeak(25000, 25000), true);       // exactly at the floor qualifies
+  assert.equal(qualifiesPeak(24999, 25000), false);
+  assert.equal(qualifiesPeak(100000, 25000), true);
+  assert.equal(qualifiesPeak(null, 25000), false);       // unknown peak can never prove the coin ran
+  assert.equal(qualifiesPeak(100000, null), false);
+  assert.equal(recoveredPctOf(472000, 1000000), 47.2);
+  assert.equal(recoveredPctOf(25000, 100000), 25);
+  assert.equal(recoveredPctOf(null, 100000), null);
+  assert.equal(recoveredPctOf(50000, null), null);
+});
+
+test('qualified mark: a run that peaked above the floor stamps qualified + recovered %', () => {
+  const r = rig();                                       // rig mc = price x 10000, peak 100 -> peakMc $1,000,000
+  dumpTo(r, 40);
+  r.clock.t += 3 * M;
+  const mark = r.obs(47.2);
+  assert.ok(mark);
+  assert.equal(mark.qualified, true);
+  assert.equal(mark.peakMc, 1000000);
+  assert.equal(mark.markMc, 472000);
+  assert.equal(mark.pctOfPeakRecovered, 47.2);            // the mark sits at 47.2% of the old peak mc
+  const card = r.bw.card();
+  assert.equal(card.marks, 1);
+  assert.equal(card.marksQualified, 1);
+  assert.equal(card.marksDust, 0);
+  assert.equal(card.minPeakMc, 25000);
+  assert.equal(card.aggregates.n, 1);
+  assert.equal(card.recent[0].qualified, true);
+  assert.equal(card.recent[0].pctOfPeakRecovered, 47.2);
+});
+
+test('dust mark: a peak under the floor still journals + scores, but in its own bucket', async () => {
+  let markTs = 0, markPrice = 0;
+  const r = rig({
+    cfgOver: { bottomMinPeakMc: 2000000 },               // floor above the rig's $1M peak -> dust
+    resolvePool: async () => 'POOL',
+    fetchCandles: async () => candlesFrom(markTs, markPrice, 420),
+  });
+  dumpTo(r, 40);
+  r.clock.t += 3 * M;
+  const mark = r.obs(47.2);
+  assert.ok(mark);                                       // the mark still fires — the dataset doesn't go blind
+  assert.equal(mark.qualified, false);
+  markTs = mark.ts; markPrice = mark.markPrice;
+  r.clock.t += 70 * M;
+  await r.bw.tick(r.clock.t);                            // dust marks forward-score like any other
+  assert.equal(r.recs().filter(x => x.type === 'mark-score').length, 1);
+  const card = r.bw.card();
+  assert.equal(card.marks, 1);
+  assert.equal(card.marksQualified, 0);
+  assert.equal(card.marksDust, 1);
+  assert.equal(card.finalized, 0);                       // headline readiness counts qualified only
+  assert.equal(card.finalizedAll, 1);
+  assert.equal(card.aggregates.n, 0);
+  assert.equal(card.aggregates.medianR60, null);
+  assert.equal(card.aggregatesAll.n, 1);
+  assert.equal(card.aggregatesAll.medianR60, 0.1);
+  assert.equal(card.byQualifier.qualified.n, 0);
+  assert.equal(card.byQualifier.dust.n, 1);
+  assert.equal(card.byQualifier.dust.finalized, 1);
+  assert.equal(card.recent[0].qualified, false);         // the alert hook's filter reads exactly this flag
+});
+
+test('legacy marks (no qualifier stamp) derive qualified + recovered % from their peak mc at card time', () => {
+  const base = { type: 'mark', ts: T0, mint: MINT, symbol: 'LG', source: 'watched', lowPrice: 1, lowMc: 4000, drawdownPct: 73.3, quietSec: 200, markPrice: 1.3, pctOffLow: 30, flowKnown: true, buysM5: 30, sellsM5: 10, buyShare: 0.75 };
+  const recs = [
+    { ...base, markId: 'bw-AAAAAA-1-m1', episodeId: 'bw-AAAAAA-1', peakPrice: 3.7, peakMc: 15000, markMc: 5500 },   // SOFA-class: peaked ~$15k — dust
+    { ...base, markId: 'bw-BBBBBB-2-m1', episodeId: 'bw-BBBBBB-2', peakPrice: 10, peakMc: 100000, markMc: 13000 },  // ran to $100k — qualified
+    { type: 'mark-score', markId: 'bw-AAAAAA-1-m1', ts: T0 + 70 * M, r15: 0.1, r60: 0.2, r240: null, peakPct: 0.4, worstDipPct: -0.1, final: false },
+    { type: 'mark-score', markId: 'bw-BBBBBB-2-m1', ts: T0 + 70 * M, r15: 0.1, r60: 0.5, r240: null, peakPct: 0.9, worstDipPct: -0.1, final: false },
+  ];
+  const card = buildBottomCard(recs, T0 + 80 * M, { minPeakMc: 25000 });
+  assert.equal(card.marks, 2);
+  assert.equal(card.marksQualified, 1);
+  assert.equal(card.marksDust, 1);
+  assert.equal(card.finalized, 1);                       // only the qualified score counts toward readiness
+  assert.equal(card.finalizedAll, 2);
+  assert.equal(card.aggregates.medianR60, 0.5);          // headline = the qualified mark's score
+  assert.equal(card.aggregatesAll.medianR60, 0.35);
+  const dustRow = card.recent.find(x => x.markId === 'bw-AAAAAA-1-m1');
+  const qualRow = card.recent.find(x => x.markId === 'bw-BBBBBB-2-m1');
+  assert.equal(dustRow.qualified, false);
+  assert.equal(qualRow.qualified, true);
+  assert.equal(dustRow.pctOfPeakRecovered, 36.7);        // 5500 / 15000
+  assert.equal(qualRow.pctOfPeakRecovered, 13);         // 13000 / 100000
+  // an explicit stamp always wins over derivation
+  const stamped = buildBottomCard([{ ...base, markId: 'bw-CCCCCC-3-m1', episodeId: 'bw-CCCCCC-3', peakMc: 15000, markMc: 5500, qualified: true }], T0, { minPeakMc: 25000 });
+  assert.equal(stamped.marksQualified, 1);
 });
