@@ -614,12 +614,15 @@ export function loadConfig(env = process.env) {
     // moon bags we utilize it"): while BAG_SMALL_HOLD is on (the live default), the post-TP2 bag's
     // dead-flow section (exits.js 3c2) sells NOTHING — no waves, no legacy whole-bag fire — and the
     // 3c3 floor becomes the bag's downside exit, armed from TP2 (no wave precondition) with a
-    // BAG_FLOOR_CONFIRM_SEC confirmation (default 30; 0 = instant fire on the line). Mode OFF
+    // BAG_FLOOR_CONFIRM_SEC confirmation (default 60; 0 = instant fire on the line). Mode OFF
     // restores the staged waves + instant post-wave-2 floor byte-for-byte: the waves method is
     // closeted in the code, not deleted, and returns when bags get bigger (a TP2_FRAC trim that
-    // leaves ~20% riding instead of ~5%).
+    // leaves ~20% riding instead of ~5%). Confirm window raised 30 -> 60 by owner order
+    // 2026-10-17 ~05:49 EDT ("give the moonbag any chance it can to just rise"): a bounce back
+    // above the line inside the minute disarms the pending floor exit with no credit, exactly
+    // like the trail's 60s confirm discipline.
     bagSmallHold: num(env, 'BAG_SMALL_HOLD', 1),          // small-bag moonbag mode on (1) / closeted waves method (0)
-    bagFloorConfirmSec: num(env, 'BAG_FLOOR_CONFIRM_SEC', 30), // small-bag floor confirmation: the floor breach must HOLD this many seconds before the bag sells (0 = instant fire)
+    bagFloorConfirmSec: num(env, 'BAG_FLOOR_CONFIRM_SEC', 60), // small-bag floor confirmation: the floor breach must HOLD this many seconds before the bag sells (0 = instant fire)
     // MOONBAG TRIM (owner order 2026-10-17 ~00:27 EDT, "200% from TP2 — trim 50%"): once per
     // position, when the bag's realizable ratio reaches BAG_TRIM_MULT × the ratio stamped at the
     // TP2 print (3x ≈ +200% from TP2 ≈ 5.4x entry), sell half the current remainder; the surviving

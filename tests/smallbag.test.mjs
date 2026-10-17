@@ -4,7 +4,7 @@
 // BAG_SMALL_HOLD is on (the default), exits.js 3c2 sells NOTHING on a
 // post-TP2 bag — no staged waves, no legacy whole-bag fire — and the 3c3
 // floor becomes the bag's downside exit: armed from TP2 with no wave
-// precondition, confirming for BAG_FLOOR_CONFIRM_SEC (default 30) in the
+// precondition, confirming for BAG_FLOOR_CONFIRM_SEC (default 60) in the
 // bagTrailSince discipline. Mode OFF is the closeted waves method, pinned
 // by bagstaged.test.mjs / deadflow.test.mjs (rigs pin bagSmallHold: 0).
 import test from 'node:test';
@@ -19,7 +19,7 @@ const S = 1000;
 // pre-TP2 families inert, real dead-flow defaults, real trail default
 // (bagTrailPct 0.15), trail timer OFF (its precedence is not the subject
 // here; the timer itself is pinned in bagtrailconfirm.test.mjs).
-// bagSmallHold / bagFloorConfirmSec ride the config defaults (1 / 30).
+// bagSmallHold / bagFloorConfirmSec ride the config defaults (1 / 60).
 const cfg = testCfg({ txFeeSol: 0, dipStopPct: 0, lockKeep: 0, stallSec: 0, stallProbationSec: 0, beArmPct: 0, bagTrailConfirmSec: 0 });
 const mark = (pos, ratio, o = {}) => ({ valueSol: pos.entrySol * pos.remainingFrac * ratio, liqUsd: 200_000, buysM5: 30, sellsM5: 10, solUsd: 150, volH1: 0, ...o });
 const thread = (p, d) => {
@@ -53,10 +53,10 @@ function drive(p, steps, cfgX = cfg) {
 const seq = (ratios, buys, sells = 40) => ratios.map((ratio, i) => ({ ratio, buys: Array.isArray(buys) ? buys[i] : buys, sells: Array.isArray(sells) ? sells[i] : sells }));
 const flat = (n, ratio, buys, sells = 40) => Array.from({ length: n }, () => ({ ratio, buys, sells }));
 
-test('config: BAG_SMALL_HOLD / BAG_FLOOR_CONFIRM_SEC default on/30, env overrides, validation bounds them', () => {
+test('config: BAG_SMALL_HOLD / BAG_FLOOR_CONFIRM_SEC default on/60, env overrides, validation bounds them', () => {
   assert.equal(loadConfig({ DATA_DIR: tmp() }).bagSmallHold, 1);
   assert.equal(loadConfig({ DATA_DIR: tmp(), BAG_SMALL_HOLD: '0' }).bagSmallHold, 0);
-  assert.equal(loadConfig({ DATA_DIR: tmp() }).bagFloorConfirmSec, 30);
+  assert.equal(loadConfig({ DATA_DIR: tmp() }).bagFloorConfirmSec, 60);
   assert.equal(loadConfig({ DATA_DIR: tmp(), BAG_FLOOR_CONFIRM_SEC: '0' }).bagFloorConfirmSec, 0);
   assert.equal(loadConfig({ DATA_DIR: tmp(), BAG_FLOOR_CONFIRM_SEC: '45' }).bagFloorConfirmSec, 45);
   const base = loadConfig({ DATA_DIR: tmp() });
@@ -103,24 +103,26 @@ test('(b) the floor is armed immediately post-TP2 in small-bag mode — the firs
   assert.equal(d.bagDeadWaves, 0);
 });
 
-test('(c) floor confirmation: breach pends, recovery disarms with no credit, 30 continuous seconds sells in full', () => {
+test('(c) floor confirmation: breach pends, recovery disarms with no credit, 60 continuous seconds sells in full', () => {
   const p0 = bagLow();
   const t = T0 + 4000;
   const d1 = evaluateExit(p0, mark(p0, 1.08), cfg, t); // breach #1 pends
   assert.equal(d1.fraction, 0); assert.equal(d1.bagFloorSince, t);
-  const d2 = evaluateExit(carry(p0, d1), mark(p0, 1.08), cfg, t + 29000); // 29s in: still holding
+  const d2 = evaluateExit(carry(p0, d1), mark(p0, 1.08), cfg, t + 30000); // 30s in (the OLD fire moment): still holding, no sale
   assert.equal(d2.fraction, 0); assert.equal(d2.bagFloorSince, t);
-  const d3 = evaluateExit(carry(p0, d2), mark(p0, 1.15), cfg, t + 35000); // back above the line: disarmed
-  assert.equal(d3.fraction, 0); assert.equal(d3.bagFloorSince, null);
-  assert.ok(d3.deadflowEvents.some(e => e.type === 'floor-cleared'));
-  const d4 = evaluateExit(carry(p0, d3), mark(p0, 1.08), cfg, t + 40000); // breach #2: a FRESH window
-  assert.equal(d4.fraction, 0); assert.equal(d4.bagFloorSince, t + 40000);
-  const d5 = evaluateExit(carry(p0, d4), mark(p0, 1.08), cfg, t + 69000); // 29s into #2 (69s after #1): no sale — no accumulated credit
-  assert.equal(d5.fraction, 0);
-  const d6 = evaluateExit(carry(p0, d5), mark(p0, 1.08), cfg, t + 70000); // 30s into #2: sells in full
-  assert.equal(d6.fraction, 1);
-  assert.match(d6.reason, /^moonbag floor \(\+10% over entry, held 30s\)$/);
-  assert.ok(d6.deadflowEvents.some(e => e.type === 'floor'));
+  const d3 = evaluateExit(carry(p0, d2), mark(p0, 1.08), cfg, t + 45000); // 45s in: still inside the 60s window
+  assert.equal(d3.fraction, 0); assert.equal(d3.bagFloorSince, t);
+  const d4 = evaluateExit(carry(p0, d3), mark(p0, 1.15), cfg, t + 50000); // bounce back above the line before 60s: disarmed
+  assert.equal(d4.fraction, 0); assert.equal(d4.bagFloorSince, null);
+  assert.ok(d4.deadflowEvents.some(e => e.type === 'floor-cleared'));
+  const d5 = evaluateExit(carry(p0, d4), mark(p0, 1.08), cfg, t + 55000); // breach #2: a FRESH window
+  assert.equal(d5.fraction, 0); assert.equal(d5.bagFloorSince, t + 55000);
+  const d6 = evaluateExit(carry(p0, d5), mark(p0, 1.08), cfg, t + 114000); // 59s into #2 (110s after #1): no sale — no accumulated credit
+  assert.equal(d6.fraction, 0);
+  const d7 = evaluateExit(carry(p0, d6), mark(p0, 1.08), cfg, t + 115000); // 60s into #2: sells in full
+  assert.equal(d7.fraction, 1);
+  assert.match(d7.reason, /^moonbag floor \(\+10% over entry, held 60s\)$/);
+  assert.ok(d7.deadflowEvents.some(e => e.type === 'floor'));
 });
 
 test('(d) BAG_FLOOR_CONFIRM_SEC=0 restores the instant floor in small-bag mode — same check, same string, no state', () => {
@@ -158,14 +160,15 @@ test('(e) small-bag mode: a 30%+ retrace held well past the trail window sells n
   }
   assert.equal(p.remainingFrac, 0.05); // the whole stub still rides
   // Now the fall continues to the +10% floor line: the first check pends,
-  // and only the floor's own 30s confirm sells — in full, as the floor.
-  const fall = drive(p, flat(9, 1.05, 300)); // pends on #1, matures at +32s on #9
+  // and only the floor's own 60s confirm sells — in full, as the floor.
+  const fall = drive(p, flat(16, 1.05, 300)); // pends on #1, matures at +60s on #16
   assert.equal(fall[0].fraction, 0);
   assert.notEqual(fall[0].bagFloorSince, null);
   assert.ok(fall[0].deadflowEvents.some(e => e.type === 'floor-pending'));
+  assert.equal(fall[8].fraction, 0); // 32s under the line (past the OLD window): still no sale
   const sale = fall[fall.length - 1];
   assert.equal(sale.fraction, 1);
-  assert.match(sale.reason, /^moonbag floor \(\+10% over entry, held 30s\)$/);
+  assert.match(sale.reason, /^moonbag floor \(\+10% over entry, held 60s\)$/);
   assert.equal(fall.filter(d => d.fraction === 1).length, 1); // exactly one sale…
   assert.ok(fall.slice(0, -1).every(d => d.fraction === 0)); // …and nothing before the floor matured
 });

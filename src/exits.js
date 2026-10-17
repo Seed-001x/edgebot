@@ -95,7 +95,7 @@
 // we start leaving bigger moon bags we utilize it"): the staged design
 // above is the CLOSETED method. While BAG_SMALL_HOLD is on (the live
 // default), 3c2 sells nothing on a post-TP2 bag and the 3c3 floor — armed
-// from TP2, confirming for BAG_FLOOR_CONFIRM_SEC (default 30) — is the
+// from TP2, confirming for BAG_FLOOR_CONFIRM_SEC (default 60) — is the
 // bag's downside exit; mode off restores the staged design byte-for-byte.
 // A MOONBAG TRIM (owner order 2026-10-17 ~00:27 EDT, section 3c1) rides
 // alongside in both modes: at +200% from the TP2 print, half the bag
@@ -302,7 +302,7 @@ export function evaluateExit(pos, mark, cfg, now) {
   // the 3c3 floor is the bag's downside exit and it confirms exactly like
   // the trail above — the first check at/below the floor line stamps
   // bagFloorSince, the bag sells only after BAG_FLOOR_CONFIRM_SEC
-  // (default 30) CONTINUOUS seconds at/below the line, and any check back
+  // (default 60) CONTINUOUS seconds at/below the line, and any check back
   // above the line clears the stamp with no accumulated credit. Judged
   // here in state prep for the same reason as the trail's: the breach is
   // a level read off this check's own ratio, so section 3c3 only reads
@@ -311,7 +311,7 @@ export function evaluateExit(pos, mark, cfg, now) {
   // accrues (the instant fire). The caller threads the stamp back from
   // every decision, so a pending survives restarts; a position opened
   // before this build carries none and starts unpended.
-  const bagFloorConfirmSec = cfg.bagFloorConfirmSec ?? 30;
+  const bagFloorConfirmSec = cfg.bagFloorConfirmSec ?? 60;
   let bagFloorSince = pos.bagFloorSince ?? null;
   const floorBreached = bagSmallHold && !!pos.tp2Done && ratio <= 1 + cfg.bagFloorPct;
   if (!bagSmallHold || !(bagFloorConfirmSec > 0) || !pos.tp2Done) bagFloorSince = null;
@@ -694,7 +694,7 @@ export function evaluateExit(pos, mark, cfg, now) {
   //      precondition, no BAG_DEAD_STAGED gate — and it confirms: state
   //      prep stamped bagFloorSince on the first at/below check, and the
   //      bag sells only once the breach has HELD BAG_FLOOR_CONFIRM_SEC
-  //      (default 30) continuous seconds; inside the window this section
+  //      (default 60) continuous seconds; inside the window this section
   //      returns a no-sale that owns the check, exactly like the trail's
   //      pending (3c), and the first check at/after the window with the
   //      line still breached sells in full, its reason carrying the hold.
