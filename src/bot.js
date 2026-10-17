@@ -79,6 +79,7 @@ export class Bot {
       shadowGates: (v, setup) => this.shadowGateRecord(v, { setup, metrics: {} }, this.now()),
       noteMint: (m, s) => this.noteMint(m, s),
       onEvent: (ev) => { this.noteCalloutEvent(ev); this.noteConfluenceEvent(ev); }, // observer taps (record-only): Callout Shadow Lab + Confluence Shadow Signal
+      liveEval: (ev) => { try { this._evalWalletLive(ev); } catch { /* live tap — self-guarded, fail-silent: can never disturb the watch */ } }, // LIVE tap (owner order 2026-10-16): dev-launch + confluence events route live entry attempts through the standard pipeline (kill switches DEVLAUNCH_LIVE / CONFLUENCE_LIVE)
     });
     this.cfgStamp = configStamp(cfg); // D1: config version stamp carried by entries + closes (record-only)
     this.lastSolUsd = null; // last SOL/USD the position loop saw (feeds observer marks)
@@ -1411,7 +1412,7 @@ export class Bot {
     try {
       this.evictBlacklisted(); // marked coins never even get priced, let alone signal
       const mints = [...new Set([...this.watch.keys(), ...this.positions.map(p => p.mint)])];
-      if (!mints.length) { try { await this.outcomeTick(this.now()); } catch { /* observer only */ } try { await this._flowRetryTick(this.now()); } catch { /* record-only retry */ } try { await this._staircaseRetryTick(this.now()); } catch { /* staircase retry */ } try { await this.walletWatch.finalizeTick(this.now()); } catch { /* shadow outcomes */ } try { await this.calloutLab.tick(this.now()); } catch { /* shadow callouts */ } try { await this.flowExits.tick(this.now()); } catch { /* shadow flow exits */ } try { await this.structureWatch.tick(this.now()); } catch { /* shadow structure watch */ } try { this._scanSweep(this.now()); } catch { /* scan ledger */ } return; }
+      if (!mints.length) { try { await this.outcomeTick(this.now()); } catch { /* observer only */ } try { await this._flowRetryTick(this.now()); } catch { /* record-only retry */ } try { await this._staircaseRetryTick(this.now()); } catch { /* staircase retry */ } try { await this._walletRetryTick(this.now()); } catch { /* wallet-live retry */ } try { await this.walletWatch.finalizeTick(this.now()); } catch { /* shadow outcomes */ } try { await this.calloutLab.tick(this.now()); } catch { /* shadow callouts */ } try { await this.flowExits.tick(this.now()); } catch { /* shadow flow exits */ } try { await this.structureWatch.tick(this.now()); } catch { /* shadow structure watch */ } try { this._scanSweep(this.now()); } catch { /* scan ledger */ } return; }
       const views = await this.d.fetchViews(mints);
       const n = this.now();
       // D4 (user 2026-10-13): market breadth — the share of sampled coins green on the hour —
@@ -1487,6 +1488,7 @@ export class Bot {
       try { await this.outcomeTick(n); } catch { /* observer only */ }
       try { await this._flowRetryTick(n); } catch { /* record-only retry */ }
       try { await this._staircaseRetryTick(n); } catch { /* staircase retry */ }
+      try { await this._walletRetryTick(n); } catch { /* wallet-live retry */ }
       try { await this.walletWatch.finalizeTick(n); } catch { /* shadow outcomes */ }
       try { await this.calloutLab.tick(n); } catch { /* shadow callouts */ }
       try { await this.flowExits.tick(n); } catch { /* shadow flow exits */ }
@@ -1557,8 +1559,14 @@ export class Bot {
   // Setups currently in shadow-only mode (user 2026-10-14, forward plan step 1b):
   // the detector still fires and the signal is journaled + outcome-tracked, but it
   // never reaches the gate/risk/buy machinery and never touches the position slot.
+  // TREND went LIVE by owner order 2026-10-16 ("make them all go live"):
+  // cfg.trendLive (TREND_LIVE, default on) decides — off is the kill switch and
+  // restores shadow routing. trendShadow is consulted only when a hand-built
+  // cfg carries no trendLive at all (the pre-flip unit rigs), so their pinned
+  // behavior is byte-identical. Liftoff keeps its own shadow knob, untouched.
   shadowedSetup(setup) {
-    return (setup === 'trend' && !!this.cfg.trendShadow) || (setup === 'liftoff' && !!this.cfg.liftoffShadow);
+    const trendShadowed = this.cfg.trendLive == null ? !!this.cfg.trendShadow : !this.cfg.trendLive;
+    return (setup === 'trend' && trendShadowed) || (setup === 'liftoff' && !!this.cfg.liftoffShadow);
   }
 
   shadow(v, sig, gates = null, gatePass = null) {
@@ -1710,6 +1718,12 @@ export class Bot {
    * legacy: every trigger is live-eligible.
    */
   flowLiveTrigger(agg) {
+    // ALL-LIVE flip (owner order 2026-10-16, "make them all go live"): with
+    // FLOW_ALL_LIVE on (default), every tracked-wallet trigger is live — the
+    // roster below no longer gates routing. FLOW_ALL_LIVE=0 restores the
+    // roster behavior exactly (the pre-flip unit rigs, which build cfgs
+    // without the knob, read undefined → roster path, byte-identical).
+    if (this.cfg.flowAllLive) return true;
     const live = this.cfg.flowLiveWallets;
     if (!live) return true;
     return !!(agg && agg.kind === 'solo' && agg.wallet && live.includes(agg.wallet));
@@ -1859,6 +1873,126 @@ export class Bot {
       if (!v) continue; // still no view — the next tick retries until the window closes
       this.staircasePending.delete(mint);
       await this._evalStaircaseWithView(p.rec, v, n);
+    }
+  }
+
+  /**
+   * WALLET-EVENT LIVE (owner order 2026-10-16, "make them all go live"): a
+   * walletWatch dev-launch or confluence event routes a live entry attempt
+   * through the exact same pipeline as every setup — fresh view, already-held
+   * and per-mint signal-cooldown guards, the eligible() tradability floor,
+   * then onSignal (gates, risk, sizing, exits all unchanged) — via the same
+   * guard shape as _evalFlow / _evalStaircase. The detectors stay record-only
+   * journalers; this tap is the only bridge, wired as WalletWatch's liveEval
+   * dep and self-guarded per kind (DEVLAUNCH_LIVE / CONFLUENCE_LIVE kill
+   * switches restore record-only exactly). A guard failure journals the
+   * attempt as 'skipped' with its reason; a mint with no obtainable view is
+   * retried for up to 5 minutes (the flow/staircase discipline) and then
+   * journaled skipped — a buy is never forced on missing data.
+   */
+  _evalWalletLive(ev) {
+    if (!ev || !ev.mint) return;
+    let setup = null;
+    if (ev.kind === 'dev') { if (!this.cfg.devlaunchLive) return; setup = 'devlaunch'; }
+    else if (ev.kind === 'confluence') { if (!this.cfg.confluenceLive) return; setup = 'confluence'; }
+    else return;
+    const mint = ev.mint;
+    (async () => {
+      const n = this.now();
+      const st = this._walletLiveStats(setup);
+      st.evals++;
+      const views = await this.d.fetchViews([mint]).catch(() => null);
+      const v = views && views.get(mint);
+      if (!v) {
+        st.noView++;
+        this._queueWalletRetry(ev, setup, n);
+        return;
+      }
+      await this._evalWalletLiveWithView(ev, setup, v, n);
+    })().catch(e => this.err('walletLiveEval', e));
+  }
+
+  _walletLiveStats(setup) {
+    this.stats.walletLive = this.stats.walletLive || {
+      confluence: { evals: 0, fires: 0, skipped: 0, noView: 0, noViewFinal: 0, retries: 0 },
+      devlaunch: { evals: 0, fires: 0, skipped: 0, noView: 0, noViewFinal: 0, retries: 0 },
+    };
+    return this.stats.walletLive[setup];
+  }
+
+  _walletLiveSig(ev, setup) {
+    if (setup === 'devlaunch') {
+      return {
+        setup, strength: ev.buySol || 0,
+        metrics: { devlaunch: { eventId: ev.id || null, dev: ev.dev || null, devName: ev.devName || null, sub: ev.sub || null, buySol: ev.buySol ?? null, launchTs: ev.launchTs ?? null } },
+        label: `devlaunch: ${ev.devName || ev.dev || 'dev'} ${ev.sub || ''} ${ev.symbol || ''}`.trim(),
+      };
+    }
+    return {
+      setup, strength: ev.maxSol || 0,
+      metrics: { confluence: { eventId: ev.id || null, clusters: ev.clusters || [], entities: ev.entities || [], names: ev.names || [], maxSol: ev.maxSol ?? null, walletCount: ev.walletCount ?? null } },
+      label: `confluence: ${(ev.clusters || []).length} entities (${(ev.names || []).join(', ')})`,
+    };
+  }
+
+  /** The judged half of a wallet-event live eval: a fresh view exists, so run
+   *  the guards and route into onSignal. Shared by the fire-time path and the
+   *  retry tick. */
+  async _evalWalletLiveWithView(ev, setup, v, n) {
+    const mint = ev.mint;
+    this.latest.set(mint, v); this.latestAt.set(mint, n); this.history.record(v, n);
+    const st = this._walletLiveStats(setup);
+    const sig = this._walletLiveSig(ev, setup);
+    const blocked = [];
+    if (this.positions.some(p => p.mint === mint)) blocked.push('already holding this coin — event recorded, not re-evaluated');
+    else if (n - (this.lastSignal.get(mint) || 0) < this.cfg.signalCooldownMin * 60000) blocked.push(`this coin was already signaled in the last ${this.cfg.signalCooldownMin}m — event recorded, not re-evaluated`);
+    if (!blocked.length) { const el = eligible(v, this.cfg, n); if (el.length) blocked.push(...el); }
+    if (blocked.length) {
+      st.skipped++;
+      this.skip(v, sig, blocked.map(r => `${setup}-live: ${r}`));
+      return;
+    }
+    this.lastSignal.set(mint, n);
+    st.fires++;
+    console.log(`[${setup}] ${v.symbol} — WALLET-EVENT LIVE eval (${sig.label})`);
+    await this.onSignal(v, sig);
+  }
+
+  /** A wallet event whose mint had no market view at fire time: queue it and
+   *  retry for up to 5 minutes (the _evalFlow/_evalStaircase discipline). A
+   *  newer event for the same setup+mint supersedes the queued record; the
+   *  retry window stays anchored to the first queueing. Expiry journals the
+   *  attempt as skipped — the event is never silently dropped and never
+   *  bought blind. */
+  _queueWalletRetry(ev, setup, n) {
+    this.walletPending = this.walletPending || new Map();
+    const key = `${setup}:${ev.mint}`;
+    const cur = this.walletPending.get(key);
+    if (cur) { cur.ev = ev; return; }
+    this.walletPending.set(key, { ev, setup, firstTs: n, nextAt: n + 20000 });
+  }
+
+  async _walletRetryTick(n) {
+    if (!this.walletPending || !this.walletPending.size) return;
+    for (const [key, p] of [...this.walletPending]) {
+      if (n - p.firstTs > 5 * 60000) {
+        this.walletPending.delete(key);
+        const st = this._walletLiveStats(p.setup);
+        st.noViewFinal++;
+        st.skipped++;
+        const v = { address: p.ev.mint, symbol: p.ev.symbol || null, price: p.ev.viewPrice || 0, mc: p.ev.mc ?? null };
+        try { this.skip(v, this._walletLiveSig(p.ev, p.setup), [`${p.setup}-live: no market view within 5m of the event — attempt dropped, not bought blind`]); } catch { /* journaling best-effort on the drop path */ }
+        console.log(`[${p.setup}] ${p.ev.symbol || p.ev.mint}: live eval dropped — no market view within 5m of the event`);
+        continue;
+      }
+      if (n < p.nextAt) continue;
+      p.nextAt = n + 20000;
+      this._walletLiveStats(p.setup).retries++;
+      const views = await this.d.fetchViews([p.ev.mint]).catch(() => null);
+      const v = views && views.get(p.ev.mint);
+      if (!v) continue; // still no view — the next tick retries until the window closes
+      this.walletPending.delete(key);
+      await this._evalWalletLiveWithView(p.ev, p.setup, v, n);
     }
   }
 

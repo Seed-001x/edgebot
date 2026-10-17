@@ -154,7 +154,7 @@ test('shadow trades: boot restores a pending virtual; a past-cap one finalizes a
 
 // ------------------------------------------------------------ bot wiring
 test('bot: a gate-passing shadow signal opens a virtual — and touches nothing real', async () => {
-  const { bot } = rig({ trendShadow: 1 });
+  const { bot } = rig({ trendShadow: 1, trendLive: false });
   await bot.start();
   const riskBefore = JSON.stringify(bot.risk.s);
   await bot.onSignal(view({ price: 1.0 }), { setup: 'trend', strength: 5, metrics: {} });
@@ -176,7 +176,7 @@ test('bot: a gate-passing shadow signal opens a virtual — and touches nothing 
 });
 
 test('bot: a gate-FAILED shadow signal opens no virtual', async () => {
-  const { bot } = rig({ trendShadow: 1 }, { rug: riggedRug });
+  const { bot } = rig({ trendShadow: 1, trendLive: false }, { rug: riggedRug });
   await bot.start();
   await bot.onSignal(view({ price: 1.0 }), { setup: 'trend', strength: 5, metrics: {} });
   const rec = bot.journal.signals.find(s => s.setup === 'trend');
@@ -203,7 +203,7 @@ test('bot: taken and skipped (non-shadow) signals open no virtual', async () => 
 });
 
 test('bot: the outcome observer fetches + marks virtual mints after journal tracking ends', async () => {
-  const { bot, clock } = rig({ trendShadow: 1 });
+  const { bot, clock } = rig({ trendShadow: 1, trendLive: false });
   await bot.start();
   await bot.onSignal(view({ price: 1.0 }), { setup: 'trend', strength: 5, metrics: {} });
   assert.equal(bot.shadowTrades.pending.size, 1);
@@ -222,7 +222,7 @@ test('bot: the outcome observer fetches + marks virtual mints after journal trac
 });
 
 test('server: /shadowtrades serves pending + done in the paging envelope; /state carries the totals', async () => {
-  const { bot, cfg } = rig({ trendShadow: 1 });
+  const { bot, cfg } = rig({ trendShadow: 1, trendLive: false });
   await bot.start();
   bot.shadowTrades.open({ id: 'x-open', mint: 'MINT8', symbol: 'OPEN', setup: 'trend', price: 1, mc: 10, ts: T0, sizeSol: 0.02 });
   bot.shadowTrades.open({ id: 'x-done', mint: 'MINT9', symbol: 'DONE', setup: 'liftoff', price: 1, mc: 10, ts: T0, sizeSol: 0.02 });

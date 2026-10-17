@@ -39,10 +39,18 @@ test('config: shadow knobs default off, env 1 turns them on, validation stays cl
   assert.equal(validateConfig(on).length, 0);
   assert.equal(validateConfig(d).length, 0);
   assert.ok(validateConfig(loadConfig({ TREND_SHADOW: '2' })).some(e => e.includes('TREND_SHADOW')));
+  // LIVE flip (owner order 2026-10-16): trendLive defaults ON even with
+  // TREND_SHADOW=1 in env — TREND_LIVE=0 is the kill switch that restores
+  // shadow routing. The shadow rigs in this file pin trendLive: false, the
+  // cfg-level expression of that switch.
+  assert.equal(d.trendLive, true);
+  assert.equal(loadConfig({ TREND_SHADOW: '1' }).trendLive, true, 'TREND_SHADOW alone no longer shadows trend');
+  assert.equal(loadConfig({ TREND_LIVE: '0' }).trendLive, false);
+  assert.equal(loadConfig({ TREND_LIVE: '0', TREND_SHADOW: '1' }).trendLive, false);
 });
 
 test('trend shadowed: signal journals as shadow, no buy, no slot, no entries, metrics intact', async () => {
-  const { bot } = rig({ trendShadow: 1 });
+  const { bot } = rig({ trendShadow: 1, trendLive: false });
   await bot.start();
   const metrics = { chgH1: 55, chgM5: 4, buyRatioM5: 0.66, volH1: 250000 };
   await bot.onSignal(view({ price: 1.00 }), { setup: 'trend', strength: 5.5, metrics });
@@ -70,7 +78,7 @@ test('liftoff shadowed: signal journals as shadow, no buy, no slot, no entries',
 });
 
 test('slot stays free: a pop after a shadowed trend signal still opens', async () => {
-  const { bot } = rig({ trendShadow: 1 });
+  const { bot } = rig({ trendShadow: 1, trendLive: false });
   await bot.start();
   await bot.onSignal(view({ price: 1.00 }), { setup: 'trend', strength: 5, metrics: {} });
   assert.equal(bot.positions.length, 0);
@@ -97,7 +105,7 @@ test('knobs off: trend and liftoff signals trade exactly as today (taken in a he
 });
 
 test('shadowed signal reaches the outcome tracker and is scored like any other signal', async () => {
-  const { bot, clock } = rig({ trendShadow: 1 });
+  const { bot, clock } = rig({ trendShadow: 1, trendLive: false });
   await bot.start();
   await bot.onSignal(view({ price: 1.00 }), { setup: 'trend', strength: 5, metrics: {} });
   const rec = bot.journal.signals.find(s => s.setup === 'trend');

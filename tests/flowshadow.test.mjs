@@ -34,7 +34,10 @@ const CONFL_YENNI_AGG = { wallets: [YENNI, EIGHTDEJ], maxSol: 0.4, count: 2, kin
 
 // Full-pipeline rig (flowsnapshot pattern): real Bot + scripted-quote
 // Executor. env carries FLOW_LIVE_WALLETS unless liveEnv says otherwise.
-function rig({ env = { FLOW_LIVE_WALLETS: YENNI } } = {}) {
+// FLOW_ALL_LIVE:'0' pins the roster mode these tests were written against
+// (owner flip 2026-10-16 made all-live the default; the kill switch restores
+// this exact behavior — the flip itself is pinned in liveflips.test.mjs).
+function rig({ env = { FLOW_LIVE_WALLETS: YENNI, FLOW_ALL_LIVE: '0' } } = {}) {
   const cfg = testCfg({ tradeSol: 0.02 }, env);
   const clock = { t: T0 };
   const q = { valueLam: 19_000_000 };
@@ -113,7 +116,7 @@ test('flow shadow: roster size trigger (8deJ) journals as shadow', async () => {
 });
 
 test('flow shadow: poorgoat solo trigger enters live when listed alongside yenni (same status as yenni)', async () => {
-  const { bot } = rig({ env: { FLOW_LIVE_WALLETS: LIVE_PAIR } });
+  const { bot } = rig({ env: { FLOW_LIVE_WALLETS: LIVE_PAIR, FLOW_ALL_LIVE: '0' } });
   const s = await fire(bot, POORGOAT_AGG); // 0.85 SOL — under the roster size bar; only solo status fires it at all
   assert.equal(s.decision, 'taken', JSON.stringify(s.reasons));
   assert.equal(s.label, 'flow: poorgoat bought 0.85 SOL');
@@ -148,7 +151,7 @@ test('flow shadow: a yenni SIZE-shaped trigger is not live either — solo kind 
 });
 
 test('flow shadow: set-but-empty live set makes even yenni shadow (fail-closed)', async () => {
-  const { bot } = rig({ env: { FLOW_LIVE_WALLETS: '' } });
+  const { bot } = rig({ env: { FLOW_LIVE_WALLETS: '', FLOW_ALL_LIVE: '0' } });
   const s = await fire(bot, YENNI_AGG);
   assert.equal(s.decision, 'shadow');
   assert.equal(bot.positions.length, 0);

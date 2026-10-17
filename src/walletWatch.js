@@ -2,6 +2,14 @@
 // go given 2026-10-15). LOG-ONLY observers over the Phase 1–3 wallet sets
 // (src/walletSets.json, generated from the investigation scorecards):
 //
+// LIVE ROUTING (owner order 2026-10-16, "make them all go live"): the
+// detectors below still only journal events + outcome-track them — this
+// module never trades. The BOT bridges events into live entry attempts via
+// the optional liveEval dep (Bot._evalWalletLive: fresh view, held/cooldown
+// guards, eligible() floor, then the standard onSignal pipeline under setup
+// labels 'devlaunch' / 'confluence'). Kill switches DEVLAUNCH_LIVE=0 /
+// CONFLUENCE_LIVE=0 (Bot-side) restore record-only exactly.
+//
 //   dev-launch  — one of the 23 hand-tagged dev wallets creates a pump.fun coin
 //                 or buys into one within DEV_EARLY_MIN of its creation.
 //   confluence  — >= CONFL_MIN_CLUSTERS distinct surviving trader ENTITIES buy
@@ -163,11 +171,12 @@ export class WalletWatch {
    * deps: { cfg, dir, now, rpcFn, fetchViews, fetchCoin, fetchCandles,
    *         shadowGates(view, setup) -> {gates, gatePass}, noteMint, log, sets }
    */
-  constructor({ cfg, dir, now = Date.now, rpcFn = null, fetchViews = null, fetchCoin = null, fetchCandles = null, shadowGates = null, noteMint = null, onEvent = null, log = console.log, sets = null }) {
+  constructor({ cfg, dir, now = Date.now, rpcFn = null, fetchViews = null, fetchCoin = null, fetchCandles = null, shadowGates = null, noteMint = null, onEvent = null, liveEval = null, log = console.log, sets = null }) {
     this.cfg = cfg; this.dir = dir; this.now = now; this.log = log;
     this.rpcFn = rpcFn || ((m, p) => flowRpc(cfg.rpcUrls, m, p));
     this.fetchViews = fetchViews; this.shadowGates = shadowGates; this.noteMint = noteMint;
     this.onEvent = onEvent; // optional observer tap (Callout Shadow Lab): fired with the event right after it is journaled — record-only, fail-silent
+    this.liveEval = liveEval; // optional LIVE tap (owner order 2026-10-16): fired with the event right after it is journaled, alongside onEvent — the Bot self-guards per kind (DEVLAUNCH_LIVE / CONFLUENCE_LIVE) and routes the standard entry pipeline; fail-silent here
     this.fetchCoin = fetchCoin || defaultCoinFacts;
     this.fetchCandles = fetchCandles || defaultCandles;
     this.sets = sets || loadSets();
@@ -214,7 +223,7 @@ export class WalletWatch {
     const mk = (fn, sec) => { const t = setInterval(() => { fn().catch(e => this.log(`[walletwatch] poll failed: ${e && e.message}`)); }, sec * 1000); if (t.unref) t.unref(); return t; };
     if (this.devByAddr.size) this.timers.push(mk(() => this.pollGroup('dev'), this.cfg.devPollSec));
     if (this.entityByWallet.size) this.timers.push(mk(() => this.pollGroup('confl'), this.cfg.conflPollSec));
-    this.log(`[walletwatch] shadow detectors on: ${this.devByAddr.size} devs every ${this.cfg.devPollSec}s, ${this.entityByWallet.size} survivor wallets (${(this.sets.survivors || []).length} entities) every ${this.cfg.conflPollSec}s — log only`);
+    this.log(`[walletwatch] shadow detectors on: ${this.devByAddr.size} devs every ${this.cfg.devPollSec}s, ${this.entityByWallet.size} survivor wallets (${(this.sets.survivors || []).length} entities) every ${this.cfg.conflPollSec}s — live routing: devlaunch ${this.cfg.devlaunchLive ? 'LIVE' : 'off'}, confluence ${this.cfg.confluenceLive ? 'LIVE' : 'off'}`);
   }
 
   stop() { for (const t of this.timers) clearInterval(t); this.timers = []; }
@@ -309,6 +318,7 @@ export class WalletWatch {
     this.events.set(ev.id, ev);
     this._append({ t: 'ev', ev });
     if (this.onEvent) try { this.onEvent(ev); } catch { /* observer */ }
+    if (this.liveEval) try { this.liveEval(ev); } catch { /* live tap — Bot self-guards */ }
     if (this.noteMint) try { this.noteMint(buy.mint, 'devlaunch'); } catch { /* observer */ }
     this.log(`[walletwatch] DEV LAUNCH ${ev.devName} ${sub} ${ev.symbol || buy.mint} (bought ${buy.sol.toFixed(2)} SOL) — gates would ${verdict.gatePass === false ? `block (${verdict.firstBlocker})` : verdict.gatePass === true ? 'pass' : 'n/a'}`);
   }
@@ -361,6 +371,7 @@ export class WalletWatch {
     this.events.set(ev.id, ev);
     this._append({ t: 'ev', ev });
     if (this.onEvent) try { this.onEvent(ev); } catch { /* observer */ }
+    if (this.liveEval) try { this.liveEval(ev); } catch { /* live tap — Bot self-guards */ }
     if (this.noteMint) try { this.noteMint(mint, 'confluence'); } catch { /* observer */ }
     this.log(`[walletwatch] CONFLUENCE ${ev.symbol || mint}: ${trig.clusters.length} entities (${names.join(', ')}) within ${this.cfg.conflWindowMin}m — gates would ${verdict.gatePass === false ? `block (${verdict.firstBlocker})` : verdict.gatePass === true ? 'pass' : 'n/a'}`);
   }
@@ -395,6 +406,7 @@ export class WalletWatch {
     const slim = (e) => ({ id: e.id, kind: e.kind, sub: e.sub || null, ts: e.ts, symbol: e.symbol, mint: e.mint, devName: e.devName || null, names: e.names || null, buySol: e.buySol || null, buyTs: e.buyTs || null, maxSol: e.maxSol || null, mc: e.mc, gatePass: e.gatePass, firstBlocker: e.firstBlocker, entryTs: e.entryTs, out: e.out, devSell: e.devSell || null });
     return {
       enabled: !!this.cfg.walletWatchEnabled,
+      liveRouting: { devlaunch: !!this.cfg.devlaunchLive, confluence: !!this.cfg.confluenceLive }, // LIVE flips (owner order 2026-10-16): the running process's routing state for each detector, readable on /devwatch
       baseline: this.baseline,
       qual: { devN: this.cfg.devQualN, conflN: this.cfg.conflQualN },
       counts: { devWallets: this.devByAddr.size, survivorWallets: this.entityByWallet.size, survivorEntities: (this.sets.survivors || []).length, events: all.length, pending: all.filter(e => !(e.out && e.out.done)).length },

@@ -183,6 +183,7 @@ export function loadConfig(env = process.env) {
     // Trend pause + quality guards (user 2026-10-13, entry-fixes B1–B5; tonight's trend went 0-for-9):
     trendEnabled: num(env, 'TREND_ENABLED', 0),          // B1: 0 = trend detector paused; pop keeps running. Re-enable only with B2–B5 in and a backtest showing trend net positive.
     trendShadow: num(env, 'TREND_SHADOW', 0),            // shadow-only (user 2026-10-14, forward plan step 1b): 1 = trend signals are journaled + outcome-tracked but never bought; detector keeps running. 0 = live (today's behavior).
+    trendLive: num(env, 'TREND_LIVE', 1) === 1,          // LIVE flip (owner order 2026-10-16, "make them all go live"): true (default) = trend signals route through the live pipeline like pop. TREND_LIVE=0 is the kill switch — it restores shadow routing (Bot.shadowedSetup consults trendShadow only when this knob is absent from a hand-built cfg).
     trendMinMc: num(env, 'TREND_MIN_MC', 30000),         // B4: trend needs a real market cap (BORING $15k, Urara $15.6k); 0 = off
     trendMinBuyRatioH1: num(env, 'TREND_MIN_BUY_RATIO_H1', 0.55), // B2: the whole HOUR must be buy-dominated, not just a 14-trade 5m blip (Urara: 411 buys vs 445 sells on the hour); 0 = off
     trendMinTxnsM5: num(env, 'TREND_MIN_TXNS_M5', 30),   // B2: at least this many 5m trades before a ratio counts as demand; 0 = off
@@ -262,6 +263,12 @@ export function loadConfig(env = process.env) {
     // triggers live.
     flowLiveWallets: env.FLOW_LIVE_WALLETS === undefined ? null
       : (env.FLOW_LIVE_WALLETS || '').split(',').map(s => s.trim()).filter(Boolean),
+    // FLOW_ALL_LIVE (owner order 2026-10-16, "make them all go live"): true
+    // (default) = EVERY tracked-wallet flow trigger routes live through
+    // _evalFlow — the FLOW_LIVE_WALLETS roster above no longer gates routing.
+    // FLOW_ALL_LIVE=0 is the kill switch: roster behavior returns exactly
+    // (only listed solo wallets live, everything else journals as shadow).
+    flowAllLive: num(env, 'FLOW_ALL_LIVE', 1) === 1,
 
     // ---- wallet task shadow detectors (user brief 2026-10-14, Phases 4–6; go given 2026-10-15) ----
     // LOG-ONLY observers over the Phase 1–3 wallet sets (src/walletSets.json): the 23
@@ -271,6 +278,18 @@ export function loadConfig(env = process.env) {
     // outcome-tracked against the taken-pop baseline; promotion is a FLAG the user
     // acts on — nothing here trades, gates live entries, or self-promotes.
     walletWatchEnabled: num(env, 'WALLET_WATCH', 1) === 1,
+    // LIVE flips for the walletWatch detectors (owner order 2026-10-16, "make
+    // them all go live"): the detectors themselves still only journal events
+    // + outcome-track them; the BOT taps each event (WalletWatch liveEval dep)
+    // and routes a live entry attempt through the standard pipeline — fresh
+    // view, held/cooldown guards, eligible() floor, gates, risk, sizing —
+    // under setup labels 'devlaunch' / 'confluence'. A failed guard journals
+    // as skipped with its reason; nothing bypasses. Kill switches restore
+    // record-only exactly: DEVLAUNCH_LIVE=0 / CONFLUENCE_LIVE=0. (The
+    // CONFLUENCE_SIGNAL shadow study above is a different thing and stays
+    // record-only untouched.)
+    devlaunchLive: num(env, 'DEVLAUNCH_LIVE', 1) === 1,
+    confluenceLive: num(env, 'CONFLUENCE_LIVE', 1) === 1,
     devPollSec: num(env, 'DEV_POLL_SEC', 60),             // dev wallet signature poll cadence
     conflPollSec: num(env, 'CONFL_POLL_SEC', 300),        // survivor wallet signature poll cadence
     conflWindowMin: num(env, 'CONFL_WINDOW_MIN', 5),      // confluence window (on-chain buy times)

@@ -116,7 +116,7 @@ test('D1 signals: a gate-failed skip record carries every gate result, not just 
 });
 
 test('D1 shadow: shadow records carry gate results; a gate fail never changes the shadow decision', async () => {
-  const ok = rig({ trendShadow: 1 });
+  const ok = rig({ trendShadow: 1, trendLive: false });
   await ok.bot.start();
   await ok.bot.onSignal(view({ price: 1.0 }), { setup: 'trend', strength: 5, metrics: {} });
   const rec = ok.bot.journal.signals.find(s => s.setup === 'trend');
@@ -124,7 +124,7 @@ test('D1 shadow: shadow records carry gate results; a gate fail never changes th
   assert.equal(rec.gatePass, true);
   assert.ok(rec.gates && rec.gates.depth.pass === true && rec.gates.extension, 'pre-checks + gates both recorded');
 
-  const bad = rig({ trendShadow: 1 }, { rug: riggedRug });
+  const bad = rig({ trendShadow: 1, trendLive: false }, { rug: riggedRug });
   await bad.bot.start();
   await bad.bot.onSignal(view({ price: 1.0 }), { setup: 'trend', strength: 5, metrics: {} });
   const rec2 = bad.bot.journal.signals.find(s => s.setup === 'trend');
