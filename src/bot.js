@@ -3292,7 +3292,9 @@ export class Bot {
       // is on) is born with TP1 pinned at +50% — the /tp1at override
       // mechanism, applied by the strategy instead of by hand — and a
       // range/bottom entry also carries its base's low (sig.structureLow)
-      // for the structural stop in managePosition. A signal carrying
+      // as an entry-side record (the dip-watch/enrollment machinery and
+      // the close record read the base; since the structural stop's
+      // removal on 2026-10-17 NO exit reads it). A signal carrying
       // neither stamp produces the exact position shape of tonight.
       ...(sig.baseTp1 ? { tp1AtPct: 0.5 } : {}), ...(sig.structureLow > 0 ? { structureLow: sig.structureLow } : {}),
       // SLOT stamp (owner order 2026-10-17): a second-slot entry (priced at
@@ -3487,35 +3489,20 @@ export class Bot {
       if (pos.flowHist.length > 45) pos.flowHist.splice(0, pos.flowHist.length - 45);
       decision = evaluateExit(pos, markNow, this.cfg, n);
     }
-    // STRUCTURAL STOP (base strategy, owner order 2026-10-16): a
-    // range/bottom entry's base is its stop. While the position is
-    // pre-TP1, TWO CONSECUTIVE checks whose realizable mc — the same
-    // sell quote this judge just pulled, marked through the entry
-    // round-trip exactly as the ratchet judge reads it — print below
-    // the base's own low (pos.structureLow, stamped at entry) exit in
-    // full: the base broke, the thesis is dead. One print is a wick
-    // and only counts; any check back at/above the low resets the
-    // count. The stop retires permanently once TP1 fires (the ladder
-    // owns the position from there), and it is suppressed while the
-    // position is protected (the owner's hands-off ride is never
-    // second-guessed) or taken over. Overrides whatever evaluateExit
-    // decided on this check — pre-TP1 and under the base low, no other
-    // judge has a live claim.
-    if (valueSol != null && pos.structureLow > 0 && !pos.tp1Done && !pos.protected && !pos.takenOver) {
-      const basis = pos.entrySol * pos.remainingFrac;
-      const base = pos.entryRoundTrip > 0 ? pos.entryRoundTrip : 1;
-      const realizableMc = basis > 0 && pos.entryMc > 0 ? pos.entryMc * ((valueSol / basis) / base) : null;
-      if (realizableMc != null) {
-        if (realizableMc < pos.structureLow) {
-          pos.structureBreach = (pos.structureBreach || 0) + 1;
-          if (pos.structureBreach >= 2) {
-            this._baseStats().structureStops++;
-            console.log(`[basemode] ${pos.symbol}: base broke — realizable mc ${Math.round(realizableMc)} under the base low ${Math.round(pos.structureLow)} on 2 consecutive checks — full exit`);
-            decision = { fraction: 1, reason: 'base broke: fell below the base low', newPeak: decision.newPeak || pos.peakRatio, structureStop: true };
-          }
-        } else pos.structureBreach = 0;
-      }
-    }
+    // STRUCTURAL STOP REMOVED (owner order 2026-10-17, "Remove that" —
+    // after BLOCUS was range-bought at 11:09:32 EDT and base-broke-sold
+    // 12 seconds later at 11:09:44): the base-break exit — a range/bottom
+    // position sold in full when two consecutive realizable prints fell
+    // below its stamped base low ("base broke: fell below the base
+    // low") — is GONE from the live exit path. Nothing here reads
+    // pos.structureLow anymore. The ENTRY-side stamps are untouched:
+    // the base low is still stamped at entry (onSignal's birth stamps,
+    // the range/bottom eval routes), still rides the position and close
+    // records, and the dip-watch / enrollment machinery still reads the
+    // base — only the EXIT behavior died. The rest of the exit stack
+    // (TP ladder, Tratchet, dead-flow, momentum-failure, stall/
+    // probation, moonbag trim/floor, liquidity-death/undertaker) judges
+    // base positions exactly as it judges every other position.
     pos.peakRatio = decision.newPeak || pos.peakRatio;
     // position-tick journal (record-only): this check's mark, recorded AFTER the
     // peak update so peakRatio in the record includes this check — the write

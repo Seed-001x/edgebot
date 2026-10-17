@@ -8,9 +8,13 @@
 // thirds (or the deferred dip into them), a staircase-3 higher low, a
 // qualified bottom mark. Base entries carry the owner's hand-set shape:
 // TP1 pinned at +50% from birth (tp1AtPct 0.5) and, for range/bottom,
-// a STRUCTURAL STOP — two consecutive realizable prints below the
-// base's own low, pre-TP1, exit in full: "base broke: fell below the
-// base low". BASE_MODE=0 restores tonight's direct-buy behavior.
+// the base's own low stamped at entry (structureLow — an entry-side
+// record the dip-watch/enrollment machinery reads). The STRUCTURAL
+// STOP that once sold such a position on two consecutive prints below
+// that low was REMOVED by owner order 2026-10-17 ("Remove that", after
+// BLOCUS was sold 12 seconds after its range entry): the tests below
+// pin the hold, and that the rest of the exit stack still fires on the
+// same position shape. BASE_MODE=0 restores tonight's direct-buy behavior.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -314,7 +318,7 @@ test('bottom live: held / cooldown / no-view disciplines match the sibling paths
   assert.equal(noview.bot.stats.bottom.retries, 1);
 });
 
-// ------------------------------------------------------------ TP1 stamp + structural stop (full pipeline)
+// ------------------------------------------------------------ TP1 stamp + base-low stamp (full pipeline)
 async function openRangePosition(rig, over = {}) {
   const v = view({ address: 'MINTR', symbol: 'RNG', mc: 505_000, liq: 100_000, createdAt: T0 - 10 * 3600e3, dex: 'pumpswap' });
   rig.views.set('MINTR', v);
@@ -357,8 +361,8 @@ test('non-base entry (BASE_MODE=0): a range position carries NEITHER stamp — t
   assert.equal(pos.structureLow, undefined);
 });
 
-// Drive managePosition with a controlled realizable mark. The stop's
-// ruler: realizableMc = entryMc x (valueSol / basis) / entryRoundTrip.
+// Drive managePosition with a controlled realizable mark:
+// realizableMc = entryMc x (valueSol / basis) / entryRoundTrip.
 function driveMarks(rig, pos) {
   const state = { valueSol: null };
   rig.bot.exec.markValue = async () => state.valueSol;
@@ -367,22 +371,23 @@ function driveMarks(rig, pos) {
   return { state, valueForMc };
 }
 
-test('structural stop: TWO consecutive realizable prints below the base low exit in full — one print does not', async () => {
+test('structural stop REMOVED: consecutive realizable prints below the base low HOLD \u2014 no sell, no base-broke close, no breach bookkeeping', async () => {
   const rig = pipelineRig();
   const pos = await openRangePosition(rig);
+  assert.equal(pos.structureLow, 500_000, 'the entry-side base-low stamp itself is untouched');
   const { state, valueForMc } = driveMarks(rig, pos);
   state.valueSol = valueForMc(490_000); // below the 500k base low
   await rig.bot.managePosition(pos, 150);
-  assert.equal(rig.bot.positions.length, 1, 'one sub-low print must not exit');
-  assert.equal(pos.structureBreach, 1);
   await rig.bot.managePosition(pos, 150);
-  assert.equal(rig.bot.positions.length, 0, 'the second consecutive sub-low print exits in full');
-  const close = rig.bot.journal.trades.filter(t => t.type === 'close').at(-1);
-  assert.equal(close.reason, 'base broke: fell below the base low');
-  assert.equal(rig.bot.stats.baseMode.structureStops, 1);
+  await rig.bot.managePosition(pos, 150);
+  assert.equal(rig.bot.positions.length, 1, 'three consecutive sub-low prints must not exit \u2014 the stop is gone');
+  assert.equal(pos.structureBreach, undefined, 'no breach counting is stamped anymore');
+  assert.equal(rig.bot.journal.trades.filter(t => t.type === 'sell').length, 0, 'nothing sold');
+  assert.equal(rig.bot.journal.trades.filter(t => t.type === 'close').length, 0, 'no close record at all');
+  assert.equal(rig.bot.stats.baseMode.structureStops, 0);
 });
 
-test('structural stop: a print back at/above the low resets the count', async () => {
+test('structural stop REMOVED: below/above/below print sequences never accumulate toward an exit', async () => {
   const rig = pipelineRig();
   const pos = await openRangePosition(rig);
   const { state, valueForMc } = driveMarks(rig, pos);
@@ -390,15 +395,33 @@ test('structural stop: a print back at/above the low resets the count', async ()
   await rig.bot.managePosition(pos, 150);
   state.valueSol = valueForMc(510_000); // back inside the base
   await rig.bot.managePosition(pos, 150);
-  assert.equal(pos.structureBreach, 0);
   state.valueSol = valueForMc(490_000);
   await rig.bot.managePosition(pos, 150);
-  assert.equal(rig.bot.positions.length, 1, 'a fresh single breach after recovery must not exit');
   await rig.bot.managePosition(pos, 150);
-  assert.equal(rig.bot.positions.length, 0);
+  assert.equal(rig.bot.positions.length, 1);
+  assert.equal(pos.structureBreach, undefined);
+  assert.equal(rig.bot.journal.trades.filter(t => t.type === 'close').length, 0);
 });
 
-test('structural stop: retires at TP1 — a post-TP1 position under the old low is the ladder\u2019s problem, not the stop\u2019s', async () => {
+test('structural stop REMOVED: the rest of the exit stack still fires on the same position shape \u2014 TP1 banks at its +50% stamp after sub-low holds', async () => {
+  const rig = pipelineRig();
+  const pos = await openRangePosition(rig);
+  const { state, valueForMc } = driveMarks(rig, pos);
+  state.valueSol = valueForMc(490_000); // under the base low \u2014 holds now
+  await rig.bot.managePosition(pos, 150);
+  await rig.bot.managePosition(pos, 150);
+  assert.equal(rig.bot.positions.length, 1);
+  state.valueSol = valueForMc(959_500); // entryMc 505k x 1.9 \u2014 net of fees/round-trip, clear of the +50% TP1 stamp
+  await rig.bot.managePosition(pos, 150);
+  assert.equal(pos.tp1Done, true, 'TP1 fired on the same position the stop used to kill');
+  assert.ok(pos.remainingFrac < 1, 'TP1 banked a fraction');
+  assert.equal(rig.bot.positions.length, 1, 'TP1 is a partial \u2014 the position rides on');
+  const sell = rig.bot.journal.trades.filter(t => t.type === 'sell').at(-1);
+  assert.ok(sell && /TP1 \+50% \(override\)/.test(sell.reason), JSON.stringify(sell));
+  assert.equal(rig.bot.journal.trades.filter(t => t.type === 'close' && t.reason === 'base broke: fell below the base low').length, 0);
+});
+
+test('structural stop REMOVED: post-TP1 and protected positions under the old low hold exactly as before', async () => {
   const rig = pipelineRig();
   const pos = await openRangePosition(rig);
   pos.tp1Done = true;
@@ -408,18 +431,16 @@ test('structural stop: retires at TP1 — a post-TP1 position under the old low 
   await rig.bot.managePosition(pos, 150);
   assert.equal(rig.bot.positions.length, 1);
   assert.equal(rig.bot.stats.baseMode.structureStops, 0);
-});
 
-test('structural stop: protection suppresses it — the owner\u2019s hands-off ride is never second-guessed', async () => {
-  const rig = pipelineRig();
-  const pos = await openRangePosition(rig);
-  pos.protected = T0;
-  const { state, valueForMc } = driveMarks(rig, pos);
-  state.valueSol = valueForMc(490_000);
-  await rig.bot.managePosition(pos, 150);
-  await rig.bot.managePosition(pos, 150);
-  assert.equal(rig.bot.positions.length, 1);
-  assert.equal(rig.bot.stats.baseMode.structureStops, 0);
+  const rig2 = pipelineRig();
+  const pos2 = await openRangePosition(rig2);
+  pos2.protected = T0;
+  const d2 = driveMarks(rig2, pos2);
+  d2.state.valueSol = d2.valueForMc(490_000);
+  await rig2.bot.managePosition(pos2, 150);
+  await rig2.bot.managePosition(pos2, 150);
+  assert.equal(rig2.bot.positions.length, 1);
+  assert.equal(rig2.bot.stats.baseMode.structureStops, 0);
 });
 
 // ------------------------------------------------------------ amendment gates (owner decision 2026-10-16 23:16 EDT)
